@@ -66,11 +66,12 @@ const CHUNK_DURATION_SECONDS = 30;
 const MAX_FILE_SIZE = 400 * 1024 * 1024 * 1024;
 
 // ============================================
-// 오디오 추출 (Web Audio API)
+// 오디오 추출 (MediaRecorder - webm/opus 압축)
 // ============================================
 
 /**
- * 비디오에서 오디오 추출 및 압축
+ * 비디오에서 오디오 추출 및 압축 (webm/opus 형식)
+ * MediaRecorder를 사용해서 고압축률 달성
  */
 export async function extractAudioFromVideo(
   videoFile: File,
@@ -81,41 +82,62 @@ export async function extractAudioFromVideo(
     
     const video = document.createElement('video');
     video.src = URL.createObjectURL(videoFile);
-    video.muted = false;
+    video.muted = true; // 음소거 (MediaRecorder로 캡처)
+    video.playsInline = true;
     
     video.onloadedmetadata = async () => {
       try {
         const duration = video.duration;
         onProgress?.(`영상 길이: ${Math.floor(duration / 60)}분 ${Math.floor(duration % 60)}초`);
         
-        // AudioContext 생성
-        const audioContext = new AudioContext({ sampleRate: 16000 });
+        // AudioContext로 오디오 스트림 생성
+        const audioContext = new AudioContext();
+        const source = audioContext.createMediaElementSource(video);
+        const destination = audioContext.createMediaStreamDestination();
+        source.connect(destination);
+        source.connect(audioContext.destination); // 재생도 연결
         
-        // 비디오에서 오디오 데이터 가져오기
-        onProgress?.('오디오 디코딩 중...');
+        // MediaRecorder로 webm/opus 인코딩
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+          ? 'audio/webm;codecs=opus' 
+          : 'audio/webm';
         
-        const response = await fetch(video.src);
-        const arrayBuffer = await response.arrayBuffer();
+        const mediaRecorder = new MediaRecorder(destination.stream, {
+          mimeType,
+          audioBitsPerSecond: 32000, // 32kbps로 압축 (매우 작음)
+        });
         
-        let audioBuffer: AudioBuffer;
-        try {
-          audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        } catch {
-          // 디코딩 실패 시 원본 파일 반환 (Whisper가 직접 처리)
+        const chunks: Blob[] = [];
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunks.push(e.data);
+        };
+        
+        mediaRecorder.onstop = () => {
           URL.revokeObjectURL(video.src);
-          onProgress?.('오디오 추출 완료 (원본 사용)');
+          audioContext.close();
+          const audioBlob = new Blob(chunks, { type: mimeType });
+          onProgress?.(`오디오 추출 완료 (${(audioBlob.size / 1024).toFixed(0)}KB)`);
+          resolve(audioBlob);
+        };
+        
+        mediaRecorder.onerror = () => {
+          URL.revokeObjectURL(video.src);
+          // 실패 시 원본 파일 사용
           resolve(videoFile);
-          return;
-        }
+        };
         
+        // 녹음 시작
         onProgress?.('오디오 인코딩 중...');
+        mediaRecorder.start();
+        video.play();
         
-        // WAV 형식으로 변환
-        const wavBlob = audioBufferToWav(audioBuffer);
+        // 영상 끝나면 녹음 중지
+        video.onended = () => {
+          mediaRecorder.stop();
+        };
         
-        URL.revokeObjectURL(video.src);
-        onProgress?.('오디오 추출 완료');
-        resolve(wavBlob);
+        // 재생 속도 4배 (빠른 추출)
+        video.playbackRate = 4;
         
       } catch (error) {
         URL.revokeObjectURL(video.src);
