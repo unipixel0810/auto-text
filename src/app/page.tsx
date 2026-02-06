@@ -394,7 +394,7 @@ export default function Home() {
                     startTime: t.startTime,
                     endTime: t.endTime,
                     text: t.editedText || t.originalText,
-                    type: 'normal' as const,
+                    type: 'TRANSCRIPT' as const,
                     style: globalStyle,
                     confidence: 1,
                   }));
