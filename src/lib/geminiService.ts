@@ -91,7 +91,7 @@ export async function generateSubtitlesWithGemini(
     }
 
     const subtitles: GeneratedSubtitle[] = data.subtitles;
-    console.log('[Gemini] 생성된 자막 수:', subtitles.length, '모델:', data.model);
+    console.log('[AI 자막] 생성 완료:', subtitles.length, '개');
     onProgress?.(100, '자막 생성 완료!');
     
     return subtitles;

@@ -63,6 +63,8 @@ export interface SubtitleStyle {
   shadowBlur: number;
   /** 텍스트 정렬 */
   textAlign: 'left' | 'center' | 'right';
+  /** 최대 너비 (0-100, 퍼센트) - 줄바꿈 조절용 */
+  maxWidth?: number;
 }
 
 /** 기본 자막 스타일 */

@@ -66,16 +66,35 @@ const CHUNK_DURATION_SECONDS = 30;
 const MAX_FILE_SIZE = 400 * 1024 * 1024 * 1024;
 
 // ============================================
-// 오디오 추출 (Web Audio API)
+// 오디오 추출 (아이폰 HEVC 호환)
 // ============================================
 
 /**
- * 비디오에서 오디오 추출 및 압축
+ * 비디오에서 오디오 추출
+ * 아이폰 HEVC는 decodeAudioData 실패 → 원본 파일 직접 사용
  */
 export async function extractAudioFromVideo(
   videoFile: File,
   onProgress?: (status: string) => void
 ): Promise<Blob> {
+  const sizeMB = videoFile.size / 1024 / 1024;
+  
+  // 모바일 감지
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const maxSize = isMobile ? 4 : VERCEL_MAX_SIZE / 1024 / 1024; // 모바일 4MB, PC는 청크 처리
+  
+  onProgress?.('오디오 준비 중...');
+  
+  // 아이폰/모바일: 파일 크기 체크 후 원본 사용 (Whisper가 비디오도 처리 가능)
+  if (isMobile) {
+    if (sizeMB > maxSize) {
+      throw new Error(`모바일에서는 ${maxSize}MB 이하 영상만 가능합니다.\n현재: ${sizeMB.toFixed(1)}MB\n\n💡 해결방법:\n1. 캡컷 등으로 영상 압축\n2. PC에서 이용`);
+    }
+    onProgress?.(`파일 준비 완료 (${sizeMB.toFixed(1)}MB)`);
+    return videoFile;
+  }
+  
+  // PC: 오디오 추출 시도
   return new Promise((resolve, reject) => {
     onProgress?.('오디오 추출 준비 중...');
     
@@ -84,15 +103,22 @@ export async function extractAudioFromVideo(
     video.muted = false;
     video.playsInline = true;
     
+    // 타임아웃 설정 (10초)
+    const timeout = setTimeout(() => {
+      URL.revokeObjectURL(video.src);
+      onProgress?.('오디오 추출 완료 (원본 사용)');
+      resolve(videoFile);
+    }, 10000);
+    
     video.onloadedmetadata = async () => {
       try {
+        clearTimeout(timeout);
         const duration = video.duration;
         onProgress?.(`영상 길이: ${Math.floor(duration / 60)}분 ${Math.floor(duration % 60)}초`);
         
-        // AudioContext 생성 (8kHz로 더 낮춰서 파일 크기 감소)
-        const audioContext = new AudioContext({ sampleRate: 8000 });
+        // AudioContext 생성 (16kHz)
+        const audioContext = new AudioContext({ sampleRate: 16000 });
         
-        // 비디오에서 오디오 데이터 가져오기
         onProgress?.('오디오 디코딩 중...');
         
         const response = await fetch(video.src);
@@ -102,13 +128,8 @@ export async function extractAudioFromVideo(
         try {
           audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
         } catch {
-          // 디코딩 실패 시 원본 파일 반환 (Whisper가 직접 처리)
+          // 디코딩 실패 시 원본 파일 반환
           URL.revokeObjectURL(video.src);
-          const sizeMB = videoFile.size / 1024 / 1024;
-          if (sizeMB > 3) {
-            reject(new Error(`파일이 너무 큽니다 (${sizeMB.toFixed(1)}MB). 3MB 이하 영상을 사용해주세요.`));
-            return;
-          }
           onProgress?.('오디오 추출 완료 (원본 사용)');
           resolve(videoFile);
           return;
@@ -124,20 +145,20 @@ export async function extractAudioFromVideo(
         resolve(wavBlob);
         
       } catch (error) {
+        clearTimeout(timeout);
         URL.revokeObjectURL(video.src);
-        const sizeMB = videoFile.size / 1024 / 1024;
-        if (sizeMB > 3) {
-          reject(new Error(`파일이 너무 큽니다 (${sizeMB.toFixed(1)}MB). 3MB 이하 영상을 사용해주세요.`));
-          return;
-        }
         // 실패 시 원본 파일 사용
+        onProgress?.('오디오 추출 완료 (원본 사용)');
         resolve(videoFile);
       }
     };
     
     video.onerror = () => {
+      clearTimeout(timeout);
       URL.revokeObjectURL(video.src);
-      reject(new Error('비디오 로드 실패'));
+      // 비디오 로드 실패해도 원본 파일 시도
+      onProgress?.('오디오 추출 완료 (원본 사용)');
+      resolve(videoFile);
     };
   });
 }

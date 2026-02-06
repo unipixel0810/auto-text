@@ -10,7 +10,7 @@ import { transcribeVideo } from '@/lib/sttService';
 import { splitSubtitles } from '@/lib/subtitleSplitter';
 import { generateSubtitlesWithGemini, convertToSubtitleItems, correctSpelling } from '@/lib/geminiService';
 import { renderVideoWithSubtitles, downloadSRT, downloadBlob, type RenderProgress } from '@/lib/videoRenderer';
-import type { SubtitleItem, TranscriptItem, SubtitleStyle, DEFAULT_SUBTITLE_STYLE } from '@/types/subtitle';
+import type { SubtitleItem, TranscriptItem, SubtitleStyle, SubtitleType, DEFAULT_SUBTITLE_STYLE } from '@/types/subtitle';
 
 // 기본 스타일 (숏츠용: 하단 UI 피하도록 y: 75%)
 const DEFAULT_STYLE: SubtitleStyle = {
@@ -52,6 +52,7 @@ export default function Home() {
   const [selectedSubtitleId, setSelectedSubtitleId] = useState<string | null>(null);
   const [globalStyle, setGlobalStyle] = useState<SubtitleStyle>(DEFAULT_STYLE);
   const [activePanel, setActivePanel] = useState<'transcript' | 'subtitle' | 'style'>('transcript');
+  const [subtitleTypeFilter, setSubtitleTypeFilter] = useState<'ALL' | 'ENTERTAINMENT' | 'SITUATION' | 'EXPLANATION'>('ALL');
 
   // 진행 상태
   const [progress, setProgress] = useState({ stage: '', percent: 0, message: '' });
@@ -109,6 +110,17 @@ export default function Home() {
 
   // AI 자막 생성 진행률
   const [aiProgress, setAiProgress] = useState({ percent: 0, message: '' });
+  const [aiAbortController, setAiAbortController] = useState<AbortController | null>(null);
+
+  // AI 자막 생성 중지
+  const stopAIGeneration = useCallback(() => {
+    if (aiAbortController) {
+      aiAbortController.abort();
+      setAiAbortController(null);
+    }
+    setIsGeneratingAI(false);
+    setAiProgress({ percent: 0, message: '' });
+  }, [aiAbortController]);
 
   // AI 자막 생성 (서버 API 사용)
   const generateAISubtitles = useCallback(async () => {
@@ -167,6 +179,116 @@ export default function Home() {
     setSubtitles(prev => [...prev, newSubtitle].sort((a, b) => a.startTime - b.startTime));
   }, []);
 
+  // 자막 합치기 (이전 자막과 합침)
+  const handleMergeWithPrevious = useCallback((id: string) => {
+    setSubtitles(prev => {
+      const index = prev.findIndex(s => s.id === id);
+      if (index <= 0) return prev; // 첫 번째 자막이면 합칠 수 없음
+      
+      const current = prev[index];
+      const previous = prev[index - 1];
+      
+      // 이전 자막에 현재 자막 텍스트 합치기
+      const merged: SubtitleItem = {
+        ...previous,
+        endTime: current.endTime,
+        text: previous.text + ' ' + current.text,
+      };
+      
+      return prev.filter(s => s.id !== id).map(s => s.id === previous.id ? merged : s);
+    });
+  }, []);
+
+  // 자막 나누기 (커서 위치에서 분할)
+  const handleSplitSubtitle = useCallback((id: string, splitIndex: number) => {
+    setSubtitles(prev => {
+      const index = prev.findIndex(s => s.id === id);
+      if (index === -1) return prev;
+      
+      const original = prev[index];
+      if (splitIndex <= 0 || splitIndex >= original.text.length) return prev;
+      
+      const text1 = original.text.slice(0, splitIndex).trim();
+      const text2 = original.text.slice(splitIndex).trim();
+      if (!text1 || !text2) return prev;
+      
+      const midTime = original.startTime + (original.endTime - original.startTime) / 2;
+      
+      const first: SubtitleItem = {
+        ...original,
+        endTime: midTime,
+        text: text1,
+      };
+      
+      const second: SubtitleItem = {
+        ...original,
+        id: `ai_${Date.now()}`,
+        startTime: midTime,
+        text: text2,
+      };
+      
+      const newList = [...prev];
+      newList.splice(index, 1, first, second);
+      return newList;
+    });
+  }, []);
+
+  // AI로 자막 유형에 맞게 재생성
+  const handleRegenerateWithType = useCallback(async (id: string, type: SubtitleType, originalText: string) => {
+    try {
+      const typeNames: Record<SubtitleType, string> = {
+        ENTERTAINMENT: '예능',
+        SITUATION: '상황',
+        EXPLANATION: '설명',
+        TRANSCRIPT: '말자막',
+      };
+      
+      const response = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transcripts: [{ 
+            startTime: 0, 
+            endTime: 1, 
+            editedText: originalText,
+            originalText: originalText 
+          }],
+          customPrompt: `다음 자막을 "${typeNames[type]}" 스타일로 변환해주세요.
+
+원본 자막: "${originalText}"
+
+요구사항:
+- ${type === 'ENTERTAINMENT' ? '재미있고 임팩트 있게, 이모지나 강조 표현 사용 가능' : ''}
+- ${type === 'SITUATION' ? '현재 상황을 설명하는 객관적인 톤으로' : ''}
+- ${type === 'EXPLANATION' ? '정보 전달에 초점, 명확하고 이해하기 쉽게' : ''}
+- 원래 의미는 유지하면서 스타일만 변경
+- 한국어로 작성
+- 자막 텍스트만 출력 (JSON 형식 없이 텍스트만)`
+        }),
+      });
+
+      const data = await response.json();
+      
+      if (data.subtitles && data.subtitles.length > 0) {
+        const newText = data.subtitles[0].text || originalText;
+        setSubtitles(prev => prev.map(s => 
+          s.id === id ? { ...s, text: newText, type } : s
+        ));
+      } else {
+        // API 실패시 유형만 변경
+        setSubtitles(prev => prev.map(s => 
+          s.id === id ? { ...s, type } : s
+        ));
+      }
+    } catch (err) {
+      console.error('AI 재생성 실패:', err);
+      // 실패시 유형만 변경
+      setSubtitles(prev => prev.map(s => 
+        s.id === id ? { ...s, type } : s
+      ));
+    }
+  }, []);
+
   // 스타일 변경
   const handleStyleChange = useCallback((updates: Partial<SubtitleStyle>) => {
     if (selectedSubtitleId) {
@@ -201,6 +323,13 @@ export default function Home() {
   const handleSubtitleResize = useCallback((id: string, scale: number) => {
     setSubtitles(prev => prev.map(s => 
       s.id === id ? { ...s, style: { ...s.style, scale } as any } : s
+    ));
+  }, []);
+
+  // 자막 너비 조절 (줄바꿈 제어)
+  const handleSubtitleWidthChange = useCallback((id: string, maxWidth: number) => {
+    setSubtitles(prev => prev.map(s => 
+      s.id === id ? { ...s, style: { ...s.style, maxWidth } as any } : s
     ));
   }, []);
 
@@ -361,8 +490,8 @@ export default function Home() {
             <span className="text-xl">🎬</span>
           </div>
           <div>
-            <h1 className="font-bold" style={{ color: 'hsl(210 40% 98%)' }}>자막 에디터</h1>
-            <p className="text-xs" style={{ color: 'hsl(215 20% 55%)' }}>AI 기반 자막 생성</p>
+            <h1 className="font-bold text-lg tracking-wide" style={{ color: 'hsl(210 40% 98%)' }}>EDITORY</h1>
+            <p className="text-xs" style={{ color: 'hsl(215 20% 55%)' }}>AI-Powered Creative Studio</p>
           </div>
         </div>
 
@@ -443,11 +572,18 @@ export default function Home() {
       {stage === 'upload' && (
         <main className="max-w-4xl mx-auto p-6">
           <div className="text-center mb-8 pt-12">
-            <h2 className="text-4xl font-bold mb-4" style={{ color: 'hsl(210 40% 98%)' }}>
-              영상에 <span style={{ color: 'hsl(185 100% 50%)' }}>AI 자막</span>을 입히세요
+            <h2 className="text-5xl font-bold mb-2 tracking-wider" style={{ 
+              background: 'linear-gradient(135deg, hsl(185 100% 50%), hsl(330 80% 60%))',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+            }}>
+              EDITORY
             </h2>
-            <p style={{ color: 'hsl(215 20% 65%)' }}>
-              음성인식 → 맞춤법 교정 → AI 자막 생성 → 영상 렌더링까지 한번에
+            <p className="text-lg mb-4" style={{ color: 'hsl(210 40% 98%)' }}>
+              AI-Powered <span style={{ color: 'hsl(185 100% 50%)' }}>Creative Studio</span>
+            </p>
+            <p className="text-sm" style={{ color: 'hsl(215 20% 55%)' }}>
+              음성인식 → AI 자막 생성 → 영상 렌더링까지 한번에
             </p>
           </div>
 
@@ -472,7 +608,7 @@ export default function Home() {
           <div className="grid grid-cols-3 gap-4 mt-8">
             {[
               { icon: '🎙️', title: '음성인식', desc: 'OpenAI Whisper' },
-              { icon: '🤖', title: 'AI 자막', desc: 'Gemini Pro' },
+              { icon: '🤖', title: 'AI 자막', desc: 'AI 기반 생성' },
               { icon: '🎬', title: '영상 렌더링', desc: 'FFmpeg.wasm' },
             ].map((item, i) => (
               <div 
@@ -522,38 +658,90 @@ export default function Home() {
       )}
 
       {stage === 'editing' && (
-        <main className="h-[calc(100vh-60px)] flex">
-          {/* 왼쪽 패널 - 대본 & AI 자막 & 스타일 */}
+        <main className="h-[calc(100vh-60px)] flex flex-col lg:flex-row overflow-hidden">
+          {/* 왼쪽 패널 - 대본 & AI 자막 */}
           <div 
-            className="w-96 flex flex-col"
+            className="w-full lg:w-80 flex flex-col order-2 lg:order-1 max-h-[30vh] lg:max-h-[calc(100vh-60px)] shrink-0 overflow-hidden"
             style={{ 
               background: 'hsl(220 18% 6%)',
-              borderRight: '1px solid hsl(220 15% 18%)'
+              borderRight: '1px solid hsl(220 15% 18%)',
+              borderTop: '1px solid hsl(220 15% 18%)'
             }}
           >
-            {/* 탭 - 대본과 AI자막만 */}
-            <div className="flex" style={{ borderBottom: '1px solid hsl(220 15% 18%)' }}>
-              {[
-                { id: 'transcript', label: '대본', icon: '📝' },
-                { id: 'subtitle', label: 'AI자막', icon: '🎭' },
-              ].map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActivePanel(tab.id as any)}
-                  className={`flex-1 py-3 text-sm font-medium transition-all`}
-                  style={{
-                    background: activePanel === tab.id ? 'hsl(185 100% 50% / 0.1)' : 'transparent',
-                    color: activePanel === tab.id ? 'hsl(185 100% 50%)' : 'hsl(215 20% 55%)',
-                    borderBottom: activePanel === tab.id ? '2px solid hsl(185 100% 50%)' : '2px solid transparent'
-                  }}
-                >
-                  {tab.icon} {tab.label}
-                </button>
-              ))}
+            {/* 탭 + AI 자막 생성 버튼 (항상 보이도록 상단에 고정) */}
+            <div className="shrink-0">
+              {/* 탭 */}
+              <div className="flex" style={{ borderBottom: '1px solid hsl(220 15% 18%)' }}>
+                {[
+                  { id: 'transcript', label: '대본', icon: '📝' },
+                  { id: 'subtitle', label: 'AI자막', icon: '🎭' },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActivePanel(tab.id as any)}
+                    className={`flex-1 py-2 lg:py-3 text-xs lg:text-sm font-medium transition-all`}
+                    style={{
+                      background: activePanel === tab.id ? 'hsl(185 100% 50% / 0.1)' : 'transparent',
+                      color: activePanel === tab.id ? 'hsl(185 100% 50%)' : 'hsl(215 20% 55%)',
+                      borderBottom: activePanel === tab.id ? '2px solid hsl(185 100% 50%)' : '2px solid transparent'
+                    }}
+                  >
+                    {tab.icon} {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* AI 자막 생성 버튼 - 탭 바로 아래 (항상 보임) */}
+              {activePanel === 'transcript' && (
+                <div className="p-2 lg:p-3" style={{ borderBottom: '1px solid hsl(220 15% 18%)' }}>
+                {isGeneratingAI ? (
+                  <div className="flex gap-2">
+                    <div 
+                      className="flex-1 py-2 lg:py-3 rounded-lg lg:rounded-xl font-medium text-sm"
+                      style={{ 
+                        background: 'linear-gradient(135deg, hsl(330 80% 60%), hsl(280 70% 50%))',
+                        color: 'white'
+                      }}
+                    >
+                      <div className="flex items-center justify-center gap-2 px-2">
+                        <svg className="w-4 h-4 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        <span className="truncate">{aiProgress.message || '생성 중...'}</span>
+                        <span className="text-xs opacity-80 shrink-0">{aiProgress.percent}%</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={stopAIGeneration}
+                      className="px-3 py-2 lg:px-4 lg:py-3 rounded-lg lg:rounded-xl font-medium transition-all text-sm"
+                      style={{ 
+                        background: 'hsl(0 70% 50%)',
+                        color: 'white'
+                      }}
+                    >
+                      중지
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={generateAISubtitles}
+                    disabled={transcripts.length === 0}
+                    className="w-full py-2 lg:py-3 rounded-lg lg:rounded-xl font-medium transition-all disabled:opacity-50 text-sm lg:text-base"
+                    style={{ 
+                      background: 'linear-gradient(135deg, hsl(330 80% 60%), hsl(280 70% 50%))',
+                      color: 'white'
+                    }}
+                  >
+                    🤖 AI 자막 생성
+                  </button>
+                )}
+                </div>
+              )}
             </div>
 
             {/* 패널 콘텐츠 */}
-            <div className="flex-1 overflow-hidden">
+            <div className="flex-1 min-h-0 overflow-y-auto">
               {activePanel === 'transcript' && (
                 <TranscriptEditor
                   transcripts={transcripts}
@@ -563,64 +751,55 @@ export default function Home() {
                 />
               )}
               {activePanel === 'subtitle' && (
-                <AISubtitleEditor
-                  subtitles={subtitles}
-                  currentTime={currentTime}
-                  selectedId={selectedSubtitleId}
-                  onSelect={setSelectedSubtitleId}
-                  onUpdate={handleSubtitleUpdate}
-                  onDelete={handleSubtitleDelete}
-                  onSeek={handleSeek}
-                  onAdd={handleSubtitleAdd}
-                />
+                <>
+                  {/* 자막 유형 필터 버튼 */}
+                  <div className="flex gap-1 p-2 shrink-0" style={{ borderBottom: '1px solid hsl(220 15% 18%)' }}>
+                    {[
+                      { id: 'ALL', label: '전체', color: 'hsl(215 20% 55%)' },
+                      { id: 'ENTERTAINMENT', label: '🎭 예능', color: 'hsl(330 80% 60%)' },
+                      { id: 'SITUATION', label: '💬 상황', color: 'hsl(210 80% 60%)' },
+                      { id: 'EXPLANATION', label: '📝 설명', color: 'hsl(150 80% 50%)' },
+                    ].map((type) => (
+                      <button
+                        key={type.id}
+                        onClick={() => setSubtitleTypeFilter(type.id as any)}
+                        className="flex-1 py-1.5 text-xs font-medium rounded-md transition-all"
+                        style={{
+                          background: subtitleTypeFilter === type.id ? `${type.color}22` : 'transparent',
+                          color: subtitleTypeFilter === type.id ? type.color : 'hsl(215 20% 55%)',
+                          border: subtitleTypeFilter === type.id ? `1px solid ${type.color}44` : '1px solid transparent',
+                        }}
+                      >
+                        {type.label}
+                      </button>
+                    ))}
+                  </div>
+                  <AISubtitleEditor
+                    subtitles={subtitleTypeFilter === 'ALL' 
+                      ? subtitles 
+                      : subtitles.filter(s => s.type === subtitleTypeFilter)
+                    }
+                    currentTime={currentTime}
+                    selectedId={selectedSubtitleId}
+                    onSelect={setSelectedSubtitleId}
+                    onUpdate={handleSubtitleUpdate}
+                    onDelete={handleSubtitleDelete}
+                    onSeek={handleSeek}
+                    onAdd={handleSubtitleAdd}
+                    onMergeWithPrevious={handleMergeWithPrevious}
+                    onSplitSubtitle={handleSplitSubtitle}
+                    onRegenerateWithType={handleRegenerateWithType}
+                  />
+                </>
               )}
             </div>
-
-            {/* AI 자막 생성 버튼 */}
-            {activePanel === 'transcript' && (
-              <div className="p-4" style={{ borderTop: '1px solid hsl(220 15% 18%)' }}>
-                <button
-                  onClick={generateAISubtitles}
-                  disabled={isGeneratingAI || transcripts.length === 0}
-                  className="w-full py-3 rounded-xl font-medium transition-all disabled:opacity-50"
-                  style={{ 
-                    background: 'linear-gradient(135deg, hsl(330 80% 60%), hsl(280 70% 50%))',
-                    color: 'white'
-                  }}
-                >
-                  {isGeneratingAI ? (
-                    <div className="flex flex-col items-center gap-1">
-                      <span className="flex items-center gap-2">
-                        <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        {aiProgress.message || 'AI 자막 생성 중...'}
-                      </span>
-                      <div className="w-full h-1.5 rounded-full bg-white/20 mt-1">
-                        <div 
-                          className="h-full rounded-full transition-all duration-300"
-                          style={{ 
-                            width: `${aiProgress.percent}%`,
-                            background: 'white'
-                          }}
-                        />
-                      </div>
-                      <span className="text-xs opacity-80">{aiProgress.percent}%</span>
-                    </div>
-                  ) : (
-                    '🤖 AI 자막 생성 (Gemini)'
-                  )}
-                </button>
-              </div>
-            )}
           </div>
 
-          {/* 오른쪽 - 비디오 프리뷰 */}
-          <div className="flex-1 p-6 flex flex-col items-center overflow-y-auto">
+          {/* 중앙 - 비디오 프리뷰 (모바일에서는 위에 표시) */}
+          <div className="flex-1 p-2 lg:p-4 flex flex-col items-center overflow-y-auto order-1 lg:order-2">
             {error && (
               <div 
-                className="mb-4 p-4 rounded-xl text-sm w-full max-w-md"
+                className="mb-2 p-3 rounded-lg text-sm w-full"
                 style={{ 
                   background: 'hsl(0 72% 50% / 0.1)', 
                   border: '1px solid hsl(0 72% 50% / 0.3)',
@@ -631,28 +810,43 @@ export default function Home() {
               </div>
             )}
 
-            {/* 비디오 프리뷰 - 적당한 크기로 제한 */}
-            <div className="w-full max-w-md">
-            <VideoPreview
-              videoUrl={videoUrl}
-              subtitles={subtitles}
-              globalStyle={globalStyle}
-              currentTime={currentTime}
-              onTimeUpdate={setCurrentTime}
-              selectedSubtitleId={selectedSubtitleId}
-              onSelectSubtitle={setSelectedSubtitleId}
-              onSubtitleDrag={handleSubtitleDrag}
-              onSubtitleResize={handleSubtitleResize}
-              onSubtitleRotate={handleSubtitleRotate}
-              onSubtitleDelete={handleSubtitleDelete}
-              onSubtitleTextChange={handleSubtitleTextChange}
-              seekTo={seekTo}
-              onSeekComplete={handleSeekComplete}
-            />
+            {/* 비디오 프리뷰 */}
+            <div className="w-full max-w-lg">
+              <VideoPreview
+                videoUrl={videoUrl}
+                subtitles={subtitles}
+                globalStyle={globalStyle}
+                currentTime={currentTime}
+                onTimeUpdate={setCurrentTime}
+                selectedSubtitleId={selectedSubtitleId}
+                onSelectSubtitle={setSelectedSubtitleId}
+                onSubtitleDrag={handleSubtitleDrag}
+                onSubtitleResize={handleSubtitleResize}
+                onSubtitleRotate={handleSubtitleRotate}
+                onSubtitleDelete={handleSubtitleDelete}
+                onSubtitleTextChange={handleSubtitleTextChange}
+                onSubtitleWidthChange={handleSubtitleWidthChange}
+                seekTo={seekTo}
+                onSeekComplete={handleSeekComplete}
+              />
             </div>
 
-            {/* 스타일 패널 - 영상 아래에 배치 */}
-            <div className="w-full max-w-md mt-4">
+          </div>
+
+          {/* 오른쪽 - 스타일 패널 (PC에서만 표시) */}
+          <div 
+            className="hidden lg:flex w-72 flex-col order-3 h-full overflow-y-auto"
+            style={{ 
+              background: 'hsl(220 18% 6%)',
+              borderLeft: '1px solid hsl(220 15% 18%)'
+            }}
+          >
+            <div className="p-3" style={{ borderBottom: '1px solid hsl(220 15% 18%)' }}>
+              <h3 className="text-sm font-medium" style={{ color: 'hsl(210 40% 98%)' }}>
+                🎨 스타일 설정
+              </h3>
+            </div>
+            <div className="p-3 flex-1 overflow-y-auto">
               <StylePanel
                 style={selectedSubtitleId 
                   ? { ...globalStyle, ...subtitles.find(s => s.id === selectedSubtitleId)?.style }
@@ -660,52 +854,8 @@ export default function Home() {
                 }
                 onChange={handleStyleChange}
                 onApplyToAll={handleApplyStyleToAll}
-                compact={true}
+                compact={false}
               />
-            </div>
-
-            {/* 자막 타임라인 미리보기 */}
-            <div 
-              className="mt-4 p-4 rounded-xl w-full max-w-md"
-              style={{ 
-                background: 'hsl(220 18% 8%)',
-                border: '1px solid hsl(220 15% 18%)'
-              }}
-            >
-              <h4 className="text-sm font-medium mb-3" style={{ color: 'hsl(210 40% 98%)' }}>
-                자막 타임라인
-              </h4>
-              <div className="flex flex-wrap gap-2">
-                {subtitles.slice(0, 10).map((s) => (
-                  <button
-                    key={s.id}
-                    onClick={() => {
-                      setSelectedSubtitleId(s.id);
-                      handleSeek(s.startTime);
-                    }}
-                    className={`px-3 py-1.5 rounded-lg text-xs transition-all ${
-                      selectedSubtitleId === s.id ? 'ring-2' : ''
-                    }`}
-                    style={{
-                      background: s.type === 'ENTERTAINMENT' ? 'hsl(330 80% 60% / 0.2)' :
-                        s.type === 'SITUATION' ? 'hsl(210 80% 60% / 0.2)' :
-                        s.type === 'EXPLANATION' ? 'hsl(150 80% 50% / 0.2)' :
-                        'hsl(45 80% 60% / 0.2)',
-                      color: s.type === 'ENTERTAINMENT' ? 'hsl(330 80% 60%)' :
-                        s.type === 'SITUATION' ? 'hsl(210 80% 60%)' :
-                        s.type === 'EXPLANATION' ? 'hsl(150 80% 50%)' :
-                        'hsl(45 80% 60%)'
-                    }}
-                  >
-                    {s.text.slice(0, 15)}{s.text.length > 15 ? '...' : ''}
-                  </button>
-                ))}
-                {subtitles.length > 10 && (
-                  <span className="px-3 py-1.5 text-xs" style={{ color: 'hsl(215 20% 55%)' }}>
-                    +{subtitles.length - 10}개 더
-                  </span>
-                )}
-              </div>
             </div>
           </div>
         </main>

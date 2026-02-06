@@ -12,6 +12,9 @@ interface AISubtitleEditorProps {
   onDelete: (id: string) => void;
   onSeek: (time: number) => void;
   onAdd: (subtitle: Omit<SubtitleItem, 'id'>) => void;
+  onMergeWithPrevious?: (id: string) => void;
+  onSplitSubtitle?: (id: string, splitIndex: number) => void;
+  onRegenerateWithType?: (id: string, type: SubtitleType, originalText: string) => Promise<void>;
 }
 
 const TYPE_CONFIG: Record<SubtitleType, { color: string; label: string; icon: string }> = {
@@ -36,21 +39,41 @@ export default function AISubtitleEditor({
   onDelete,
   onSeek,
   onAdd,
+  onMergeWithPrevious,
+  onSplitSubtitle,
+  onRegenerateWithType,
 }: AISubtitleEditorProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [editType, setEditType] = useState<SubtitleType>('ENTERTAINMENT');
+  const [cursorPosition, setCursorPosition] = useState(0);
+  const [originalType, setOriginalType] = useState<SubtitleType>('ENTERTAINMENT');
+  const [isRegenerating, setIsRegenerating] = useState(false);
 
   const startEditing = useCallback((item: SubtitleItem) => {
     setEditingId(item.id);
     setEditText(item.text);
     setEditType(item.type);
+    setOriginalType(item.type); // 원래 유형 저장
   }, []);
 
-  const saveEdit = useCallback((id: string) => {
-    onUpdate(id, { text: editText, type: editType });
+  const saveEdit = useCallback(async (id: string) => {
+    // 유형이 변경되었고 AI 재생성 함수가 있으면 AI로 재생성
+    if (editType !== originalType && onRegenerateWithType) {
+      setIsRegenerating(true);
+      try {
+        await onRegenerateWithType(id, editType, editText);
+      } catch (err) {
+        console.error('AI 재생성 실패:', err);
+        // 실패시 유형만 변경
+        onUpdate(id, { text: editText, type: editType });
+      }
+      setIsRegenerating(false);
+    } else {
+      onUpdate(id, { text: editText, type: editType });
+    }
     setEditingId(null);
-  }, [editText, editType, onUpdate]);
+  }, [editText, editType, originalType, onUpdate, onRegenerateWithType]);
 
   const handleAddNew = useCallback(() => {
     const newSubtitle: Omit<SubtitleItem, 'id'> = {
@@ -137,25 +160,29 @@ export default function AISubtitleEditor({
                     </button>
                     
                     {isEditing ? (
-                      <select
-                        value={editType}
-                        onChange={(e) => setEditType(e.target.value as SubtitleType)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-xs px-2 py-1 rounded outline-none"
-                        style={{ 
-                          background: 'hsl(220 18% 10%)', 
-                          color: 'hsl(210 40% 98%)',
-                          border: '1px solid hsl(220 15% 25%)'
-                        }}
-                      >
+                      <div className="flex gap-1">
                         {Object.entries(TYPE_CONFIG).filter(([k]) => k !== 'TRANSCRIPT').map(([key, cfg]) => (
-                          <option key={key} value={key}>{cfg.icon} {cfg.label}</option>
+                          <button
+                            key={key}
+                            onClick={(e) => { e.stopPropagation(); setEditType(key as SubtitleType); }}
+                            className="text-xs px-2 py-1 rounded transition-all"
+                            style={{ 
+                              background: editType === key ? `${cfg.color}30` : 'hsl(220 18% 10%)',
+                              color: editType === key ? cfg.color : 'hsl(215 20% 55%)',
+                              border: editType === key ? `1px solid ${cfg.color}` : '1px solid transparent'
+                            }}
+                            title={`${cfg.label}로 변경`}
+                          >
+                            {cfg.icon} {cfg.label}
+                          </button>
                         ))}
-                      </select>
+                      </div>
                     ) : (
                       <span 
-                        className="text-xs px-2 py-0.5 rounded"
+                        className="text-xs px-2 py-0.5 rounded cursor-pointer hover:opacity-80"
                         style={{ background: `${config.color}20`, color: config.color }}
+                        onClick={(e) => { e.stopPropagation(); startEditing(item); }}
+                        title="클릭하여 유형 변경"
                       >
                         {config.icon} {config.label}
                       </span>
@@ -167,15 +194,29 @@ export default function AISubtitleEditor({
                       <>
                         <button
                           onClick={(e) => { e.stopPropagation(); saveEdit(item.id); }}
-                          className="p-1 rounded"
-                          style={{ background: 'hsl(150 80% 50% / 0.2)', color: 'hsl(150 80% 50%)' }}
+                          disabled={isRegenerating}
+                          className="p-1 rounded flex items-center gap-1"
+                          style={{ 
+                            background: editType !== originalType ? 'hsl(330 80% 60% / 0.3)' : 'hsl(150 80% 50% / 0.2)', 
+                            color: editType !== originalType ? 'hsl(330 80% 60%)' : 'hsl(150 80% 50%)' 
+                          }}
+                          title={editType !== originalType ? 'AI가 자막을 재생성합니다' : '저장'}
                         >
-                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
+                          {isRegenerating ? (
+                            <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                          ) : (
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                          {editType !== originalType && !isRegenerating && <span className="text-xs">AI</span>}
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); setEditingId(null); }}
+                          disabled={isRegenerating}
                           className="p-1 rounded"
                           style={{ background: 'hsl(220 15% 15%)', color: 'hsl(215 20% 55%)' }}
                         >
@@ -215,13 +256,50 @@ export default function AISubtitleEditor({
                 {isEditing ? (
                   <textarea
                     value={editText}
-                    onChange={(e) => setEditText(e.target.value)}
-                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => {
+                      setEditText(e.target.value);
+                      setCursorPosition(e.target.selectionStart);
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCursorPosition((e.target as HTMLTextAreaElement).selectionStart);
+                    }}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
+                      const target = e.target as HTMLTextAreaElement;
+                      const pos = target.selectionStart;
+                      
+                      // 맨 앞에서 백스페이스 → 윗 자막과 합치기
+                      if (e.key === 'Backspace' && pos === 0 && onMergeWithPrevious) {
+                        e.preventDefault();
+                        onUpdate(item.id, { text: editText }); // 현재 편집 저장
+                        onMergeWithPrevious(item.id);
+                        setEditingId(null);
+                        return;
+                      }
+                      
+                      // Shift+Enter → 저장
+                      if (e.key === 'Enter' && e.shiftKey) {
                         e.preventDefault();
                         saveEdit(item.id);
-                      } else if (e.key === 'Escape') {
+                        return;
+                      }
+                      
+                      // Enter → 현재 커서 위치에서 자막 분할 (중간에 있을 때만)
+                      if (e.key === 'Enter' && !e.shiftKey && onSplitSubtitle) {
+                        e.preventDefault();
+                        // 커서가 맨 앞이나 맨 뒤면 저장만
+                        if (pos <= 0 || pos >= editText.length) {
+                          saveEdit(item.id);
+                        } else {
+                          // 중간이면 분할
+                          onUpdate(item.id, { text: editText });
+                          onSplitSubtitle(item.id, pos);
+                          setEditingId(null);
+                        }
+                        return;
+                      }
+                      
+                      if (e.key === 'Escape') {
                         setEditingId(null);
                       }
                     }}
@@ -233,7 +311,8 @@ export default function AISubtitleEditor({
                     }}
                     rows={2}
                     autoFocus
-                    placeholder="자막 입력... (Shift+Enter: 줄바꿈, Enter: 저장)"
+                    disabled={isRegenerating}
+                    placeholder="Enter:분할 | Shift+Enter:저장 | 맨앞 Backspace:합치기"
                   />
                 ) : (
                   <p 

@@ -16,6 +16,7 @@ interface VideoPreviewProps {
   onSubtitleRotate?: (id: string, rotation: number) => void;
   onSubtitleDelete?: (id: string) => void;
   onSubtitleTextChange?: (id: string, text: string) => void;
+  onSubtitleWidthChange?: (id: string, maxWidth: number) => void;
   seekTo?: number | null;
   onSeekComplete?: () => void;
 }
@@ -45,7 +46,7 @@ const TYPE_STYLES: Record<string, { bg: string; border: string; handleColor: str
 };
 
 // 드래그 모드
-type DragMode = 'none' | 'move' | 'resize-tl' | 'resize-tr' | 'resize-bl' | 'resize-br' | 'rotate' | 'delete';
+type DragMode = 'none' | 'move' | 'resize-tl' | 'resize-tr' | 'resize-bl' | 'resize-br' | 'resize-left' | 'resize-right' | 'rotate' | 'delete';
 
 function getSubtitleStyle(subtitle: SubtitleItem, globalStyle: SubtitleStyle): SubtitleStyle {
   return { ...globalStyle, ...subtitle.style };
@@ -64,6 +65,7 @@ export default function VideoPreview({
   onSubtitleRotate,
   onSubtitleDelete,
   onSubtitleTextChange,
+  onSubtitleWidthChange,
   seekTo,
   onSeekComplete,
 }: VideoPreviewProps) {
@@ -81,6 +83,7 @@ export default function VideoPreview({
   const [dragMode, setDragMode] = useState<DragMode>('none');
   const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 });
   const [initialSubtitlePos, setInitialSubtitlePos] = useState({ x: 0, y: 0 });
+  const [initialMaxWidth, setInitialMaxWidth] = useState(80);
   
   // 텍스트 편집 상태
   const [editingSubtitleId, setEditingSubtitleId] = useState<string | null>(null);
@@ -121,6 +124,8 @@ export default function VideoPreview({
   const getSubtitleBox = useCallback((subtitle: SubtitleItem, canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, yOffset: number = 0) => {
     const style = getSubtitleStyle(subtitle, globalStyle);
     const scale = (style as any).scale || 1;
+    // maxWidth: 사용자가 지정한 최대 너비 (퍼센트), 기본값 80%
+    const userMaxWidth = (style as any).maxWidth || 80;
     
     // 폰트 크기에 scale 적용 (화면에 맞게 크게)
     const baseFontSize = Math.round(style.fontSize * (canvas.width / 1920) * 3.5);
@@ -128,10 +133,10 @@ export default function VideoPreview({
     
     ctx.font = `${style.fontWeight} ${scaledFontSize}px "${style.fontFamily}", "Noto Sans KR", sans-serif`;
     
-    // 최대 너비 (화면 너비의 80%)
-    const maxLineWidth = canvas.width * 0.8;
+    // 최대 너비 (사용자 설정 기반)
+    const maxLineWidth = canvas.width * (userMaxWidth / 100);
     
-    // 자동 줄바꿈 함수 (최대 3줄까지)
+    // 자동 줄바꿈 함수 (너비에 따라 유동적)
     const wrapText = (text: string): string[] => {
       const manualLines = text.split('\n');
       const wrappedLines: string[] = [];
@@ -141,30 +146,28 @@ export default function VideoPreview({
         
         // 한 줄이 최대 너비를 넘으면 자동 줄바꿈
         if (lineWidth > maxLineWidth) {
+          // 필요한 줄 수 계산
+          const numLines = Math.ceil(lineWidth / maxLineWidth);
           const charCount = line.length;
+          const charsPerLine = Math.ceil(charCount / numLines);
           
-          // 3줄로 나눠야 할 정도로 긴 경우
-          if (lineWidth > maxLineWidth * 1.8) {
-            const part1End = Math.ceil(charCount / 3);
-            const part2End = Math.ceil((charCount * 2) / 3);
+          let startIdx = 0;
+          for (let i = 0; i < numLines && startIdx < charCount; i++) {
+            let endIdx = Math.min(startIdx + charsPerLine, charCount);
             
-            wrappedLines.push(line.slice(0, part1End).trim());
-            wrappedLines.push(line.slice(part1End, part2End).trim());
-            wrappedLines.push(line.slice(part2End).trim());
-          } else {
-            // 2줄로 나누기
-            const midPoint = Math.ceil(charCount / 2);
-            let breakPoint = midPoint;
-            
-            for (let i = midPoint; i >= midPoint - 5 && i > 0; i--) {
-              if (line[i] === ' ' || line[i] === ',' || line[i] === '.' || line[i] === '!' || line[i] === '?') {
-                breakPoint = i + 1;
-                break;
+            // 단어 중간에서 끊기지 않도록 조정 (마지막 줄 제외)
+            if (i < numLines - 1 && endIdx < charCount) {
+              for (let j = endIdx; j > startIdx + charsPerLine - 5 && j > startIdx; j--) {
+                if (line[j] === ' ' || line[j] === ',' || line[j] === '.' || line[j] === '!' || line[j] === '?') {
+                  endIdx = j + 1;
+                  break;
+                }
               }
             }
             
-            wrappedLines.push(line.slice(0, breakPoint).trim());
-            wrappedLines.push(line.slice(breakPoint).trim());
+            const segment = line.slice(startIdx, endIdx).trim();
+            if (segment) wrappedLines.push(segment);
+            startIdx = endIdx;
           }
         } else {
           wrappedLines.push(line);
@@ -178,10 +181,10 @@ export default function VideoPreview({
     const lineHeight = scaledFontSize * 1.3;
     
     // 가장 긴 줄의 너비 계산
-    let maxWidth = 0;
+    let actualMaxWidth = 0;
     for (const line of lines) {
       const metrics = ctx.measureText(line);
-      if (metrics.width > maxWidth) maxWidth = metrics.width;
+      if (metrics.width > actualMaxWidth) actualMaxWidth = metrics.width;
     }
     
     const x = (style.x / 100) * canvas.width;
@@ -196,14 +199,16 @@ export default function VideoPreview({
     return {
       x,
       y,
-      width: maxWidth + padX * 2,
+      width: actualMaxWidth + padX * 2,
       height: totalHeight + padY * 2,
       padX,
       padY,
       fontSize: scaledFontSize,
-      textWidth: maxWidth,
+      textWidth: actualMaxWidth,
       rotation: (style as any).rotation || 0,
       scale: scale,
+      maxWidth: userMaxWidth,
+      maxLineWidth,
       lines,
       lineHeight,
     };
@@ -246,8 +251,9 @@ export default function VideoPreview({
         ? style.backgroundColor 
         : typeStyle.bg;
       
-      const boxX = box.x - box.textWidth / 2 - box.padX;
-      const boxY = box.y - box.fontSize / 2 - box.padY;
+      // 박스 위치: 너비/높이 기준 중앙 정렬
+      const boxX = box.x - box.width / 2;
+      const boxY = box.y - box.height / 2;
       const borderRadius = box.fontSize * 0.3;
 
       // 배경 그리기
@@ -302,8 +308,9 @@ export default function VideoPreview({
     box: ReturnType<typeof getSubtitleBox>,
     typeStyle: typeof TYPE_STYLES.ENTERTAINMENT
   ) => {
-    const boxX = box.x - box.textWidth / 2 - box.padX;
-    const boxY = box.y - box.fontSize / 2 - box.padY;
+    // 박스 위치: 너비/높이 기준 중앙 정렬
+    const boxX = box.x - box.width / 2;
+    const boxY = box.y - box.height / 2;
     const handleSize = Math.max(16, box.fontSize * 0.3);
     
     ctx.save();
@@ -369,6 +376,39 @@ export default function VideoPreview({
     ctx.textBaseline = 'middle';
     ctx.fillText('↻', rotateHandleX, rotateHandleY);
 
+    // 좌우 핸들 (너비 조절 - 줄바꿈 제어)
+    const leftHandleX = boxX - 10;
+    const rightHandleX = boxX + box.width + 10;
+    const sideHandleY = boxY + box.height / 2;
+    const sideHandleWidth = handleSize * 0.6;
+    const sideHandleHeight = handleSize * 1.5;
+    
+    // 왼쪽 핸들 (가로 막대)
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(leftHandleX - sideHandleWidth, sideHandleY - sideHandleHeight/2, sideHandleWidth, sideHandleHeight);
+    ctx.fillStyle = '#FF9500'; // 오렌지색 (너비 조절 표시)
+    ctx.fillRect(leftHandleX - sideHandleWidth + 2, sideHandleY - sideHandleHeight/2 + 2, sideHandleWidth - 4, sideHandleHeight - 4);
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(leftHandleX - sideHandleWidth, sideHandleY - sideHandleHeight/2, sideHandleWidth, sideHandleHeight);
+    
+    // 오른쪽 핸들 (가로 막대)
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(rightHandleX, sideHandleY - sideHandleHeight/2, sideHandleWidth, sideHandleHeight);
+    ctx.fillStyle = '#FF9500';
+    ctx.fillRect(rightHandleX + 2, sideHandleY - sideHandleHeight/2 + 2, sideHandleWidth - 4, sideHandleHeight - 4);
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(rightHandleX, sideHandleY - sideHandleHeight/2, sideHandleWidth, sideHandleHeight);
+    
+    // 화살표 아이콘 (↔)
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = `${handleSize * 0.5}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('◀', leftHandleX - sideHandleWidth/2, sideHandleY);
+    ctx.fillText('▶', rightHandleX + sideHandleWidth/2, sideHandleY);
+
     // 삭제 핸들 (오른쪽 상단)
     const deleteHandleX = boxX + box.width + 10;
     const deleteHandleY = boxY - 40;
@@ -411,8 +451,9 @@ export default function VideoPreview({
       const subtitle = activeSubtitles.find(s => s.id === selectedSubtitleId);
       if (subtitle) {
         const box = getSubtitleBox(subtitle, canvas, ctx);
-        const boxX = box.x - box.textWidth / 2 - box.padX;
-        const boxY = box.y - box.fontSize / 2 - box.padY;
+        // 박스 위치: 너비/높이 기준 중앙 정렬
+        const boxX = box.x - box.width / 2;
+        const boxY = box.y - box.height / 2;
         const handleSize = Math.max(16, box.fontSize * 0.3);
 
         // 회전 핸들 체크
@@ -442,6 +483,25 @@ export default function VideoPreview({
           }
         }
 
+        // 좌우 핸들 체크 (너비 조절)
+        const sideHandleY = boxY + box.height / 2;
+        const sideHandleWidth = handleSize * 0.6;
+        const sideHandleHeight = handleSize * 1.5;
+        
+        // 왼쪽 핸들
+        const leftHandleX = boxX - 10;
+        if (clickX >= leftHandleX - sideHandleWidth - 5 && clickX <= leftHandleX + 5 &&
+            clickY >= sideHandleY - sideHandleHeight/2 - 5 && clickY <= sideHandleY + sideHandleHeight/2 + 5) {
+          return { mode: 'resize-left', subtitleId: selectedSubtitleId };
+        }
+        
+        // 오른쪽 핸들
+        const rightHandleX = boxX + box.width + 10;
+        if (clickX >= rightHandleX - 5 && clickX <= rightHandleX + sideHandleWidth + 5 &&
+            clickY >= sideHandleY - sideHandleHeight/2 - 5 && clickY <= sideHandleY + sideHandleHeight/2 + 5) {
+          return { mode: 'resize-right', subtitleId: selectedSubtitleId };
+        }
+
         // 박스 내부 클릭 (이동)
         if (clickX >= boxX - 10 && clickX <= boxX + box.width + 10 &&
             clickY >= boxY - 10 && clickY <= boxY + box.height + 10) {
@@ -453,8 +513,9 @@ export default function VideoPreview({
     // 다른 자막 클릭 체크
     for (const subtitle of activeSubtitles) {
       const box = getSubtitleBox(subtitle, canvas, ctx);
-      const boxX = box.x - box.textWidth / 2 - box.padX;
-      const boxY = box.y - box.fontSize / 2 - box.padY;
+      // 박스 위치: 너비/높이 기준 중앙 정렬
+      const boxX = box.x - box.width / 2;
+      const boxY = box.y - box.height / 2;
 
       if (clickX >= boxX && clickX <= boxX + box.width &&
           clickY >= boxY && clickY <= boxY + box.height) {
@@ -494,9 +555,22 @@ export default function VideoPreview({
       if (subtitle) {
         const style = getSubtitleStyle(subtitle, globalStyle);
         setInitialSubtitlePos({ x: style.x, y: style.y });
+        setInitialMaxWidth((style as any).maxWidth || 80);
       }
     } else {
+      // 빈 공간 클릭 시 - 선택 해제하고 재생/일시정지 토글
       onSelectSubtitle?.(null);
+      const video = videoRef.current;
+      if (video) {
+        if (video.paused) {
+          video.play().catch(() => {
+            video.muted = true;
+            video.play();
+          });
+        } else {
+          video.pause();
+        }
+      }
     }
   }, [getDragModeAtPosition, onSelectSubtitle, onSubtitleDelete, subtitles, globalStyle]);
 
@@ -520,7 +594,16 @@ export default function VideoPreview({
         Math.max(5, Math.min(95, newX)), 
         Math.max(5, Math.min(95, newY))
       );
-    } else if (dragMode.startsWith('resize')) {
+    } else if (dragMode === 'resize-left' || dragMode === 'resize-right') {
+      // 좌우 너비 조절 (줄바꿈 제어)
+      // 오른쪽으로 드래그하면 너비 증가 (1줄로), 왼쪽으로 드래그하면 너비 감소 (2-3줄로)
+      const widthDelta = (deltaX / canvas.width) * 100;
+      const direction = dragMode === 'resize-right' ? 1 : -1;
+      const newMaxWidth = initialMaxWidth + widthDelta * direction;
+      // 최소 20%, 최대 100%
+      onSubtitleWidthChange?.(selectedSubtitleId, Math.max(20, Math.min(100, newMaxWidth)));
+    } else if (dragMode.startsWith('resize-t') || dragMode.startsWith('resize-b')) {
+      // 코너 핸들: 전체 크기(scale) 조절
       const distance = Math.hypot(deltaX, deltaY);
       const scale = 1 + (distance / 200) * (deltaX > 0 || deltaY > 0 ? 1 : -1);
       // 최소 0.2배, 최대 무제한
@@ -536,7 +619,7 @@ export default function VideoPreview({
         }
       }
     }
-  }, [dragMode, dragStartPos, initialSubtitlePos, selectedSubtitleId, onSubtitleDrag, onSubtitleResize, onSubtitleRotate, subtitles, getSubtitleBox]);
+  }, [dragMode, dragStartPos, initialSubtitlePos, initialMaxWidth, selectedSubtitleId, onSubtitleDrag, onSubtitleResize, onSubtitleRotate, onSubtitleWidthChange, subtitles, getSubtitleBox]);
 
   const handleMouseUp = useCallback(() => {
     setDragMode('none');
@@ -560,8 +643,9 @@ export default function VideoPreview({
     // 클릭된 자막 찾기
     for (const subtitle of activeSubtitles) {
       const box = getSubtitleBox(subtitle, canvas, ctx);
-      const boxX = box.x - box.textWidth / 2 - box.padX;
-      const boxY = box.y - box.fontSize / 2 - box.padY;
+      // 박스 위치: 너비/높이 기준 중앙 정렬
+      const boxX = box.x - box.width / 2;
+      const boxY = box.y - box.height / 2;
 
       if (clickX >= boxX && clickX <= boxX + box.width &&
           clickY >= boxY && clickY <= boxY + box.height) {
@@ -570,7 +654,6 @@ export default function VideoPreview({
         setEditText(subtitle.text);
         
         // 화면상 위치 계산 (container 기준)
-        const containerRect = container.getBoundingClientRect();
         const displayX = (boxX / canvas.width) * rect.width;
         const displayY = (boxY / canvas.height) * rect.height;
         const displayWidth = (box.width / canvas.width) * rect.width;
@@ -710,6 +793,7 @@ export default function VideoPreview({
   const getCursorStyle = () => {
     if (dragMode === 'move') return 'grabbing';
     if (dragMode === 'rotate') return 'crosshair';
+    if (dragMode === 'resize-left' || dragMode === 'resize-right') return 'ew-resize';
     if (dragMode.startsWith('resize')) return `${dragMode.replace('resize-', '')}-resize`;
     return 'default';
   };
@@ -725,6 +809,33 @@ export default function VideoPreview({
     );
   }
 
+  // 터치 이벤트 핸들러 (모바일)
+  const handleTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const syntheticEvent = {
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      preventDefault: () => e.preventDefault(),
+      stopPropagation: () => e.stopPropagation(),
+    } as React.MouseEvent<HTMLCanvasElement>;
+    handleMouseDown(syntheticEvent);
+  }, [handleMouseDown]);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const syntheticEvent = {
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+    } as React.MouseEvent<HTMLCanvasElement>;
+    handleMouseMove(syntheticEvent);
+  }, [handleMouseMove]);
+
+  const handleTouchEnd = useCallback(() => {
+    handleMouseUp();
+  }, [handleMouseUp]);
+
   return (
     <div className="flex flex-col gap-3">
       {/* 비디오 + 캔버스 */}
@@ -733,6 +844,8 @@ export default function VideoPreview({
         className="relative w-full rounded-xl overflow-hidden"
         style={{ 
           aspectRatio: `${videoSize.width}/${videoSize.height}`,
+          minHeight: '200px',
+          maxHeight: '70vh',
           background: '#000', 
           border: '2px solid hsl(220 15% 20%)',
           boxShadow: '0 10px 40px rgba(0,0,0,0.5)'
@@ -744,18 +857,22 @@ export default function VideoPreview({
           className="absolute inset-0 w-full h-full"
           style={{ objectFit: 'contain' }}
           playsInline
+          webkit-playsinline="true"
           preload="auto"
           muted={false}
         />
         <canvas
           ref={canvasRef}
           className="absolute inset-0 w-full h-full"
-          style={{ cursor: getCursorStyle(), objectFit: 'contain' }}
+          style={{ cursor: getCursorStyle(), objectFit: 'contain', touchAction: 'none' }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
           onDoubleClick={handleDoubleClick}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
         />
         
         {/* 텍스트 편집 오버레이 */}
@@ -819,45 +936,19 @@ export default function VideoPreview({
           </div>
         )}
         
-        {/* 재생/일시정지 오버레이 - 화면 클릭으로 토글 */}
-        {videoReady && !editingSubtitleId && (
+        {/* 재생/일시정지 버튼 - 중앙에 작게 배치 (자막 클릭 방해 안 함) */}
+        {videoReady && !editingSubtitleId && !isPlaying && !selectedSubtitleId && (
           <button
             onClick={togglePlay}
-            className={`absolute inset-0 flex items-center justify-center transition-all group ${
-              isPlaying ? 'bg-transparent hover:bg-black/10' : 'bg-black/20 hover:bg-black/30'
-            }`}
+            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-16 h-16 rounded-full flex items-center justify-center transition-all hover:scale-110"
             style={{ 
-              // 자막 선택 중이거나 드래그 중일 때는 클릭 무시 (캔버스로 전달)
-              pointerEvents: (selectedSubtitleId || dragMode !== 'none') ? 'none' : 'auto' 
+              background: 'rgba(0, 200, 255, 0.9)',
+              boxShadow: '0 4px 30px rgba(0, 200, 255, 0.5)'
             }}
           >
-            {/* 정지 상태일 때만 플레이 버튼 표시 */}
-            {!isPlaying && (
-              <div 
-                className="w-20 h-20 rounded-full flex items-center justify-center transition-all group-hover:scale-110"
-                style={{ 
-                  background: 'rgba(0, 200, 255, 0.9)',
-                  boxShadow: '0 4px 30px rgba(0, 200, 255, 0.5)'
-                }}
-              >
-                <svg className="w-10 h-10 ml-1" fill="#000" viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              </div>
-            )}
-            {/* 재생 중에 호버하면 일시정지 아이콘 표시 */}
-            {isPlaying && (
-              <div 
-                className="w-16 h-16 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
-                style={{ 
-                  background: 'rgba(0, 0, 0, 0.6)',
-                }}
-              >
-                <svg className="w-8 h-8" fill="#FFF" viewBox="0 0 24 24">
-                  <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
-                </svg>
-              </div>
-            )}
+            <svg className="w-8 h-8 ml-1" fill="#000" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
           </button>
         )}
       </div>
