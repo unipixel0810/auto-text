@@ -53,14 +53,14 @@ export interface STTOptions {
 // 상수
 // ============================================
 
-/** Vercel 서버리스 함수 제한 (4MB로 안전하게) */
-const VERCEL_MAX_SIZE = 4 * 1024 * 1024;
+/** Vercel 서버리스 함수 제한 (3MB로 안전하게 - 모바일 호환) */
+const VERCEL_MAX_SIZE = 3 * 1024 * 1024;
 
 /** Whisper API 최대 파일 크기 (25MB) */
 const WHISPER_MAX_SIZE = 25 * 1024 * 1024;
 
-/** 오디오 청크 길이 (2분 - 작게 유지) */
-const CHUNK_DURATION_SECONDS = 120;
+/** 오디오 청크 길이 (30초 - 모바일 호환) */
+const CHUNK_DURATION_SECONDS = 30;
 
 /** 지원하는 최대 파일 크기 (400GB) */
 const MAX_FILE_SIZE = 400 * 1024 * 1024 * 1024;
