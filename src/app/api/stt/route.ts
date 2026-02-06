@@ -1,16 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+// Vercel 서버리스 함수 설정
+export const maxDuration = 60;
+
 export async function POST(request: NextRequest) {
   try {
+    console.log('[STT] 요청 받음');
+    
     const formData = await request.formData();
     const audioFile = formData.get('file') as Blob;
     
     if (!audioFile) {
+      console.log('[STT] 오디오 파일 없음');
       return NextResponse.json({ error: '오디오 파일이 필요합니다' }, { status: 400 });
+    }
+
+    console.log('[STT] 파일 크기:', audioFile.size, 'bytes');
+    
+    // 파일 크기 체크 (25MB 제한)
+    if (audioFile.size > 25 * 1024 * 1024) {
+      return NextResponse.json({ 
+        error: `파일이 너무 큽니다 (${(audioFile.size / 1024 / 1024).toFixed(1)}MB). 25MB 이하로 업로드해주세요.` 
+      }, { status: 400 });
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
+      console.log('[STT] API 키 없음');
       return NextResponse.json({ error: 'OpenAI API 키가 설정되지 않았습니다' }, { status: 500 });
     }
 

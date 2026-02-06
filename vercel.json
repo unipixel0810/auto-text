@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "src/app/api/stt/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/gemini/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}
