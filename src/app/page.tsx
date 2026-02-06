@@ -395,7 +395,7 @@ export default function Home() {
                     endTime: t.endTime,
                     text: t.editedText || t.originalText,
                     type: 'normal' as const,
-                    style: subtitleStyle,
+                    style: globalStyle,
                   }));
                   downloadSRT(transcriptSubtitles, '대본.srt');
                 }}
