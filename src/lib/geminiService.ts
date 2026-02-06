@@ -58,100 +58,48 @@ ${transcriptText}
 // Gemini API 호출
 // ============================================
 
-// 사용 가능한 Gemini 모델 목록 (순서대로 시도)
-const GEMINI_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.5-pro',
-  'gemini-3-flash-preview',
-];
-
 export async function generateSubtitlesWithGemini(
   request: GeminiSubtitleRequest,
-  apiKey: string,
+  apiKey?: string, // 더 이상 필요 없음 (서버에서 관리)
   onProgress?: (percent: number, message: string) => void
 ): Promise<GeneratedSubtitle[]> {
   console.log('[Gemini] 자막 생성 요청, 대본 수:', request.transcripts.length);
   
-  onProgress?.(10, 'Gemini API 연결 중...');
-  
-  const prompt = buildPrompt(request.transcripts);
-  let lastError: Error | null = null;
+  onProgress?.(10, 'AI 서버 연결 중...');
 
-  // 여러 모델 시도
-  for (const model of GEMINI_MODELS) {
-    console.log('[Gemini] 모델 시도:', model);
-    onProgress?.(30, `${model} 모델로 생성 중...`);
-    
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ 
-              parts: [{ text: prompt }] 
-            }],
-            generationConfig: { 
-              temperature: 0.7, 
-              maxOutputTokens: 8192,
-            },
-          }),
-        }
-      );
+  try {
+    // 서버 API Route 호출 (API 키는 서버에서 관리)
+    const response = await fetch('/api/gemini', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcripts: request.transcripts }),
+    });
 
-      console.log('[Gemini]', model, '응답 상태:', response.status);
+    onProgress?.(50, '자막 생성 중...');
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        console.error('[Gemini]', model, '에러:', errorData);
-        lastError = new Error(errorData.error?.message || `${model} 실패`);
-        continue; // 다음 모델 시도
-      }
-
-      onProgress?.(70, '응답 처리 중...');
-      
-      const data = await response.json();
-      const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-      if (!content) {
-        console.warn('[Gemini]', model, '응답이 비어있음');
-        lastError = new Error('Gemini 응답이 비어있습니다');
-        continue;
-      }
-
-      console.log('[Gemini] 성공! 응답:', content.slice(0, 300));
-      onProgress?.(90, 'JSON 파싱 중...');
-
-      // JSON 추출 (```json ... ``` 형식도 처리)
-      let jsonStr = content;
-      const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (codeBlockMatch) {
-        jsonStr = codeBlockMatch[1];
-      }
-      
-      const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) {
-        console.error('[Gemini] JSON을 찾을 수 없음:', content.slice(0, 200));
-        lastError = new Error('JSON 형식을 찾을 수 없습니다');
-        continue;
-      }
-
-      const subtitles: GeneratedSubtitle[] = JSON.parse(jsonMatch[0]);
-      console.log('[Gemini] 생성된 자막 수:', subtitles.length);
-      onProgress?.(100, '자막 생성 완료!');
-      
-      return subtitles;
-
-    } catch (error) {
-      console.error('[Gemini]', model, '오류:', error);
-      lastError = error instanceof Error ? error : new Error(String(error));
-      // 다음 모델 시도
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: response.statusText }));
+      throw new Error(error.error || '자막 생성 실패');
     }
-  }
 
-  // 모든 모델 실패
-  throw lastError || new Error('모든 Gemini 모델 호출 실패');
+    onProgress?.(90, '응답 처리 중...');
+
+    const data = await response.json();
+    
+    if (data.error) {
+      throw new Error(data.error);
+    }
+
+    const subtitles: GeneratedSubtitle[] = data.subtitles;
+    console.log('[Gemini] 생성된 자막 수:', subtitles.length, '모델:', data.model);
+    onProgress?.(100, '자막 생성 완료!');
+    
+    return subtitles;
+
+  } catch (error) {
+    console.error('[Gemini] 오류:', error);
+    throw error instanceof Error ? error : new Error(String(error));
+  }
 }
 
 // ============================================

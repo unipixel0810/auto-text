@@ -39,8 +39,8 @@ export interface WhisperResponse {
 }
 
 export interface STTOptions {
-  /** OpenAI API 키 */
-  apiKey: string;
+  /** OpenAI API 키 (서버 API Route 사용 시 불필요) */
+  apiKey?: string;
   /** 언어 코드 (기본값: 'ko') */
   language?: string;
   /** 응답 형식 */
@@ -273,7 +273,7 @@ function splitBySize(blob: Blob, maxSize: number): { blob: Blob; startTime: numb
 // ============================================
 
 /**
- * OpenAI Whisper API로 음성 인식 수행
+ * OpenAI Whisper API로 음성 인식 수행 (서버 API Route 사용)
  */
 export async function transcribeWithWhisper(
   audioFile: File | Blob,
@@ -287,33 +287,16 @@ export async function transcribeWithWhisper(
   } else {
     formData.append('file', audioFile, 'audio.wav');
   }
-  
-  // 모델 설정
-  formData.append('model', 'whisper-1');
-  
-  // 언어 설정
-  if (options.language) {
-    formData.append('language', options.language);
-  }
-  
-  // 응답 형식 (단어별 타임스탬프를 위해 verbose_json 필요)
-  formData.append('response_format', 'verbose_json');
-  
-  // 타임스탬프 세분화
-  formData.append('timestamp_granularities[]', 'word');
-  formData.append('timestamp_granularities[]', 'segment');
 
-  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+  // 서버 API Route 호출 (API 키는 서버에서 관리)
+  const response = await fetch('/api/stt', {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${options.apiKey}`,
-    },
     body: formData,
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: { message: response.statusText } }));
-    throw new Error(`Whisper API 오류: ${error.error?.message || response.statusText}`);
+    const error = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(`음성 인식 오류: ${error.error || response.statusText}`);
   }
 
   return response.json();

@@ -43,11 +43,6 @@ export default function Home() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
 
-  // API 키 (localStorage에서 로드)
-  const [openaiKey, setOpenaiKey] = useState('');
-  const [geminiKey, setGeminiKey] = useState('');
-  const [showApiModal, setShowApiModal] = useState(false);
-
   // 콘텐츠
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
   const [subtitles, setSubtitles] = useState<SubtitleItem[]>([]);
@@ -64,42 +59,21 @@ export default function Home() {
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const [renderProgress, setRenderProgress] = useState<RenderProgress | null>(null);
 
-  // API 키 로드
-  useEffect(() => {
-    const savedOpenai = localStorage.getItem('openai_api_key');
-    const savedGemini = localStorage.getItem('gemini_api_key');
-    if (savedOpenai) setOpenaiKey(savedOpenai);
-    if (savedGemini) setGeminiKey(savedGemini);
-  }, []);
-
-  // API 키 저장
-  const saveApiKeys = useCallback(() => {
-    localStorage.setItem('openai_api_key', openaiKey);
-    localStorage.setItem('gemini_api_key', geminiKey);
-    setShowApiModal(false);
-  }, [openaiKey, geminiKey]);
-
   // 비디오 업로드 처리
   const handleVideoUpload = useCallback(async (file: File) => {
     setVideoFile(file);
     setVideoUrl(URL.createObjectURL(file));
     setError(null);
+    await startTranscription(file);
+  }, []);
 
-    if (!openaiKey) {
-      setShowApiModal(true);
-      return;
-    }
-
-    await startTranscription(file, openaiKey);
-  }, [openaiKey]);
-
-  // STT 시작
-  const startTranscription = async (file: File, apiKey: string) => {
+  // STT 시작 (API 키는 서버에서 관리)
+  const startTranscription = async (file: File) => {
     setStage('transcribing');
     setProgress({ stage: 'transcribing', percent: 0, message: '음성 인식 준비 중...' });
 
     try {
-      const result = await transcribeVideo(file, apiKey, (msg) => {
+      const result = await transcribeVideo(file, '', (msg) => {
         setProgress({ stage: 'transcribing', percent: 50, message: msg });
       });
 
@@ -126,14 +100,6 @@ export default function Home() {
     }
   };
 
-  // API 키 입력 후 시작
-  const handleApiKeySave = useCallback(() => {
-    saveApiKeys();
-    if (videoFile && openaiKey) {
-      startTranscription(videoFile, openaiKey);
-    }
-  }, [videoFile, openaiKey, saveApiKeys]);
-
   // 대본 수정
   const handleTranscriptUpdate = useCallback((id: string, editedText: string) => {
     setTranscripts(prev => prev.map(t => 
@@ -144,17 +110,10 @@ export default function Home() {
   // AI 자막 생성 진행률
   const [aiProgress, setAiProgress] = useState({ percent: 0, message: '' });
 
-  // AI 자막 생성 (Gemini API 사용)
+  // AI 자막 생성 (서버 API 사용)
   const generateAISubtitles = useCallback(async () => {
-    console.log('=== AI 자막 생성 시작 (Gemini) ===');
-    console.log('Gemini Key:', geminiKey ? `${geminiKey.slice(0, 10)}...` : 'EMPTY');
+    console.log('=== AI 자막 생성 시작 ===');
     console.log('Transcripts count:', transcripts.length);
-    
-    if (!geminiKey) {
-      console.log('Gemini 키 없음 - 모달 표시');
-      setShowApiModal(true);
-      return;
-    }
 
     if (transcripts.length === 0) {
       setError('대본이 없습니다. 먼저 영상을 업로드하세요.');
@@ -166,10 +125,10 @@ export default function Home() {
     setError(null);
 
     try {
-      console.log('Gemini API 호출 중...');
+      console.log('AI API 호출 중...');
       const generated = await generateSubtitlesWithGemini(
         { transcripts },
-        geminiKey,  // Gemini 키 사용
+        undefined,  // API 키는 서버에서 관리
         (percent, message) => setAiProgress({ percent, message })
       );
       console.log('생성된 자막 수:', generated.length);
@@ -178,13 +137,13 @@ export default function Home() {
       setActivePanel('subtitle');
       playCompletionSound(`AI 자막 ${items.length}개 생성 완료!`);
     } catch (err) {
-      console.error('Gemini 오류:', err);
+      console.error('AI 오류:', err);
       setError(err instanceof Error ? err.message : 'AI 자막 생성 실패');
     } finally {
       setIsGeneratingAI(false);
       setAiProgress({ percent: 0, message: '' });
     }
-  }, [transcripts, geminiKey]);
+  }, [transcripts]);
 
   // 자막 업데이트
   const handleSubtitleUpdate = useCallback((id: string, updates: Partial<SubtitleItem>) => {
@@ -338,78 +297,6 @@ export default function Home() {
 
   return (
     <div className="min-h-screen" style={{ background: 'hsl(220 20% 4%)' }}>
-      {/* API 키 모달 */}
-      {showApiModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
-          <div 
-            className="w-full max-w-md p-6 rounded-2xl"
-            style={{ 
-              background: 'linear-gradient(135deg, hsl(220 18% 10%) 0%, hsl(220 18% 6%) 100%)',
-              border: '1px solid hsl(220 15% 18%)'
-            }}
-          >
-            <h2 className="text-xl font-bold mb-4" style={{ color: 'hsl(210 40% 98%)' }}>
-              API 키 설정
-            </h2>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="text-sm block mb-2" style={{ color: 'hsl(215 20% 65%)' }}>
-                  OpenAI API Key (음성인식)
-                </label>
-                <input
-                  type="password"
-                  value={openaiKey}
-                  onChange={(e) => setOpenaiKey(e.target.value)}
-                  placeholder="sk-..."
-                  className="w-full p-3 rounded-lg outline-none"
-                  style={{ 
-                    background: 'hsl(220 20% 6%)', 
-                    border: '1px solid hsl(220 15% 20%)',
-                    color: 'hsl(210 40% 98%)'
-                  }}
-                />
-              </div>
-              
-              <div>
-                <label className="text-sm block mb-2" style={{ color: 'hsl(215 20% 65%)' }}>
-                  Gemini API Key (AI 자막)
-                </label>
-                <input
-                  type="password"
-                  value={geminiKey}
-                  onChange={(e) => setGeminiKey(e.target.value)}
-                  placeholder="AIza..."
-                  className="w-full p-3 rounded-lg outline-none"
-                  style={{ 
-                    background: 'hsl(220 20% 6%)', 
-                    border: '1px solid hsl(220 15% 20%)',
-                    color: 'hsl(210 40% 98%)'
-                  }}
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => setShowApiModal(false)}
-                className="flex-1 py-3 rounded-lg font-medium"
-                style={{ background: 'hsl(220 15% 15%)', color: 'hsl(215 20% 65%)' }}
-              >
-                취소
-              </button>
-              <button
-                onClick={handleApiKeySave}
-                className="flex-1 py-3 rounded-lg font-medium"
-                style={{ background: 'hsl(185 100% 50%)', color: 'hsl(220 20% 4%)' }}
-              >
-                저장
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* 렌더링 모달 */}
       {renderProgress && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
@@ -681,7 +568,7 @@ export default function Home() {
               <div className="p-4" style={{ borderTop: '1px solid hsl(220 15% 18%)' }}>
                 <button
                   onClick={generateAISubtitles}
-                  disabled={isGeneratingAI || transcripts.length === 0 || !geminiKey}
+                  disabled={isGeneratingAI || transcripts.length === 0}
                   className="w-full py-3 rounded-xl font-medium transition-all disabled:opacity-50"
                   style={{ 
                     background: 'linear-gradient(135deg, hsl(330 80% 60%), hsl(280 70% 50%))',
