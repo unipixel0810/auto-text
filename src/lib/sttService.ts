@@ -62,8 +62,8 @@ const WHISPER_MAX_SIZE = 25 * 1024 * 1024;
 /** 오디오 청크 길이 (2분 - 작게 유지) */
 const CHUNK_DURATION_SECONDS = 120;
 
-/** 지원하는 최대 파일 크기 (2GB) */
-const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
+/** 지원하는 최대 파일 크기 (400GB) */
+const MAX_FILE_SIZE = 400 * 1024 * 1024 * 1024;
 
 // ============================================
 // 오디오 추출 (Web Audio API)
