@@ -386,8 +386,32 @@ export default function Home() {
 
           {stage === 'editing' && (
             <>
+              {/* 대본 SRT 다운로드 */}
               <button
-                onClick={() => downloadSRT(subtitles)}
+                onClick={() => {
+                  const transcriptSubtitles = transcripts.map(t => ({
+                    id: t.id,
+                    startTime: t.startTime,
+                    endTime: t.endTime,
+                    text: t.editedText || t.originalText,
+                    type: 'normal' as const,
+                    style: subtitleStyle,
+                  }));
+                  downloadSRT(transcriptSubtitles, '대본.srt');
+                }}
+                disabled={transcripts.length === 0}
+                className="px-4 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-50"
+                style={{ 
+                  background: 'hsl(220 15% 15%)', 
+                  color: 'hsl(210 40% 98%)',
+                  border: '1px solid hsl(220 15% 25%)'
+                }}
+              >
+                대본 SRT
+              </button>
+              {/* AI 자막 SRT 다운로드 */}
+              <button
+                onClick={() => downloadSRT(subtitles, 'AI자막.srt')}
                 disabled={subtitles.length === 0}
                 className="px-4 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-50"
                 style={{ 
@@ -396,7 +420,7 @@ export default function Home() {
                   border: '1px solid hsl(220 15% 25%)'
                 }}
               >
-                SRT 다운로드
+                AI자막 SRT
               </button>
               <button
                 onClick={handleRenderVideo}
