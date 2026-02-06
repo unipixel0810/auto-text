@@ -53,11 +53,14 @@ export interface STTOptions {
 // 상수
 // ============================================
 
+/** Vercel 서버리스 함수 제한 (4MB로 안전하게) */
+const VERCEL_MAX_SIZE = 4 * 1024 * 1024;
+
 /** Whisper API 최대 파일 크기 (25MB) */
 const WHISPER_MAX_SIZE = 25 * 1024 * 1024;
 
-/** 오디오 청크 길이 (10분) */
-const CHUNK_DURATION_SECONDS = 600;
+/** 오디오 청크 길이 (2분 - 작게 유지) */
+const CHUNK_DURATION_SECONDS = 120;
 
 /** 지원하는 최대 파일 크기 (2GB) */
 const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
@@ -193,8 +196,8 @@ export async function splitAudioIntoChunks(
   chunkDurationSeconds: number = CHUNK_DURATION_SECONDS,
   onProgress?: (status: string) => void
 ): Promise<{ blob: Blob; startTime: number }[]> {
-  // 파일이 25MB 이하면 분할 불필요
-  if (audioBlob.size <= WHISPER_MAX_SIZE) {
+  // 파일이 4MB 이하면 분할 불필요 (Vercel 제한)
+  if (audioBlob.size <= VERCEL_MAX_SIZE) {
     return [{ blob: audioBlob, startTime: 0 }];
   }
   
