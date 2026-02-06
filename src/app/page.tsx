@@ -669,8 +669,7 @@ export default function Home() {
                       color: s.type === 'ENTERTAINMENT' ? 'hsl(330 80% 60%)' :
                         s.type === 'SITUATION' ? 'hsl(210 80% 60%)' :
                         s.type === 'EXPLANATION' ? 'hsl(150 80% 50%)' :
-                        'hsl(45 80% 60%)',
-                      ringColor: 'hsl(185 100% 50%)'
+                        'hsl(45 80% 60%)'
                     }}
                   >
                     {s.text.slice(0, 15)}{s.text.length > 15 ? '...' : ''}
