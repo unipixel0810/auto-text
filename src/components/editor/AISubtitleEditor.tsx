@@ -110,8 +110,7 @@ export default function AISubtitleEditor({
                 style={{
                   background: isSelected ? 'hsl(185 100% 50% / 0.15)' : 
                     isActive ? `${config.color}15` : 'hsl(220 18% 8%)',
-                  border: `1px solid ${isSelected ? 'hsl(185 100% 50%)' : 'transparent'}`,
-                  ringColor: isActive ? `${config.color}50` : 'transparent',
+                  border: `1px solid ${isSelected ? 'hsl(185 100% 50%)' : 'transparent'}`
                 }}
                 onClick={() => {
                   if (!isEditing) {

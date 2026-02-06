@@ -52,8 +52,7 @@ export default function TranscriptEditor({
               className={`p-3 rounded-lg transition-all duration-200 cursor-pointer hover:bg-opacity-80 ${isActive ? 'ring-1' : ''}`}
               style={{
                 background: isActive ? 'hsl(185 100% 50% / 0.1)' : 'hsl(220 18% 8%)',
-                borderColor: isActive ? 'hsl(185 100% 50%)' : 'transparent',
-                ringColor: isActive ? 'hsl(185 100% 50% / 0.5)' : 'transparent',
+                borderColor: isActive ? 'hsl(185 100% 50%)' : 'transparent'
               }}
               onClick={() => onSeek(item.startTime)}
             >
