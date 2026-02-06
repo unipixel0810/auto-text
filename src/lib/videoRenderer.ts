@@ -226,6 +226,7 @@ export async function renderVideoWithSubtitles(
       video.muted = true;
 
       video.onloadedmetadata = async () => {
+        if (!video) return;
         const width = video.videoWidth;
         const height = video.videoHeight;
         const duration = video.duration;
