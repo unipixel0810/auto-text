@@ -65,3 +65,22 @@ CREATE POLICY "Allow anonymous inserts events" ON analytics_events FOR INSERT TO
 CREATE POLICY "Allow anonymous reads events" ON analytics_events FOR SELECT TO anon USING (true);
 CREATE POLICY "Allow anonymous inserts pv" ON page_views FOR INSERT TO anon WITH CHECK (true);
 CREATE POLICY "Allow anonymous reads pv" ON page_views FOR SELECT TO anon USING (true);
+
+-- A/B Test Events Table
+CREATE TABLE IF NOT EXISTS ab_events (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  experiment_name TEXT NOT NULL,
+  variant TEXT NOT NULL CHECK (variant IN ('A', 'B')),
+  event_type TEXT NOT NULL CHECK (event_type IN ('impression', 'click')),
+  session_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes for AB Testing
+CREATE INDEX IF NOT EXISTS idx_ab_experiment ON ab_events (experiment_name);
+CREATE INDEX IF NOT EXISTS idx_ab_session ON ab_events (session_id);
+
+-- RLS for AB Testing
+ALTER TABLE ab_events ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow anonymous inserts ab" ON ab_events FOR INSERT TO anon WITH CHECK (true);
+CREATE POLICY "Allow anonymous reads ab" ON ab_events FOR SELECT TO anon USING (true);

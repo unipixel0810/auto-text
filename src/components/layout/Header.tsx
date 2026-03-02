@@ -99,6 +99,16 @@ export default function Header({ activeFileName, activeFileDuration, onRename }:
 
       {/* Right: Actions */}
       <div className="flex items-center space-x-3">
+        <a
+          href="/admin/analytics"
+          className="p-1.5 hover:bg-white/10 rounded-lg text-white hover:text-[#00D4D4] transition-all duration-200 relative group active:scale-90 hover:scale-110"
+          title="방문자 분석 대시보드"
+        >
+          <span className="material-icons text-xl">analytics</span>
+          <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 text-xs text-white bg-gray-800 rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap transition-opacity z-50">
+            방문자 분석 대시보드
+          </span>
+        </a>
         <button 
           className="p-1.5 hover:bg-white/10 rounded-lg text-white hover:text-primary transition-all duration-200 relative group active:scale-90 hover:scale-110"
           title="Settings"
@@ -112,6 +122,8 @@ export default function Header({ activeFileName, activeFileDuration, onRename }:
           className="bg-primary hover:bg-blue-500 text-white px-4 py-1.5 rounded-lg transition-all duration-200 shadow-lg shadow-primary/30 flex items-center gap-1.5 active:scale-95 hover:scale-105"
           title="Export"
           onClick={() => alert('내보내기 설정을 열어주세요.')}
+          data-ab-test="header-export-btn"
+          data-ab-variant-b="내보내기 시작"
         >
           <span className="material-icons text-lg">file_download</span>
           <span className="text-xs font-semibold">Export</span>

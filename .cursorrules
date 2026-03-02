@@ -1,0 +1,42 @@
+# Cursor AI Model Configuration Guide
+
+## 사용 가능한 AI 모델 설정 방법
+
+### 1. DeepSeek API 설정
+- Cursor Settings (Cmd+,) → Features → AI
+- Model Provider에서 "Custom" 선택
+- API Key: DeepSeek API 키 입력
+- Base URL: https://api.deepseek.com
+
+### 2. Claude (Anthropic) 설정
+- Cursor Settings → Features → AI
+- Model Provider에서 "Anthropic" 선택
+- API Key: ANTHROPIC_API_KEY 환경 변수에 설정하거나 Cursor Settings에서 직접 입력
+
+### 3. Gemini 설정
+- Cursor Settings → Features → AI
+- Google AI Studio에서 API 키 발급: https://aistudio.google.com/app/apikey
+- API Key를 Cursor Settings에 입력하거나 환경 변수에 설정
+
+## 환경 변수 설정 (.env.local)
+현재 프로젝트의 .env.local 파일에 다음을 추가하세요:
+
+```
+# DeepSeek API
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+
+# Anthropic Claude API
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+
+# Google Gemini API (이미 있음)
+GEMINI_API_KEY=your_gemini_api_key_here
+```
+
+## Cursor에서 모델 전환 방법
+- Cursor 상단의 모델 선택 드롭다운에서 원하는 모델 선택
+- 또는 Cmd+L (Chat) 또는 Cmd+K (Composer) 사용 시 모델 선택 가능
+
+## 참고사항
+- 각 모델의 API 키는 해당 서비스에서 발급받아야 합니다
+- Gemini는 구독 중이시므로 Google AI Studio에서 API 키를 발급받으세요
+- DeepSeek과 Claude는 각각의 공식 사이트에서 API 키를 발급받으세요

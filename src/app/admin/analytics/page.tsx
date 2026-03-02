@@ -26,6 +26,13 @@ const PREVIEW_HEIGHT = 750;
 
 const COLORS = ['#00D4D4', '#3B82F6', '#8B5CF6', '#10B981', '#F59E0B', '#EF4444'];
 
+const formatDuration = (seconds: number) => {
+  if (seconds < 60) return `${seconds}초`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}분 ${s}초`;
+};
+
 export default function AnalyticsDashboard() {
   const [mounted, setMounted] = useState(false);
   const [activeFilter, setActiveFilter] = useState<DateFilter>(DATE_FILTERS[1]);
@@ -35,6 +42,7 @@ export default function AnalyticsDashboard() {
   const [stats, setStats] = useState<VisitorStats | null>(null);
   const [charts, setCharts] = useState<any>(null);
   const [loading, setLoading] = useState(false);
+  const [dataLoading, setDataLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'summary' | 'heatmap' | 'scroll' | 'rage' | 'dead'>('summary');
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -66,6 +74,7 @@ export default function AnalyticsDashboard() {
       setStats(data);
     } catch (err) {
       console.error('Failed to fetch stats:', err);
+      setStats(null);
     }
   }, [activeFilter.days]);
 
@@ -76,6 +85,7 @@ export default function AnalyticsDashboard() {
       setCharts(data);
     } catch (err) {
       console.error('Failed to fetch charts:', err);
+      setCharts(null);
     }
   }, [activeFilter.days]);
 
@@ -98,18 +108,28 @@ export default function AnalyticsDashboard() {
     }
   }, [selectedPage, activeFilter.days]);
 
-  const fetchData = useCallback(() => {
-    fetchPages();
-    fetchStats();
-    fetchCharts();
-    fetchEvents();
-  }, [fetchPages, fetchStats, fetchCharts, fetchEvents]);
+  const fetchData = useCallback(async () => {
+    if (!mounted) return;
+    setDataLoading(true);
+    try {
+      await Promise.all([
+        fetchPages(),
+        fetchStats(),
+        fetchCharts(),
+        selectedPage ? fetchEvents() : Promise.resolve(),
+      ]);
+    } finally {
+      setDataLoading(false);
+    }
+  }, [mounted, selectedPage, fetchPages, fetchStats, fetchCharts, fetchEvents]);
 
   useEffect(() => {
+    if (!mounted) return;
     fetchData();
-  }, [activeFilter, selectedPage]);
+  }, [mounted, activeFilter.days, selectedPage]);
 
   useEffect(() => {
+    if (!mounted) return;
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
   }, [fetchData]);
@@ -171,8 +191,9 @@ export default function AnalyticsDashboard() {
     return Array.from(map.values()).sort((a, b) => b.count - a.count).slice(0, 30);
   })();
 
-  const drawHeatmapRef = useRef<() => void>();
-  drawHeatmapRef.current = () => {
+  const drawHeatmapRef = useRef<(() => void) | null>(null);
+  
+  const drawHeatmap = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -244,7 +265,11 @@ export default function AnalyticsDashboard() {
     }
 
     ctx.putImageData(imageData, 0, 0);
-  };
+  }, [clickEvents]);
+  
+  useEffect(() => {
+    drawHeatmapRef.current = drawHeatmap;
+  }, [drawHeatmap]);
 
   useEffect(() => {
     if (activeTab !== 'heatmap') return;
@@ -252,18 +277,11 @@ export default function AnalyticsDashboard() {
       drawHeatmapRef.current?.();
     }, 100);
     return () => clearTimeout(timer);
-  }, [activeTab, events, iframeLoaded, heatmapOpacity]);
+  }, [activeTab, drawHeatmap, events, iframeLoaded, heatmapOpacity]);
 
-  const iframeUrl = selectedPage
+  const iframeUrl = selectedPage && typeof window !== 'undefined'
     ? `${window.location.origin}${selectedPage}?_analytics_preview=1`
     : '';
-
-  const formatDuration = (seconds: number) => {
-    if (seconds < 60) return `${seconds}초`;
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}분 ${s}초`;
-  };
 
   if (!mounted) return null;
 
@@ -278,6 +296,14 @@ export default function AnalyticsDashboard() {
           <span className="material-symbols-outlined text-[#00D4D4] text-[24px]">analytics</span>
           <h1 className="text-lg font-semibold">방문자 분석 대시보드</h1>
         </div>
+        <div className="flex items-center gap-3">
+          <a
+            href="/admin/experiments"
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs bg-[#1a1a1a] border border-[#222] text-gray-400 hover:text-[#00D4D4] hover:border-[#00D4D4]/30 transition-all"
+          >
+            <span className="material-symbols-outlined text-[16px]">science</span>
+            A/B 테스트
+          </a>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 bg-[#1a1a1a] rounded-lg p-1">
             {DATE_FILTERS.map(f => (
@@ -390,209 +416,233 @@ export default function AnalyticsDashboard() {
             {/* KPI Summary Cards (Visible on Summary Tab) */}
             {activeTab === 'summary' && (
               <div className="space-y-8 animate-fade-in">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                  <KPICard
-                    title="오늘 방문자 수"
-                    value={stats?.today_visitors.toLocaleString() || '0'}
-                    change={stats?.visitor_change_pct}
-                    icon="group"
-                    color="#00D4D4"
-                  />
-                  <KPICard
-                    title="평균 체류시간"
-                    value={formatDuration(stats?.avg_duration || 0)}
-                    subtitle="세션당 평균"
-                    icon="timer"
-                    color="#3B82F6"
-                  />
-                  <KPICard
-                    title="이탈률"
-                    value={`${stats?.bounce_rate || 0}%`}
-                    subtitle="단일 페이지 방문"
-                    icon="exit_to_app"
-                    color="#F87171"
-                  />
-                  <KPICard
-                    title="가장 많이 본 페이지"
-                    value={stats?.top_page === '/' ? 'Home' : stats?.top_page || '/'}
-                    subtitle="조회수 기준 TOP"
-                    icon="trending_up"
-                    color="#10B981"
-                  />
-                </div>
-
-                {/* Charts Grid */}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                  {/* Visitor Trend Area Chart */}
-                  <ChartCard title="일별 방문자 추이 (최근 30일)" icon="show_chart">
-                    <ResponsiveContainer width="100%" height={300}>
-                      <AreaChart data={charts?.visitorsTrend || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                        <defs>
-                          <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#00D4D4" stopOpacity={0.3} />
-                            <stop offset="95%" stopColor="#00D4D4" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
-                        <XAxis
-                          dataKey="name"
-                          axisLine={false}
-                          tickLine={false}
-                          tick={{ fill: '#666', fontSize: 10 }}
-                          minTickGap={30}
-                        />
-                        <YAxis axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 10 }} />
-                        <RechartsTooltip content={<CustomTooltip />} />
-                        <Area
-                          type="monotone"
-                          dataKey="value"
-                          stroke="#00D4D4"
-                          strokeWidth={2}
-                          fillOpacity={1}
-                          fill="url(#colorValue)"
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </ChartCard>
-
-                  {/* Hourly Distribution Bar Chart */}
-                  <ChartCard title="시간대별 방문 분포" icon="schedule">
-                    <ResponsiveContainer width="100%" height={300}>
-                      <BarChart data={charts?.hourly || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
-                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 9 }} />
-                        <YAxis axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 10 }} />
-                        <RechartsTooltip content={<CustomTooltip />} />
-                        <Bar dataKey="value" fill="#3B82F6" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </ChartCard>
-
-                  {/* Referral Pie Chart */}
-                  <ChartCard title="유입 경로 비율" icon="source" className="h-full">
-                    <div className="flex flex-col md:flex-row items-center h-full">
-                      <ResponsiveContainer width="100%" height={260}>
-                        <PieChart>
-                          <Pie
-                            data={charts?.referralSources || []}
-                            innerRadius={60}
-                            outerRadius={80}
-                            paddingAngle={5}
-                            dataKey="value"
-                            nameKey="name"
-                          >
-                            {(charts?.referralSources || []).map((entry: any, index: number) => (
-                              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                            ))}
-                          </Pie>
-                          <RechartsTooltip content={<CustomTooltip />} />
-                          <Legend
-                            verticalAlign="middle"
-                            align="right"
-                            layout="vertical"
-                            wrapperStyle={{ paddingLeft: '20px', fontSize: '11px' }}
-                          />
-                        </PieChart>
-                      </ResponsiveContainer>
+                {dataLoading ? (
+                  <div className="flex items-center justify-center py-20">
+                    <div className="text-center">
+                      <span className="material-symbols-outlined text-[48px] text-[#00D4D4] animate-spin mb-4">refresh</span>
+                      <p className="text-sm text-gray-400 font-medium">데이터를 불러오는 중...</p>
                     </div>
-                  </ChartCard>
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                      <KPICard
+                        title="오늘 방문자 수"
+                        value={stats?.today_visitors ? stats.today_visitors.toLocaleString() : '0'}
+                        change={stats?.visitor_change_pct}
+                        icon="group"
+                        color="#00D4D4"
+                      />
+                      <KPICard
+                        title="평균 체류시간"
+                        value={formatDuration(stats?.avg_duration || 0)}
+                        subtitle="세션당 평균"
+                        icon="timer"
+                        color="#3B82F6"
+                      />
+                      <KPICard
+                        title="이탈률"
+                        value={`${stats?.bounce_rate || 0}%`}
+                        subtitle="단일 페이지 방문"
+                        icon="exit_to_app"
+                        color="#F87171"
+                      />
+                      <KPICard
+                        title="가장 많이 본 페이지"
+                        value={stats?.top_page === '/' ? 'Home' : (stats?.top_page || '/')}
+                        subtitle="조회수 기준 TOP"
+                        icon="trending_up"
+                        color="#10B981"
+                      />
+                    </div>
 
-                  {/* Device Donut Chart */}
-                  <ChartCard title="디바이스별 분류" icon="devices">
-                    <ResponsiveContainer width="100%" height={260}>
-                      <PieChart>
-                        <Pie
-                          data={charts?.deviceDist || []}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={60}
-                          outerRadius={80}
-                          fill="#8884d8"
-                          paddingAngle={8}
-                          dataKey="value"
-                        >
-                          {charts?.deviceDist?.map((entry: any, index: number) => (
-                            <Cell key={`cell-${index}`} fill={entry.name === 'desktop' ? '#3B82F6' : entry.name === 'mobile' ? '#00D4D4' : '#8B5CF6'} />
-                          ))}
-                        </Pie>
-                        <RechartsTooltip content={<CustomTooltip />} />
-                        <Legend verticalAlign="bottom" wrapperStyle={{ paddingTop: '20px', fontSize: '11px' }} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </ChartCard>
+                    {/* Charts Grid */}
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        {/* Visitor Trend Area Chart */}
+                        <ChartCard title="일별 방문자 추이 (최근 30일)" icon="show_chart">
+                          <ResponsiveContainer width="100%" height={300}>
+                            <AreaChart data={charts?.visitorsTrend || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                              <defs>
+                                <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="#00D4D4" stopOpacity={0.3} />
+                                  <stop offset="95%" stopColor="#00D4D4" stopOpacity={0} />
+                                </linearGradient>
+                              </defs>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
+                              <XAxis
+                                dataKey="name"
+                                axisLine={false}
+                                tickLine={false}
+                                tick={{ fill: '#666', fontSize: 10 }}
+                                minTickGap={30}
+                              />
+                              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 10 }} />
+                              <RechartsTooltip content={<CustomTooltip />} />
+                              <Area
+                                type="monotone"
+                                dataKey="value"
+                                stroke="#00D4D4"
+                                strokeWidth={2}
+                                fillOpacity={1}
+                                fill="url(#colorValue)"
+                              />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        </ChartCard>
 
-                  {/* Top Pages Horizontal Bar Chart */}
-                  <ChartCard title="페이지별 평균 체류시간 TOP 5" icon="timer" className="xl:col-span-2">
-                    <ResponsiveContainer width="100%" height={250}>
-                      <BarChart
-                        layout="vertical"
-                        data={charts?.topDurations || []}
-                        margin={{ top: 5, right: 30, left: 100, bottom: 5 }}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" stroke="#222" horizontal={false} />
-                        <XAxis type="number" hide />
-                        <YAxis
-                          type="category"
-                          dataKey="name"
-                          axisLine={false}
-                          tickLine={false}
-                          tick={{ fill: '#aaa', fontSize: 11 }}
-                          width={140}
-                        />
-                        <RechartsTooltip content={<CustomTooltip unit="초" />} />
-                        <Bar dataKey="value" fill="#10B981" radius={[0, 4, 4, 0]} barSize={20} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </ChartCard>
-                </div>
+                        {/* Hourly Distribution Bar Chart */}
+                        <ChartCard title="시간대별 방문 분포" icon="schedule">
+                          <ResponsiveContainer width="100%" height={300}>
+                            <BarChart data={charts?.hourly || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
+                              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 9 }} />
+                              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 10 }} />
+                              <RechartsTooltip content={<CustomTooltip />} />
+                              <Bar dataKey="value" fill="#3B82F6" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </ChartCard>
+
+                        {/* Referral Pie Chart */}
+                        <ChartCard title="유입 경로 비율" icon="source" className="h-full">
+                          <div className="flex flex-col md:flex-row items-center h-full">
+                            <ResponsiveContainer width="100%" height={260}>
+                              <PieChart>
+                                <Pie
+                                  data={charts?.referralSources || []}
+                                  innerRadius={60}
+                                  outerRadius={80}
+                                  paddingAngle={5}
+                                  dataKey="value"
+                                  nameKey="name"
+                                >
+                                  {(charts?.referralSources || []).map((entry: any, index: number) => (
+                                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                  ))}
+                                </Pie>
+                                <RechartsTooltip content={<CustomTooltip />} />
+                                <Legend
+                                  verticalAlign="middle"
+                                  align="right"
+                                  layout="vertical"
+                                  wrapperStyle={{ paddingLeft: '20px', fontSize: '11px' }}
+                                />
+                              </PieChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </ChartCard>
+
+                        {/* Device Donut Chart */}
+                        <ChartCard title="디바이스별 분류" icon="devices">
+                          <ResponsiveContainer width="100%" height={260}>
+                            <PieChart>
+                              <Pie
+                                data={charts?.deviceDist || []}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={60}
+                                outerRadius={80}
+                                fill="#8884d8"
+                                paddingAngle={8}
+                                dataKey="value"
+                              >
+                                {charts?.deviceDist?.map((entry: any, index: number) => (
+                                  <Cell key={`cell-${index}`} fill={entry.name === 'desktop' ? '#3B82F6' : entry.name === 'mobile' ? '#00D4D4' : '#8B5CF6'} />
+                                ))}
+                              </Pie>
+                              <RechartsTooltip content={<CustomTooltip />} />
+                              <Legend verticalAlign="bottom" wrapperStyle={{ paddingTop: '20px', fontSize: '11px' }} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </ChartCard>
+
+                        {/* Top Pages Horizontal Bar Chart */}
+                        <ChartCard title="페이지별 평균 체류시간 TOP 5" icon="timer" className="xl:col-span-2">
+                          <ResponsiveContainer width="100%" height={250}>
+                            <BarChart
+                              layout="vertical"
+                              data={charts?.topDurations || []}
+                              margin={{ top: 5, right: 30, left: 100, bottom: 5 }}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" stroke="#222" horizontal={false} />
+                              <XAxis type="number" hide />
+                              <YAxis
+                                type="category"
+                                dataKey="name"
+                                axisLine={false}
+                                tickLine={false}
+                                tick={{ fill: '#aaa', fontSize: 11 }}
+                                width={140}
+                              />
+                              <RechartsTooltip content={<CustomTooltip unit="초" />} />
+                              <Bar dataKey="value" fill="#10B981" radius={[0, 4, 4, 0]} barSize={20} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </ChartCard>
+                      </div>
+                  </>
+                )}
               </div>
             )}
 
             {/* Heatmap Tab */}
             {activeTab === 'heatmap' && (
               <div className="space-y-4">
-                <div
-                  className="relative bg-[#111] rounded-2xl border border-[#222] overflow-hidden shadow-2xl mx-auto"
-                  style={{ width: '100%', maxWidth: PREVIEW_WIDTH, aspectRatio: `${PREVIEW_WIDTH}/${PREVIEW_HEIGHT}` }}
-                >
-                  {selectedPage && (
-                    <iframe
-                      ref={iframeRef}
-                      src={iframeUrl}
-                      className="absolute inset-0 w-full h-full border-0 pointer-events-none opacity-90"
-                      onLoad={() => setIframeLoaded(true)}
-                      sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-                      title="Page Preview"
+                {!selectedPage ? (
+                  <div className="flex items-center justify-center py-20">
+                    <div className="text-center">
+                      <span className="material-symbols-outlined text-[48px] text-gray-500 mb-4 opacity-50">filter_list</span>
+                      <p className="text-sm text-gray-400 font-medium">왼쪽 사이드바에서 분석할 페이지를 선택해주세요</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className="relative bg-[#111] rounded-2xl border border-[#222] overflow-hidden shadow-2xl mx-auto"
+                    style={{ width: '100%', maxWidth: PREVIEW_WIDTH, aspectRatio: `${PREVIEW_WIDTH}/${PREVIEW_HEIGHT}` }}
+                  >
+                    {iframeUrl && (
+                      <iframe
+                        ref={iframeRef}
+                        src={iframeUrl}
+                        className="absolute inset-0 w-full h-full border-0 pointer-events-none opacity-90"
+                        onLoad={() => setIframeLoaded(true)}
+                        sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+                        title="Page Preview"
+                        onError={() => {
+                          console.error('[Analytics] Iframe load error');
+                          setIframeLoaded(false);
+                        }}
+                      />
+                    )}
+                    <canvas
+                      ref={canvasRef}
+                      width={PREVIEW_WIDTH}
+                      height={PREVIEW_HEIGHT}
+                      className="absolute inset-0 w-full h-full"
+                      style={{
+                        opacity: heatmapOpacity / 100,
+                        mixBlendMode: 'screen',
+                        pointerEvents: 'none',
+                      }}
                     />
-                  )}
-                  <canvas
-                    ref={canvasRef}
-                    width={PREVIEW_WIDTH}
-                    height={PREVIEW_HEIGHT}
-                    className="absolute inset-0 w-full h-full"
-                    style={{
-                      opacity: heatmapOpacity / 100,
-                      mixBlendMode: 'screen',
-                      pointerEvents: 'none',
-                    }}
-                  />
-                  {!iframeLoaded && selectedPage && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-[#111]">
-                      <div className="text-center">
-                        <span className="material-symbols-outlined text-[40px] text-[#00D4D4] animate-spin mb-3">refresh</span>
-                        <p className="text-sm text-gray-500 font-medium">실시간 페이지 뷰 렌더링 중...</p>
+                    {!iframeLoaded && iframeUrl && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-[#111]">
+                        <div className="text-center">
+                          <span className="material-symbols-outlined text-[40px] text-[#00D4D4] animate-spin mb-3">refresh</span>
+                          <p className="text-sm text-gray-500 font-medium">실시간 페이지 뷰 렌더링 중...</p>
+                        </div>
                       </div>
-                    </div>
-                  )}
-                  {clickEvents.length === 0 && iframeLoaded && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="bg-black/80 backdrop-blur-md rounded-2xl px-8 py-5 text-center border border-[#333]">
-                        <span className="material-symbols-outlined text-[32px] text-gray-500 mb-2">touch_app</span>
-                        <p className="text-sm text-gray-400 font-medium">수집된 클릭 데이터가 없습니다</p>
+                    )}
+                    {clickEvents.length === 0 && iframeLoaded && (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="bg-black/80 backdrop-blur-md rounded-2xl px-8 py-5 text-center border border-[#333]">
+                          <span className="material-symbols-outlined text-[32px] text-gray-500 mb-2">touch_app</span>
+                          <p className="text-sm text-gray-400 font-medium">수집된 클릭 데이터가 없습니다</p>
+                        </div>
                       </div>
-                    </div>
-                  )}
-                </div>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-center justify-between px-2">
                   <div className="flex items-center gap-6">
                     <LegendItem color="rgb(0,0,200)" label="낮음" />

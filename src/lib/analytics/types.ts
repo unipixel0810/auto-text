@@ -95,6 +95,12 @@ export interface ChartDataPoint {
   [key: string]: any;
 }
 
+export interface DateFilter {
+  label: string;
+  value: string;
+  days: number;
+}
+
 export const DATE_FILTERS: DateFilter[] = [
   { label: '오늘', value: 'today', days: 0 },
   { label: '7일', value: '7d', days: 7 },

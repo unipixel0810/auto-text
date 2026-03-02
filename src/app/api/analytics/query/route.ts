@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { queryEvents, getDistinctPages, getStats, getChartData } from '@/lib/analytics/store';
+import { queryEvents, getDistinctPages, getStats, getChartData, getABExperimentResults } from '@/lib/analytics/store';
 
 export async function GET(req: NextRequest) {
   try {
@@ -22,6 +22,11 @@ export async function GET(req: NextRequest) {
       const days = searchParams.get('days');
       const charts = await getChartData(days ? parseInt(days) : 30);
       return NextResponse.json(charts);
+    }
+
+    if (action === 'ab-results') {
+      const results = await getABExperimentResults();
+      return NextResponse.json({ experiments: results });
     }
 
     const page_url = searchParams.get('page_url') || undefined;
