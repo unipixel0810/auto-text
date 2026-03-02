@@ -36,16 +36,199 @@ export function generateSRT(subtitles: SubtitleItem[]): string {
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
   };
 
-  const typeLabels: Record<SubtitleType, string> = {
-    ENTERTAINMENT: '예능',
-    SITUATION: '상황',
-    EXPLANATION: '설명',
-    TRANSCRIPT: '말',
+  return subtitles.map((s, i) => 
+    `${i + 1}\n${formatTime(s.startTime)} --> ${formatTime(s.endTime)}\n${s.text}\n`
+  ).join('\n');
+}
+
+// ============================================
+// ASS 파일 생성 (캡컷 호환)
+// ============================================
+
+// RGB HEX를 ASS BGR 형식으로 변환 (&H00BBGGRR)
+function rgbToAssBgr(hex: string): string {
+  const cleanHex = (hex || '#FFFFFF').replace('#', '').toUpperCase();
+  
+  // 유효성 검사
+  if (cleanHex.length !== 6 || !/^[0-9A-F]{6}$/.test(cleanHex)) {
+    console.warn('Invalid hex color:', hex, '- using white');
+    return '&H00FFFFFF';
+  }
+  
+  const r = cleanHex.substring(0, 2);
+  const g = cleanHex.substring(2, 4);
+  const b = cleanHex.substring(4, 6);
+  
+  return `&H00${b}${g}${r}`;
+}
+
+// 폰트 이름 매핑 (한글 → 캡컷 호환 영문)
+const FONT_NAME_MAP: Record<string, string> = {
+  // 한글 폰트 → 안전한 영문 대체
+  'PaperlogyExtraBold': 'Arial Black',
+  'Paperlogy 8 ExtraBold': 'Arial Black',
+  'PaperlogyBold': 'Arial Bold',
+  'Paperlogy 7 Bold': 'Arial Bold',
+  'TMONBlack': 'Impact',
+  'TMON몬소리 Black': 'Impact',
+  'TMONRegular': 'Arial',
+  'TMON몬소리 Regular': 'Arial',
+  'PresentationBold': 'Verdana Bold',
+  '프레젠테이션체 Bold': 'Verdana Bold',
+  'PresentationRegular': 'Verdana',
+  '프레젠테이션체 Regular': 'Verdana',
+  // 기본값
+  'default': 'Arial',
+};
+
+// 이모지 제거 함수 (선택적 사용)
+function removeEmoji(text: string): string {
+  // 이모지 및 특수 유니코드 문자 제거 (ES5 호환)
+  return text
+    .split('')
+    .filter(char => {
+      const code = char.charCodeAt(0);
+      // 기본 다국어 평면 내 일반 문자만 허용 (이모지 및 서로게이트 쌍 제외)
+      return code < 0xD800 || (code > 0xDFFF && code < 0xFE00);
+    })
+    .join('');
+}
+
+// ASS 옵션 타입
+export interface ASSOptions {
+  width?: number;       // 영상 가로 해상도
+  height?: number;      // 영상 세로 해상도
+  removeEmojis?: boolean; // 이모지 제거 여부
+  useEnglishFonts?: boolean; // 영문 폰트 사용 여부 (캡컷 호환)
+}
+
+// ASS 형식 내보내기 (캡컷 호환 버전)
+export function generateASS(
+  subtitles: SubtitleItem[], 
+  globalStyle?: SubtitleStyle,
+  options?: ASSOptions
+): string {
+  const {
+    width = 1920,  // 기본값: 16:9 가로
+    height = 1080, // 기본값: 16:9 세로
+    removeEmojis = false,
+    useEnglishFonts = true, // 캡컷 호환을 위해 기본 true
+  } = options || {};
+
+  // 타임스탬프 포맷 (검증 포함)
+  const formatTime = (seconds: number) => {
+    // 음수나 NaN 방지
+    const safeSeconds = Math.max(0, seconds || 0);
+    
+    const h = Math.floor(safeSeconds / 3600);
+    const m = Math.floor((safeSeconds % 3600) / 60);
+    const s = Math.floor(safeSeconds % 60);
+    const cs = Math.round((safeSeconds % 1) * 100);
+    
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}`;
   };
 
-  return subtitles.map((s, i) => 
-    `${i + 1}\n${formatTime(s.startTime)} --> ${formatTime(s.endTime)}\n[${typeLabels[s.type]}] ${s.text}\n`
-  ).join('\n');
+  // 폰트명 변환 (캡컷 호환)
+  const getFontName = (fontFamily?: string): string => {
+    if (!fontFamily) return 'Arial';
+    if (useEnglishFonts) {
+      return FONT_NAME_MAP[fontFamily] || FONT_NAME_MAP['default'];
+    }
+    return fontFamily;
+  };
+
+  // 각 자막별 스타일 생성
+  const styles: string[] = [];
+  const styleMap = new Map<string, string>();
+  
+  subtitles.forEach((subtitle) => {
+    const style = { ...globalStyle, ...subtitle.style };
+    
+    const fontName = getFontName(style?.fontFamily);
+    const fontSize = style?.fontSize || 50;
+    const primaryColor = rgbToAssBgr(style?.color || '#FFFFFF');
+    const outlineColor = rgbToAssBgr(style?.strokeColor || '#000000');
+    // BackColour: 완전 투명 (캡컷 호환)
+    const backColor = '&H00000000';
+    // Bold: -1 = 자동, 0 = 끔, 1 = 켬
+    const bold = (style?.fontWeight || 700) >= 700 ? -1 : 0;
+    // Outline, Shadow 값 조정 (가독성 향상)
+    const outline = Math.max(3, style?.strokeWidth || 3);
+    const shadow = 2;
+    
+    // 스타일 고유 키
+    const styleKey = `${fontName}-${fontSize}-${primaryColor}-${outlineColor}-${bold}`;
+    
+    if (!styleMap.has(styleKey)) {
+      const styleName = `Style${styleMap.size + 1}`;
+      styleMap.set(styleKey, styleName);
+      
+      // ASS 스타일 라인 (캡컷 호환 형식)
+      styles.push(
+        `Style: ${styleName},${fontName},${fontSize},${primaryColor},&H000000FF,${outlineColor},${backColor},${bold},0,0,0,100,100,0,0,1,${outline},${shadow},2,10,10,50,1`
+      );
+    }
+  });
+
+  // 스타일이 없으면 기본 스타일 추가
+  if (styles.length === 0) {
+    styles.push('Style: Default,Arial,50,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,50,1');
+  }
+
+  // ASS 헤더 (캡컷 호환)
+  const header = `[Script Info]
+Title: Subtitles
+ScriptType: v4.00+
+PlayResX: ${width}
+PlayResY: ${height}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+${styles.join('\n')}
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+
+  // 이벤트(자막) 생성
+  const events = subtitles.map((subtitle) => {
+    const style = { ...globalStyle, ...subtitle.style };
+    
+    const fontName = getFontName(style?.fontFamily);
+    const fontSize = style?.fontSize || 50;
+    const primaryColor = rgbToAssBgr(style?.color || '#FFFFFF');
+    const outlineColor = rgbToAssBgr(style?.strokeColor || '#000000');
+    const bold = (style?.fontWeight || 700) >= 700 ? -1 : 0;
+    
+    const styleKey = `${fontName}-${fontSize}-${primaryColor}-${outlineColor}-${bold}`;
+    const styleName = styleMap.get(styleKey) || 'Default';
+    
+    // 텍스트 처리 (이모지 제거 옵션)
+    let text = subtitle.text.replace(/\n/g, '\\N');
+    if (removeEmojis) {
+      text = removeEmoji(text);
+    }
+    
+    return `Dialogue: 0,${formatTime(subtitle.startTime)},${formatTime(subtitle.endTime)},${styleName},,0,0,0,,${text}`;
+  }).join('\n');
+
+  return header + events;
+}
+
+// ASS 다운로드 (UTF-8 BOM 포함 - 캡컷 호환)
+export function downloadASS(
+  subtitles: SubtitleItem[], 
+  filename: string = 'subtitles.ass', 
+  style?: SubtitleStyle,
+  options?: ASSOptions
+): void {
+  const content = generateASS(subtitles, style, options);
+  // UTF-8 BOM (\ufeff) 추가하여 캡컷에서 인식 가능하도록 함
+  const blob = new Blob(['\ufeff' + content], { type: 'text/plain;charset=utf-8' });
+  downloadBlob(blob, filename);
 }
 
 // ============================================
@@ -342,4 +525,195 @@ export function downloadSRT(subtitles: SubtitleItem[], filename: string = 'subti
   const content = generateSRT(subtitles);
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
   downloadBlob(blob, filename);
+}
+
+// TXT 다운로드 (시간 없이 텍스트만)
+export function downloadTXT(subtitles: SubtitleItem[], filename: string = 'subtitles.txt'): void {
+  const content = subtitles.map(s => s.text).join('\n');
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  downloadBlob(blob, filename);
+}
+
+// ============================================
+// FFmpeg.wasm 기반 고품질 렌더링
+// ============================================
+
+let ffmpegInstance: any = null;
+let ffmpegLoaded = false;
+
+// FFmpeg 인스턴스 로드
+async function getFFmpeg(): Promise<any> {
+  if (ffmpegInstance && ffmpegLoaded) {
+    return ffmpegInstance;
+  }
+
+  const { FFmpeg } = await import('@ffmpeg/ffmpeg');
+  const { toBlobURL } = await import('@ffmpeg/util');
+
+  ffmpegInstance = new FFmpeg();
+
+  // FFmpeg core 로드
+  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+  await ffmpegInstance.load({
+    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+  });
+
+  ffmpegLoaded = true;
+  return ffmpegInstance;
+}
+
+// FFmpeg로 비디오에 자막 번인
+export async function renderVideoWithFFmpeg(
+  options: RenderOptions,
+  onProgress?: (p: RenderProgress) => void,
+  abortSignal?: AbortSignal
+): Promise<Blob> {
+  const { videoFile, subtitles, globalStyle, outputFormat = 'mp4', quality = 'high' } = options;
+
+  try {
+    // 1단계: FFmpeg 로드
+    onProgress?.({ stage: 'loading', progress: 0, message: 'FFmpeg 로딩 중...' });
+    
+    const ffmpeg = await getFFmpeg();
+    
+    if (abortSignal?.aborted) {
+      throw new Error('렌더링이 취소되었습니다.');
+    }
+
+    // 진행률 콜백 설정
+    ffmpeg.on('progress', ({ progress }: { progress: number }) => {
+      const percent = Math.round(progress * 100);
+      onProgress?.({ stage: 'rendering', progress: percent, message: `렌더링 중... ${percent}%` });
+    });
+
+    // 2단계: 파일 준비
+    onProgress?.({ stage: 'preparing', progress: 10, message: '파일 준비 중...' });
+    
+    const { fetchFile } = await import('@ffmpeg/util');
+    
+    // 비디오 해상도 가져오기
+    const videoElement = document.createElement('video');
+    const videoUrl = URL.createObjectURL(videoFile);
+    videoElement.src = videoUrl;
+    
+    const { width, height } = await new Promise<{ width: number; height: number }>((resolve) => {
+      videoElement.onloadedmetadata = () => {
+        resolve({ width: videoElement.videoWidth, height: videoElement.videoHeight });
+        URL.revokeObjectURL(videoUrl);
+      };
+      videoElement.onerror = () => {
+        resolve({ width: 1920, height: 1080 }); // 기본값
+        URL.revokeObjectURL(videoUrl);
+      };
+    });
+    
+    // 비디오 파일 쓰기
+    const videoData = await fetchFile(videoFile);
+    await ffmpeg.writeFile('input.mp4', videoData);
+
+    // ASS 자막 파일 생성 및 쓰기 (영상 해상도 반영)
+    const assContent = generateASS(subtitles, globalStyle, {
+      width,
+      height,
+      useEnglishFonts: false, // FFmpeg는 시스템 폰트 사용 가능
+      removeEmojis: false,
+    });
+    const encoder = new TextEncoder();
+    await ffmpeg.writeFile('subtitle.ass', encoder.encode(assContent));
+
+    if (abortSignal?.aborted) {
+      throw new Error('렌더링이 취소되었습니다.');
+    }
+
+    // 3단계: FFmpeg 실행
+    onProgress?.({ stage: 'rendering', progress: 20, message: '렌더링 시작...' });
+
+    // 품질 설정
+    const qualityPresets: Record<string, string[]> = {
+      low: ['-crf', '28', '-preset', 'ultrafast'],
+      medium: ['-crf', '23', '-preset', 'fast'],
+      high: ['-crf', '18', '-preset', 'medium'],
+    };
+
+    const qualityArgs = qualityPresets[quality] || qualityPresets.medium;
+    const outputFile = `output.${outputFormat}`;
+
+    // FFmpeg 명령어 실행
+    // ass 필터로 자막 번인
+    await ffmpeg.exec([
+      '-i', 'input.mp4',
+      '-vf', 'ass=subtitle.ass',
+      '-c:a', 'copy',
+      '-c:v', 'libx264',
+      ...qualityArgs,
+      '-y',
+      outputFile
+    ]);
+
+    if (abortSignal?.aborted) {
+      throw new Error('렌더링이 취소되었습니다.');
+    }
+
+    // 4단계: 결과 읽기
+    onProgress?.({ stage: 'encoding', progress: 90, message: '파일 생성 중...' });
+    
+    const data = await ffmpeg.readFile(outputFile);
+    
+    // 임시 파일 정리
+    await ffmpeg.deleteFile('input.mp4');
+    await ffmpeg.deleteFile('subtitle.ass');
+    await ffmpeg.deleteFile(outputFile);
+
+    onProgress?.({ stage: 'complete', progress: 100, message: '렌더링 완료!' });
+
+    const mimeType = outputFormat === 'mp4' ? 'video/mp4' : 'video/webm';
+    return new Blob([data], { type: mimeType });
+
+  } catch (error) {
+    if ((error as Error).message.includes('취소')) {
+      throw error;
+    }
+    console.error('FFmpeg 렌더링 실패:', error);
+    throw new Error('FFmpeg 렌더링에 실패했습니다. Canvas 렌더링을 사용해주세요.');
+  }
+}
+
+// FFmpeg 사용 가능 여부 확인
+export async function checkFFmpegSupport(): Promise<boolean> {
+  try {
+    // SharedArrayBuffer 지원 확인 (FFmpeg.wasm 필수)
+    if (typeof SharedArrayBuffer === 'undefined') {
+      console.warn('SharedArrayBuffer가 지원되지 않습니다. FFmpeg를 사용할 수 없습니다.');
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 통합 렌더링 함수 (FFmpeg 우선, 실패시 Canvas 폴백)
+export async function renderVideo(
+  options: RenderOptions,
+  onProgress?: (p: RenderProgress) => void,
+  abortSignal?: AbortSignal,
+  preferFFmpeg: boolean = true
+): Promise<Blob> {
+  // FFmpeg 우선 시도
+  if (preferFFmpeg) {
+    const ffmpegSupported = await checkFFmpegSupport();
+    
+    if (ffmpegSupported) {
+      try {
+        return await renderVideoWithFFmpeg(options, onProgress, abortSignal);
+      } catch (error) {
+        console.warn('FFmpeg 렌더링 실패, Canvas 폴백:', error);
+        onProgress?.({ stage: 'preparing', progress: 0, message: 'Canvas 렌더링으로 전환...' });
+      }
+    }
+  }
+
+  // Canvas + MediaRecorder 폴백
+  return renderVideoWithSubtitles(options, onProgress, abortSignal);
 }

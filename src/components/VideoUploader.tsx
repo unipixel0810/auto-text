@@ -8,8 +8,10 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 
 type UploadStatus = 'idle' | 'uploading' | 'ready' | 'error';
 
+export type FileType = 'video' | 'audio' | 'srt' | 'txt';
+
 interface VideoUploaderProps {
-  onFileReady?: (file: File) => void;
+  onFileReady?: (file: File, fileType: FileType) => void;
   onError?: (error: string) => void;
   maxSizeMB?: number;
   acceptedFormats?: string[];
@@ -51,26 +53,52 @@ export default function VideoUploader({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // 파일 유형 감지
+  const detectFileType = useCallback((file: File): FileType | null => {
+    // SRT 파일
+    if (file.name.match(/\.srt$/i)) {
+      return 'srt';
+    }
+    // TXT 파일
+    if (file.name.match(/\.txt$/i) || file.type === 'text/plain') {
+      return 'txt';
+    }
+    // 오디오 파일
+    if (file.type.startsWith('audio/') || file.name.match(/\.(mp3|wav|m4a|aac|ogg|flac)$/i)) {
+      return 'audio';
+    }
+    // 비디오 파일
+    if (file.type.startsWith('video/') || file.name.match(/\.(mp4|webm|mov|avi|mkv|m4v)$/i)) {
+      return 'video';
+    }
+    return null;
+  }, []);
+
   // 파일 유효성 검사
   const validateFile = useCallback(
-    (file: File): string | null => {
-      // 비디오 파일인지 확인 (더 관대한 검사)
-      const isVideo = file.type.startsWith('video/') || 
-        file.name.match(/\.(mp4|webm|mov|avi|mkv|m4v)$/i);
+    (file: File): { error: string | null; fileType: FileType | null } => {
+      const fileType = detectFileType(file);
       
-      if (!isVideo) {
-        return `지원하지 않는 파일 형식입니다. (${file.type || '알 수 없는 형식'})`;
+      if (!fileType) {
+        return { 
+          error: `지원하지 않는 파일 형식입니다. (${file.type || '알 수 없는 형식'})`,
+          fileType: null 
+        };
       }
+      
       // 무제한이 아닐 때만 크기 검사
       if (maxSizeMB !== Infinity) {
         const maxSizeBytes = maxSizeMB * 1024 * 1024;
         if (file.size > maxSizeBytes) {
-          return `파일 크기가 너무 큽니다. (최대 ${maxSizeMB >= 1024 ? (maxSizeMB / 1024).toFixed(0) + 'GB' : maxSizeMB + 'MB'})`;
+          return { 
+            error: `파일 크기가 너무 큽니다. (최대 ${maxSizeMB >= 1024 ? (maxSizeMB / 1024).toFixed(0) + 'GB' : maxSizeMB + 'MB'})`,
+            fileType 
+          };
         }
       }
-      return null;
+      return { error: null, fileType };
     },
-    [maxSizeMB]
+    [maxSizeMB, detectFileType]
   );
 
   // 파일 처리
@@ -78,20 +106,20 @@ export default function VideoUploader({
     (file: File) => {
       console.log('Processing file:', file.name, file.type, file.size);
       setErrorMessage('');
-      const validationError = validateFile(file);
-      if (validationError) {
-        console.log('Validation error:', validationError);
-        setErrorMessage(validationError);
+      const { error, fileType } = validateFile(file);
+      if (error || !fileType) {
+        console.log('Validation error:', error);
+        setErrorMessage(error || '파일 유형을 확인할 수 없습니다.');
         setStatus('error');
-        onError?.(validationError);
+        onError?.(error || '파일 유형을 확인할 수 없습니다.');
         return;
       }
       
-      console.log('File validated, calling onFileReady');
+      console.log('File validated, type:', fileType, 'calling onFileReady');
       setVideoFile(file);
       setStatus('ready');
       if (onFileReady) {
-        onFileReady(file);
+        onFileReady(file, fileType);
       }
     },
     [validateFile, onFileReady, onError]
@@ -124,11 +152,8 @@ export default function VideoUploader({
       setDragActive(false);
 
       const file = e.dataTransfer.files?.[0];
-      if (file && file.type.startsWith('video/')) {
+      if (file) {
         processFile(file);
-      } else {
-        setErrorMessage('비디오 파일만 업로드할 수 있습니다.');
-        setStatus('error');
       }
     },
     [processFile]
@@ -173,7 +198,7 @@ export default function VideoUploader({
       <input
         ref={fileInputRef}
         type="file"
-        accept="video/*,.mp4,.webm,.mov,.avi,.mkv,.m4v"
+        accept="video/*,audio/*,.mp4,.webm,.mov,.avi,.mkv,.m4v,.mp3,.wav,.m4a,.aac,.srt,.txt"
         onChange={handleFileSelect}
         className="hidden"
       />
@@ -200,18 +225,26 @@ export default function VideoUploader({
 
       {/* 텍스트 */}
       <h3 className="text-lg font-semibold mb-2" style={{ color: 'hsl(210 40% 98%)' }}>
-        영상 파일 업로드
+        파일 업로드
       </h3>
       <p className="text-sm mb-4" style={{ color: 'hsl(215 20% 55%)' }}>
         드래그 앤 드롭 또는 클릭하여 파일 선택
       </p>
 
       {/* 지원 형식 */}
-      <div className="flex items-center gap-2 text-xs" style={{ color: 'hsl(215 20% 45%)' }}>
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
-        </svg>
-        <span>MP4, WebM, MOV, AVI · 무제한</span>
+      <div className="flex flex-col gap-1 text-xs" style={{ color: 'hsl(215 20% 45%)' }}>
+        <div className="flex items-center justify-center gap-2">
+          <span>🎬</span>
+          <span>영상: MP4, WebM, MOV, AVI</span>
+        </div>
+        <div className="flex items-center justify-center gap-2">
+          <span>🎵</span>
+          <span>오디오: MP3, WAV, M4A</span>
+        </div>
+        <div className="flex items-center justify-center gap-2">
+          <span>📝</span>
+          <span>대본: TXT, SRT → AI 자막 자동생성</span>
+        </div>
       </div>
 
       {/* 에러 메시지 */}

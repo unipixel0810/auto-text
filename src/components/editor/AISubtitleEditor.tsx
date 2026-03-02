@@ -124,7 +124,7 @@ export default function AISubtitleEditor({
             const isActive = currentTime >= item.startTime && currentTime < item.endTime;
             const isSelected = selectedId === item.id;
             const isEditing = editingId === item.id;
-            const config = TYPE_CONFIG[item.type];
+            const config = TYPE_CONFIG[item.type] || TYPE_CONFIG.ENTERTAINMENT;
 
             return (
               <div

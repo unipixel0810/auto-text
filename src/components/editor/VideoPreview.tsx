@@ -9,6 +9,7 @@ interface VideoPreviewProps {
   globalStyle: SubtitleStyle;
   currentTime: number;
   onTimeUpdate: (time: number) => void;
+  onDurationChange?: (duration: number) => void; // 영상 길이 콜백
   selectedSubtitleId: string | null;
   onSelectSubtitle?: (id: string | null) => void;
   onSubtitleDrag?: (id: string, x: number, y: number) => void;
@@ -58,6 +59,7 @@ export default function VideoPreview({
   globalStyle,
   currentTime,
   onTimeUpdate,
+  onDurationChange,
   selectedSubtitleId,
   onSelectSubtitle,
   onSubtitleDrag,
@@ -708,6 +710,7 @@ export default function VideoPreview({
       console.log('✅ 비디오 메타데이터 로드:', video.videoWidth, 'x', video.videoHeight);
       setDuration(video.duration);
       setVideoSize({ width: video.videoWidth, height: video.videoHeight });
+      onDurationChange?.(video.duration); // 부모에게 영상 길이 전달
     };
     const handleCanPlay = () => {
       console.log('✅ 비디오 재생 준비 완료');
@@ -732,7 +735,7 @@ export default function VideoPreview({
       video.removeEventListener('pause', handlePause);
       video.removeEventListener('error', handleError);
     };
-  }, [onTimeUpdate]);
+  }, [onTimeUpdate, onDurationChange]);
 
   // 자막 다시 그리기
   useEffect(() => {
@@ -798,17 +801,6 @@ export default function VideoPreview({
     return 'default';
   };
 
-  if (!videoUrl) {
-    return (
-      <div 
-        className="w-full rounded-xl flex items-center justify-center"
-        style={{ aspectRatio: '16/9', background: 'hsl(220 18% 6%)', border: '1px solid hsl(220 15% 18%)' }}
-      >
-        <p style={{ color: 'hsl(215 20% 45%)' }}>비디오를 업로드하세요</p>
-      </div>
-    );
-  }
-
   // 터치 이벤트 핸들러 (모바일)
   const handleTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
     if (e.touches.length !== 1) return;
@@ -835,6 +827,17 @@ export default function VideoPreview({
   const handleTouchEnd = useCallback(() => {
     handleMouseUp();
   }, [handleMouseUp]);
+
+  if (!videoUrl) {
+    return (
+      <div 
+        className="w-full rounded-xl flex items-center justify-center"
+        style={{ aspectRatio: '16/9', background: 'hsl(220 18% 6%)', border: '1px solid hsl(220 15% 18%)' }}
+      >
+        <p style={{ color: 'hsl(215 20% 45%)' }}>비디오를 업로드하세요</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-3">

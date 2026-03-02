@@ -1,865 +1,723 @@
 'use client';
 
-import React, { useState, useCallback, useEffect } from 'react';
-import VideoUploader from '@/components/VideoUploader';
-import TranscriptEditor from '@/components/editor/TranscriptEditor';
-import AISubtitleEditor from '@/components/editor/AISubtitleEditor';
-import StylePanel from '@/components/editor/StylePanel';
-import VideoPreview from '@/components/editor/VideoPreview';
-import { transcribeVideo } from '@/lib/sttService';
-import { splitSubtitles } from '@/lib/subtitleSplitter';
-import { generateSubtitlesWithGemini, convertToSubtitleItems, correctSpelling } from '@/lib/geminiService';
-import { renderVideoWithSubtitles, downloadSRT, downloadBlob, type RenderProgress } from '@/lib/videoRenderer';
-import type { SubtitleItem, TranscriptItem, SubtitleStyle, SubtitleType, DEFAULT_SUBTITLE_STYLE } from '@/types/subtitle';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import Header from '@/components/layout/Header';
+import SecondaryToolbar from '@/components/layout/SecondaryToolbar';
+import LeftSidebar from '@/components/layout/LeftSidebar';
+import Player from '@/components/layout/Player';
+import RightSidebar from '@/components/layout/RightSidebar';
+import Timeline from '@/components/layout/Timeline';
+import { parseSubtitleFile } from '@/lib/subtitleParser';
+import type { TranscriptItem, SubtitleItem } from '@/types/subtitle';
+import type { VideoClip, HistoryEntry, ClipboardData } from '@/types/video';
+import type { SubtitlePreset } from '@/lib/subtitlePresets';
 
-// 기본 스타일 (숏츠용: 하단 UI 피하도록 y: 75%)
-const DEFAULT_STYLE: SubtitleStyle = {
-  x: 50,
-  y: 75,
-  fontFamily: 'PaperlogyExtraBold',
-  fontSize: 41,
-  fontWeight: 700,
-  color: '#FFFFFF',
-  backgroundColor: 'transparent',
-  strokeColor: '#000000',
-  strokeWidth: 2,
-  shadowColor: 'rgba(0,0,0,0.8)',
-  shadowOffsetX: 2,
-  shadowOffsetY: 2,
-  shadowBlur: 4,
-  textAlign: 'center',
-};
-
-// 완료 알림 함수 (콘솔만)
-const playCompletionSound = (message: string) => {
-  console.log('✅', message);
-};
-
-type AppStage = 'upload' | 'transcribing' | 'editing' | 'rendering';
+const FRAME_DURATION = 1 / 30;
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 5;
+const ZOOM_STEP = 1.25;
 
 export default function Home() {
-  // 앱 상태
-  const [stage, setStage] = useState<AppStage>('upload');
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-
-  // 콘텐츠
+  const [activeTab, setActiveTab] = useState<'media' | 'audio' | 'stickers' | 'effects' | 'transitions'>('media');
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
   const [subtitles, setSubtitles] = useState<SubtitleItem[]>([]);
-
-  // 에디터 상태
   const [currentTime, setCurrentTime] = useState(0);
-  const [selectedSubtitleId, setSelectedSubtitleId] = useState<string | null>(null);
-  const [globalStyle, setGlobalStyle] = useState<SubtitleStyle>(DEFAULT_STYLE);
-  const [activePanel, setActivePanel] = useState<'transcript' | 'subtitle' | 'style'>('transcript');
-  const [subtitleTypeFilter, setSubtitleTypeFilter] = useState<'ALL' | 'ENTERTAINMENT' | 'SITUATION' | 'EXPLANATION'>('ALL');
+  const [clips, setClips] = useState<VideoClip[]>([]);
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [currentVideoUrl, setCurrentVideoUrl] = useState<string | undefined>();
+  const [currentVideoFile, setCurrentVideoFile] = useState<File | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [timelineZoom, setTimelineZoom] = useState(1);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [isTimelineHovered, setIsTimelineHovered] = useState(false);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [importToast, setImportToast] = useState<string | null>(null);
+  const clipIdCounter = useRef(0);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  // 진행 상태
-  const [progress, setProgress] = useState({ stage: '', percent: 0, message: '' });
-  const [error, setError] = useState<string | null>(null);
-  const [isGeneratingAI, setIsGeneratingAI] = useState(false);
-  const [renderProgress, setRenderProgress] = useState<RenderProgress | null>(null);
+  // Undo/Redo history
+  const [history, setHistory] = useState<HistoryEntry[]>([{ clips: [], selectedClipId: null }]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const skipHistoryRef = useRef(false);
 
-  // 비디오 업로드 처리
-  const handleVideoUpload = useCallback(async (file: File) => {
-    setVideoFile(file);
-    setVideoUrl(URL.createObjectURL(file));
-    setError(null);
-    await startTranscription(file);
+  // Clipboard
+  const [clipboard, setClipboard] = useState<ClipboardData | null>(null);
+
+  // Active file info for header
+  const [activeFileName, setActiveFileName] = useState<string | undefined>();
+  const [activeFileDuration, setActiveFileDuration] = useState<number | undefined>();
+
+  const selectedClip = clips.find(c => c.id === selectedClipId) || null;
+
+  // ===== REFS for stable access inside document-level keydown =====
+  const clipsRef = useRef(clips);
+  const selectedClipIdRef = useRef(selectedClipId);
+  const currentTimeRef = useRef(currentTime);
+  const clipboardRef = useRef(clipboard);
+  const isPlayingRef = useRef(isPlaying);
+  const isTimelineHoveredRef = useRef(isTimelineHovered);
+  const historyRef = useRef(history);
+  const historyIndexRef = useRef(historyIndex);
+
+  useEffect(() => { clipsRef.current = clips; }, [clips]);
+  useEffect(() => { selectedClipIdRef.current = selectedClipId; }, [selectedClipId]);
+  useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
+  useEffect(() => { clipboardRef.current = clipboard; }, [clipboard]);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { isTimelineHoveredRef.current = isTimelineHovered; }, [isTimelineHovered]);
+  useEffect(() => { historyRef.current = history; }, [history]);
+  useEffect(() => { historyIndexRef.current = historyIndex; }, [historyIndex]);
+
+  // Push to history
+  const pushHistory = useCallback((newClips: VideoClip[], newSelectedId: string | null) => {
+    if (skipHistoryRef.current) { skipHistoryRef.current = false; return; }
+    setHistory(prev => {
+      const trimmed = prev.slice(0, historyIndexRef.current + 1);
+      return [...trimmed, { clips: newClips, selectedClipId: newSelectedId }];
+    });
+    setHistoryIndex(prev => prev + 1);
   }, []);
 
-  // STT 시작 (API 키는 서버에서 관리)
-  const startTranscription = async (file: File) => {
-    setStage('transcribing');
-    setProgress({ stage: 'transcribing', percent: 0, message: '음성 인식 준비 중...' });
+  // Track clips changes for history
+  useEffect(() => {
+    pushHistory(clips, selectedClipId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clips]);
 
-    try {
-      const result = await transcribeVideo(file, '', (msg) => {
-        setProgress({ stage: 'transcribing', percent: 50, message: msg });
+  // Generate unique clip ID
+  const genId = () => `clip_${Date.now()}_${clipIdCounter.current++}`;
+
+  // ===== Undo =====
+  const handleUndo = useCallback(() => {
+    const idx = historyIndexRef.current;
+    const hist = historyRef.current;
+    if (idx <= 0) return;
+    const newIndex = idx - 1;
+    const entry = hist[newIndex];
+    skipHistoryRef.current = true;
+    setClips(entry.clips);
+    setSelectedClipId(entry.selectedClipId);
+    setHistoryIndex(newIndex);
+  }, []);
+
+  // ===== Redo =====
+  const handleRedo = useCallback(() => {
+    const idx = historyIndexRef.current;
+    const hist = historyRef.current;
+    if (idx >= hist.length - 1) return;
+    const newIndex = idx + 1;
+    const entry = hist[newIndex];
+    skipHistoryRef.current = true;
+    setClips(entry.clips);
+    setSelectedClipId(entry.selectedClipId);
+    setHistoryIndex(newIndex);
+  }, []);
+
+  // Video add handler
+  const handleVideoAdd = useCallback((file: File) => {
+    const clipId = genId();
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.src = url;
+    video.onloadedmetadata = () => {
+      const duration = video.duration;
+      const trackIndex = file.type.startsWith('video/') ? 1 : file.type.startsWith('audio/') ? 2 : 0;
+      setClips(prev => {
+        const sameTrackClips = prev.filter(c => c.trackIndex === trackIndex);
+        const startTime = sameTrackClips.length > 0 ? Math.max(...sameTrackClips.map(c => c.startTime + c.duration)) : 0;
+        return [...prev, {
+          id: clipId, name: file.name, url, startTime, duration: duration || 10, originalDuration: duration || 10,
+          trackIndex, scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true,
+        }];
       });
-
-      // STT 결과를 자막 세그먼트로 분할
-      const segments = splitSubtitles(result);
-
-      // TranscriptItem으로 변환
-      const items: TranscriptItem[] = segments.map((seg, i) => ({
-        id: `transcript_${i}`,
-        startTime: seg.startTime,
-        endTime: seg.endTime,
-        originalText: seg.text,
-        editedText: seg.text,
-        isEdited: false,
-      }));
-
-      setTranscripts(items);
-      setStage('editing');
-      setProgress({ stage: '', percent: 100, message: '완료!' });
-      playCompletionSound(`음성인식 완료! ${items.length}개 구간 감지`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '음성 인식 실패');
-      setStage('upload');
-    }
-  };
-
-  // 대본 수정
-  const handleTranscriptUpdate = useCallback((id: string, editedText: string) => {
-    setTranscripts(prev => prev.map(t => 
-      t.id === id ? { ...t, editedText, isEdited: editedText !== t.originalText } : t
-    ));
-  }, []);
-
-  // AI 자막 생성 진행률
-  const [aiProgress, setAiProgress] = useState({ percent: 0, message: '' });
-  const [aiAbortController, setAiAbortController] = useState<AbortController | null>(null);
-
-  // AI 자막 생성 중지
-  const stopAIGeneration = useCallback(() => {
-    if (aiAbortController) {
-      aiAbortController.abort();
-      setAiAbortController(null);
-    }
-    setIsGeneratingAI(false);
-    setAiProgress({ percent: 0, message: '' });
-  }, [aiAbortController]);
-
-  // AI 자막 생성 (서버 API 사용)
-  const generateAISubtitles = useCallback(async () => {
-    console.log('=== AI 자막 생성 시작 ===');
-    console.log('Transcripts count:', transcripts.length);
-
-    if (transcripts.length === 0) {
-      setError('대본이 없습니다. 먼저 영상을 업로드하세요.');
-      return;
-    }
-
-    setIsGeneratingAI(true);
-    setAiProgress({ percent: 0, message: '준비 중...' });
-    setError(null);
-
-    try {
-      console.log('AI API 호출 중...');
-      const generated = await generateSubtitlesWithGemini(
-        { transcripts },
-        undefined,  // API 키는 서버에서 관리
-        (percent, message) => setAiProgress({ percent, message })
-      );
-      console.log('생성된 자막 수:', generated.length);
-      const items = convertToSubtitleItems(generated);
-      setSubtitles(items);
-      setActivePanel('subtitle');
-      playCompletionSound(`AI 자막 ${items.length}개 생성 완료!`);
-    } catch (err) {
-      console.error('AI 오류:', err);
-      setError(err instanceof Error ? err.message : 'AI 자막 생성 실패');
-    } finally {
-      setIsGeneratingAI(false);
-      setAiProgress({ percent: 0, message: '' });
-    }
-  }, [transcripts]);
-
-  // 자막 업데이트
-  const handleSubtitleUpdate = useCallback((id: string, updates: Partial<SubtitleItem>) => {
-    setSubtitles(prev => prev.map(s => 
-      s.id === id ? { ...s, ...updates } : s
-    ));
-  }, []);
-
-  // 자막 삭제
-  const handleSubtitleDelete = useCallback((id: string) => {
-    setSubtitles(prev => prev.filter(s => s.id !== id));
-    if (selectedSubtitleId === id) setSelectedSubtitleId(null);
-  }, [selectedSubtitleId]);
-
-  // 자막 추가
-  const handleSubtitleAdd = useCallback((subtitle: Omit<SubtitleItem, 'id'>) => {
-    const newSubtitle: SubtitleItem = {
-      ...subtitle,
-      id: `subtitle_${Date.now()}`,
+      setSelectedClipId(clipId);
+      if (file.type.startsWith('video/')) {
+        setCurrentVideoUrl(url);
+        setCurrentVideoFile(file);
+        setActiveFileName(file.name);
+        setActiveFileDuration(duration);
+      }
     };
-    setSubtitles(prev => [...prev, newSubtitle].sort((a, b) => a.startTime - b.startTime));
+    video.onerror = () => {
+      const trackIndex = file.type.startsWith('image/') ? 1 : 0;
+      setClips(prev => [...prev, {
+        id: clipId, name: file.name, url, startTime: 0, duration: 10, originalDuration: 10,
+        trackIndex, scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true,
+      }]);
+    };
   }, []);
 
-  // 자막 합치기 (이전 자막과 합침)
-  const handleMergeWithPrevious = useCallback((id: string) => {
-    setSubtitles(prev => {
-      const index = prev.findIndex(s => s.id === id);
-      if (index <= 0) return prev; // 첫 번째 자막이면 합칠 수 없음
-      
-      const current = prev[index];
-      const previous = prev[index - 1];
-      
-      // 이전 자막에 현재 자막 텍스트 합치기
-      const merged: SubtitleItem = {
-        ...previous,
-        endTime: current.endTime,
-        text: previous.text + ' ' + current.text,
-      };
-      
-      return prev.filter(s => s.id !== id).map(s => s.id === previous.id ? merged : s);
-    });
-  }, []);
-
-  // 자막 나누기 (커서 위치에서 분할)
-  const handleSplitSubtitle = useCallback((id: string, splitIndex: number) => {
-    setSubtitles(prev => {
-      const index = prev.findIndex(s => s.id === id);
-      if (index === -1) return prev;
-      
-      const original = prev[index];
-      if (splitIndex <= 0 || splitIndex >= original.text.length) return prev;
-      
-      const text1 = original.text.slice(0, splitIndex).trim();
-      const text2 = original.text.slice(splitIndex).trim();
-      if (!text1 || !text2) return prev;
-      
-      const midTime = original.startTime + (original.endTime - original.startTime) / 2;
-      
-      const first: SubtitleItem = {
-        ...original,
-        endTime: midTime,
-        text: text1,
-      };
-      
-      const second: SubtitleItem = {
-        ...original,
-        id: `ai_${Date.now()}`,
-        startTime: midTime,
-        text: text2,
-      };
-      
-      const newList = [...prev];
-      newList.splice(index, 1, first, second);
-      return newList;
-    });
-  }, []);
-
-  // AI로 자막 유형에 맞게 재생성
-  const handleRegenerateWithType = useCallback(async (id: string, type: SubtitleType, originalText: string) => {
-    try {
-      const typeNames: Record<SubtitleType, string> = {
-        ENTERTAINMENT: '예능',
-        SITUATION: '상황',
-        EXPLANATION: '설명',
-        TRANSCRIPT: '말자막',
-      };
-      
-      const response = await fetch('/api/gemini', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transcripts: [{ 
-            startTime: 0, 
-            endTime: 1, 
-            editedText: originalText,
-            originalText: originalText 
-          }],
-          customPrompt: `다음 자막을 "${typeNames[type]}" 스타일로 변환해주세요.
-
-원본 자막: "${originalText}"
-
-요구사항:
-- ${type === 'ENTERTAINMENT' ? '재미있고 임팩트 있게, 이모지나 강조 표현 사용 가능' : ''}
-- ${type === 'SITUATION' ? '현재 상황을 설명하는 객관적인 톤으로' : ''}
-- ${type === 'EXPLANATION' ? '정보 전달에 초점, 명확하고 이해하기 쉽게' : ''}
-- 원래 의미는 유지하면서 스타일만 변경
-- 한국어로 작성
-- 자막 텍스트만 출력 (JSON 형식 없이 텍스트만)`
-        }),
-      });
-
-      const data = await response.json();
-      
-      if (data.subtitles && data.subtitles.length > 0) {
-        const newText = data.subtitles[0].text || originalText;
-        setSubtitles(prev => prev.map(s => 
-          s.id === id ? { ...s, text: newText, type } : s
-        ));
-      } else {
-        // API 실패시 유형만 변경
-        setSubtitles(prev => prev.map(s => 
-          s.id === id ? { ...s, type } : s
-        ));
+  const handleClipAdd = useCallback((file: File, trackIndex: number, startTime: number) => {
+    const clipId = genId();
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.src = url;
+    video.onloadedmetadata = () => {
+      const dur = video.duration || 10;
+      setClips(prev => [...prev, {
+        id: clipId, name: file.name, url, startTime, duration: dur, originalDuration: dur,
+        trackIndex, scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true,
+      }]);
+      if (file.type.startsWith('video/') && !currentVideoUrl) {
+        setCurrentVideoUrl(url);
+        setActiveFileName(file.name);
+        setActiveFileDuration(video.duration);
       }
-    } catch (err) {
-      console.error('AI 재생성 실패:', err);
-      // 실패시 유형만 변경
-      setSubtitles(prev => prev.map(s => 
-        s.id === id ? { ...s, type } : s
-      ));
+    };
+    video.onerror = () => {
+      setClips(prev => [...prev, {
+        id: clipId, name: file.name, url, startTime, duration: 10, originalDuration: 10,
+        trackIndex, scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true,
+      }]);
+    };
+  }, [currentVideoUrl]);
+
+  const handleClipUpdate = useCallback((clipId: string, updates: Partial<VideoClip>) => {
+    setClips(prev => prev.map(clip => clip.id === clipId ? { ...clip, ...updates } : clip));
+  }, []);
+
+  const handlePlayheadChange = useCallback((position: number) => setCurrentTime(position), []);
+  const handleSeek = useCallback((time: number) => setCurrentTime(time), []);
+  const handleClipSelect = useCallback((clipId: string | null) => {
+    setSelectedClipId(clipId);
+    if (clipId) {
+      const clip = clipsRef.current.find(c => c.id === clipId);
+      if (clip) {
+        setActiveFileName(clip.name);
+        setActiveFileDuration(clip.originalDuration ?? clip.duration);
+      }
     }
   }, []);
 
-  // 스타일 변경
-  const handleStyleChange = useCallback((updates: Partial<SubtitleStyle>) => {
-    if (selectedSubtitleId) {
-      // 선택된 자막의 개별 스타일 변경
-      setSubtitles(prev => prev.map(s => 
-        s.id === selectedSubtitleId 
-          ? { ...s, style: { ...s.style, ...updates } } 
-          : s
-      ));
+  const handleClipDelete = useCallback((clipId: string) => {
+    setClips(prev => {
+      const updated = prev.filter(c => c.id !== clipId);
+      const deleted = prev.find(c => c.id === clipId);
+      if (deleted && deleted.url === currentVideoUrl) {
+        const next = updated.find(c => c.trackIndex === 1 && c.url);
+        setCurrentVideoUrl(next?.url);
+      }
+      return updated;
+    });
+    setSelectedClipId(null);
+  }, [currentVideoUrl]);
+
+  // ===== Speed change — adjusts clip duration =====
+  const handleSpeedChange = useCallback((clipId: string, speed: number) => {
+    setClips(prev => prev.map(clip => {
+      if (clip.id !== clipId) return clip;
+      const origDur = clip.originalDuration ?? clip.duration;
+      const newDuration = origDur / speed;
+      return { ...clip, speed, originalDuration: origDur, duration: newDuration };
+    }));
+    // Also update video playback rate
+    if (videoRef.current) {
+      const clip = clipsRef.current.find(c => c.id === clipId);
+      if (clip && clip.trackIndex === 1) {
+        videoRef.current.playbackRate = speed;
+      }
+    }
+  }, []);
+
+  // Rename from header
+  const handleRename = useCallback((newName: string) => {
+    setActiveFileName(newName);
+    const selId = selectedClipIdRef.current;
+    if (selId) handleClipUpdate(selId, { name: newName });
+  }, [handleClipUpdate]);
+
+  // Add subtitle clips to timeline from parsed SRT/ASS
+  const handleAddSubtitleClips = useCallback((items: TranscriptItem[]) => {
+    const newClips: VideoClip[] = items.map((item) => ({
+      id: genId(),
+      name: item.editedText || item.originalText,
+      url: '',
+      startTime: item.startTime,
+      duration: item.endTime - item.startTime,
+      trackIndex: 0,
+      scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: false,
+    }));
+    setClips(prev => [...prev, ...newClips]);
+  }, []);
+
+  // Handle SRT/ASS file import
+  const handleSubtitleImport = useCallback(async (file: File) => {
+    try {
+      const parsed = await parseSubtitleFile(file);
+      setTranscripts(prev => [...prev, ...parsed]);
+      const newClips: VideoClip[] = parsed.map((item) => ({
+        id: genId(),
+        name: item.editedText || item.originalText,
+        url: '',
+        startTime: item.startTime,
+        duration: item.endTime - item.startTime,
+        trackIndex: 0,
+        scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: false,
+      }));
+      setClips(prev => [...prev, ...newClips]);
+      setActiveFileName(file.name);
+    } catch (err: any) {
+      alert(`자막 파일 파싱 실패: ${err.message}`);
+    }
+  }, []);
+
+  // Fit timeline to screen
+  const handleFitToScreen = useCallback(() => {
+    const allClips = clipsRef.current;
+    const totalDuration = allClips.length > 0 ? Math.max(...allClips.map(c => c.startTime + c.duration)) : 60;
+    const timelineEl = document.querySelector('footer');
+    const width = timelineEl ? timelineEl.clientWidth - 96 : 800;
+    const fitZoom = width / (totalDuration * 50);
+    setTimelineZoom(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, fitZoom)));
+  }, []);
+
+  // ===== DEFINITIVE GLOBAL KEYBOARD SHORTCUTS =====
+  // Uses refs to avoid stale closures — the handler never needs to be re-registered
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = document.activeElement?.tagName;
+      const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+        || (document.activeElement as HTMLElement)?.isContentEditable;
+
+      const cmd = e.metaKey || e.ctrlKey;
+      const shift = e.shiftKey;
+
+      // --- TIMELINE ZOOM (always, Cmd+= / Cmd+- / Cmd+Shift+F) ---
+      if (cmd && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        setTimelineZoom(prev => Math.min(MAX_ZOOM, prev * ZOOM_STEP));
+        return;
+      }
+      if (cmd && e.key === '-' && !shift) {
+        e.preventDefault();
+        setTimelineZoom(prev => Math.max(MIN_ZOOM, prev / ZOOM_STEP));
+        return;
+      }
+      if (cmd && shift && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        handleFitToScreen();
+        return;
+      }
+
+      // --- UNDO / REDO (always, even in inputs for consistency) ---
+      if (cmd && !shift && e.key === 'z') {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+      if (cmd && shift && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+
+      // Skip remaining shortcuts when typing
+      if (isTyping) return;
+
+      // --- PLAYBACK ---
+      if (e.code === 'Space' && !cmd) {
+        e.preventDefault();
+        setIsPlaying(prev => !prev);
+        return;
+      }
+
+      // --- SPLIT ---
+      if ((e.key === 'm' || e.key === 'M') && !cmd) {
+        e.preventDefault();
+        splitAtPlayhead();
+        return;
+      }
+      if (cmd && (e.key === 'b' || e.key === 'B')) {
+        e.preventDefault();
+        splitAtPlayhead();
+        return;
+      }
+
+      // --- DELETE ---
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        const selId = selectedClipIdRef.current;
+        if (selId) {
+          setClips(prev => prev.filter(c => c.id !== selId));
+          setSelectedClipId(null);
+        }
+        return;
+      }
+
+      // --- COPY ---
+      if (cmd && (e.key === 'c' || e.key === 'C')) {
+        e.preventDefault();
+        const selId = selectedClipIdRef.current;
+        const clip = clipsRef.current.find(c => c.id === selId);
+        if (clip) setClipboard({ clip: { ...clip } });
+        return;
+      }
+
+      // --- PASTE ---
+      if (cmd && (e.key === 'v' || e.key === 'V')) {
+        e.preventDefault();
+        const cb = clipboardRef.current;
+        if (!cb) return;
+        const newId = genId();
+        setClips(prev => {
+          const sameTrack = prev.filter(c => c.trackIndex === cb.clip.trackIndex);
+          const startTime = sameTrack.length > 0 ? Math.max(...sameTrack.map(c => c.startTime + c.duration)) : 0;
+          return [...prev, { ...cb.clip, id: newId, startTime }];
+        });
+        setSelectedClipId(newId);
+        return;
+      }
+
+      // --- DUPLICATE ---
+      if (cmd && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault();
+        const selId = selectedClipIdRef.current;
+        const clip = clipsRef.current.find(c => c.id === selId);
+        if (!clip) return;
+        const newId = genId();
+        setClips(prev => [...prev, { ...clip, id: newId, startTime: clip.startTime + clip.duration }]);
+        setSelectedClipId(newId);
+        return;
+      }
+
+      // --- SELECT ALL ---
+      if (cmd && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault();
+        const all = clipsRef.current;
+        if (all.length > 0) setSelectedClipId(all[0].id);
+        return;
+      }
+
+      // --- FRAME STEP ---
+      if (e.key === '[') {
+        e.preventDefault();
+        setCurrentTime(prev => Math.max(0, prev - FRAME_DURATION));
+        return;
+      }
+      if (e.key === ']') {
+        e.preventDefault();
+        setCurrentTime(prev => prev + FRAME_DURATION);
+        return;
+      }
+
+      // --- TRIM LEFT (Q) ---
+      if (e.key === 'q' || e.key === 'Q') {
+        e.preventDefault();
+        trimLeft();
+        return;
+      }
+
+      // --- TRIM RIGHT (W) ---
+      if (e.key === 'w' || e.key === 'W') {
+        e.preventDefault();
+        trimRight();
+        return;
+      }
+
+      // --- ARROW KEYS: Nudge ---
+      if (e.key === 'ArrowLeft' && !cmd) {
+        e.preventDefault();
+        nudge(-1, 0);
+        return;
+      }
+      if (e.key === 'ArrowRight' && !cmd) {
+        e.preventDefault();
+        nudge(1, 0);
+        return;
+      }
+      if (e.key === 'ArrowUp' && !cmd) {
+        e.preventDefault();
+        nudge(0, -1);
+        return;
+      }
+      if (e.key === 'ArrowDown' && !cmd) {
+        e.preventDefault();
+        nudge(0, 1);
+        return;
+      }
+
+      // --- ESCAPE ---
+      if (e.key === 'Escape') {
+        setSelectedClipId(null);
+        return;
+      }
+    };
+
+    // Helper functions that read from refs
+    function splitAtPlayhead() {
+      const selId = selectedClipIdRef.current;
+      if (!selId) return;
+      const clip = clipsRef.current.find(c => c.id === selId);
+      if (!clip) return;
+      const t = currentTimeRef.current;
+      if (t <= clip.startTime || t >= clip.startTime + clip.duration) return;
+      const firstDur = t - clip.startTime;
+      const secondDur = clip.duration - firstDur;
+      const secondId = `clip_${Date.now()}_${clipIdCounter.current++}`;
+      setClips(prev => [
+        ...prev.map(c => c.id === clip.id ? { ...c, duration: firstDur } : c),
+        { ...clip, id: secondId, startTime: t, duration: secondDur },
+      ]);
+      setSelectedClipId(secondId);
+    }
+
+    function trimLeft() {
+      const selId = selectedClipIdRef.current;
+      const clip = clipsRef.current.find(c => c.id === selId);
+      if (!clip) return;
+      const t = currentTimeRef.current;
+      const clipEnd = clip.startTime + clip.duration;
+      if (t <= clip.startTime || t >= clipEnd) return;
+      setClips(prev => prev.map(c => c.id === clip.id ? { ...c, startTime: t, duration: clipEnd - t } : c));
+    }
+
+    function trimRight() {
+      const selId = selectedClipIdRef.current;
+      const clip = clipsRef.current.find(c => c.id === selId);
+      if (!clip) return;
+      const t = currentTimeRef.current;
+      if (t <= clip.startTime || t >= clip.startTime + clip.duration) return;
+      setClips(prev => prev.map(c => c.id === clip.id ? { ...c, duration: t - clip.startTime } : c));
+    }
+
+    function nudge(dx: number, dy: number) {
+      const selId = selectedClipIdRef.current;
+      const clip = clipsRef.current.find(c => c.id === selId);
+      if (!clip) return;
+      setClips(prev => prev.map(c => c.id === clip.id ? {
+        ...c,
+        positionX: (c.positionX ?? 0) + dx,
+        positionY: (c.positionY ?? 0) + dy,
+      } : c));
+    }
+
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [handleUndo, handleRedo, handleFitToScreen]);
+
+  // Sync video playbackRate when selected clip changes
+  useEffect(() => {
+    if (videoRef.current && selectedClip && selectedClip.trackIndex === 1) {
+      videoRef.current.playbackRate = selectedClip.speed ?? 1;
+    }
+  }, [selectedClip]);
+
+  // Effects
+  const handleSoundEffect = useCallback(() => alert('효과음 라이브러리'), []);
+  const handleSticker = useCallback(() => alert('스티커 라이브러리'), []);
+  const handleAutoColorCorrection = useCallback(() => {
+    if (selectedClip) { handleClipUpdate(selectedClip.id, { autoColorCorrection: true }); alert('자동 색상 보정 적용'); }
+    else alert('영상을 선택해주세요.');
+  }, [selectedClip, handleClipUpdate]);
+  const handleAnimationEffect = useCallback(() => {
+    if (selectedClip) {
+      const fx = ['fadeIn', 'slideIn', 'zoomIn', 'bounce'];
+      handleClipUpdate(selectedClip.id, { animationEffect: fx[Math.floor(Math.random() * fx.length)] });
+      alert('애니메이션 효과 적용');
+    } else alert('구간을 선택해주세요.');
+  }, [selectedClip, handleClipUpdate]);
+
+  // ===== ADD TEXT CLIP from preset (click or drag) =====
+  const handleAddTextClip = useCallback((preset: SubtitlePreset) => {
+    const clipId = genId();
+    const t = currentTimeRef.current;
+    setClips(prev => [...prev, {
+      id: clipId,
+      name: '텍스트를 입력하세요',
+      url: '',
+      startTime: t,
+      duration: 3,
+      trackIndex: 0,
+      scale: 100,
+      positionX: 0,
+      positionY: 0,
+      rotation: 0,
+      opacity: 100,
+      blendMode: false,
+      speed: 1,
+      linked: false,
+    }]);
+    setSelectedClipId(clipId);
+  }, []);
+
+  const handlePresetDrop = useCallback((preset: SubtitlePreset, _x: number, _y: number) => {
+    handleAddTextClip(preset);
+  }, [handleAddTextClip]);
+
+  // ===== DRAG & DROP on entire app =====
+  const importFile = useCallback((file: File) => {
+    const fileName = file.name.toLowerCase();
+    if (fileName.endsWith('.srt') || fileName.endsWith('.ass') || fileName.endsWith('.ssa')) {
+      handleSubtitleImport(file);
+      setImportToast('자막 파일이 추가되었습니다 ✓');
+    } else if (file.type.startsWith('video/') || file.type.startsWith('audio/') || file.type.startsWith('image/')) {
+      handleVideoAdd(file);
+      setImportToast('파일이 추가되었습니다 ✓');
     } else {
-      // 글로벌 스타일 변경
-      setGlobalStyle(prev => ({ ...prev, ...updates }));
+      setImportToast('지원하지 않는 파일 형식입니다');
     }
-  }, [selectedSubtitleId]);
+    setTimeout(() => setImportToast(null), 2500);
+  }, [handleVideoAdd, handleSubtitleImport]);
 
-  // 모든 자막에 현재 스타일 적용
-  const handleApplyStyleToAll = useCallback(() => {
-    setSubtitles(prev => prev.map(s => ({
-      ...s,
-      style: { ...globalStyle }
-    })));
-  }, [globalStyle]);
-
-  // 자막 드래그 (이동)
-  const handleSubtitleDrag = useCallback((id: string, x: number, y: number) => {
-    setSubtitles(prev => prev.map(s => 
-      s.id === id ? { ...s, style: { ...s.style, x, y } } : s
-    ));
-  }, []);
-
-  // 자막 크기 조절
-  const handleSubtitleResize = useCallback((id: string, scale: number) => {
-    setSubtitles(prev => prev.map(s => 
-      s.id === id ? { ...s, style: { ...s.style, scale } as any } : s
-    ));
-  }, []);
-
-  // 자막 너비 조절 (줄바꿈 제어)
-  const handleSubtitleWidthChange = useCallback((id: string, maxWidth: number) => {
-    setSubtitles(prev => prev.map(s => 
-      s.id === id ? { ...s, style: { ...s.style, maxWidth } as any } : s
-    ));
-  }, []);
-
-  // 자막 회전
-  const handleSubtitleRotate = useCallback((id: string, rotation: number) => {
-    setSubtitles(prev => prev.map(s => 
-      s.id === id ? { ...s, style: { ...s.style, rotation } as any } : s
-    ));
-  }, []);
-
-  // 자막 텍스트 변경 (비디오 위에서 직접 편집)
-  const handleSubtitleTextChange = useCallback((id: string, text: string) => {
-    setSubtitles(prev => prev.map(s => 
-      s.id === id ? { ...s, text } : s
-    ));
-  }, []);
-
-  // 렌더링 취소용 AbortController
-  const [renderAbortController, setRenderAbortController] = useState<AbortController | null>(null);
-
-  // 비디오 렌더링
-  const handleRenderVideo = useCallback(async () => {
-    if (!videoFile || subtitles.length === 0) return;
-
-    const abortController = new AbortController();
-    setRenderAbortController(abortController);
-    setStage('rendering');
-    setRenderProgress({ stage: 'loading', progress: 0, message: '준비 중...' });
-
-    try {
-      const blob = await renderVideoWithSubtitles(
-        {
-          videoFile,
-          subtitles,
-          globalStyle,
-          outputFormat: 'mp4',
-          quality: 'medium',
-        },
-        setRenderProgress,
-        abortController.signal
-      );
-
-      downloadBlob(blob, `${videoFile.name.replace(/\.[^/.]+$/, '')}_subtitled.mp4`);
-      setStage('editing');
-      setRenderProgress(null);
-      setRenderAbortController(null);
-      playCompletionSound('영상 렌더링 완료! 다운로드가 시작됩니다.');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '렌더링 실패';
-      if (message !== '렌더링이 취소되었습니다.') {
-        setError(message);
-      }
-      setStage('editing');
-      setRenderProgress(null);
-      setRenderAbortController(null);
+  const handleGlobalDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDraggingFile(true);
     }
-  }, [videoFile, subtitles, globalStyle]);
-
-  // 렌더링 취소
-  const handleCancelRender = useCallback(() => {
-    if (renderAbortController) {
-      renderAbortController.abort();
-      setRenderAbortController(null);
-    }
-  }, [renderAbortController]);
-
-  // 시크 (비디오 시간 이동)
-  const [seekTo, setSeekTo] = useState<number | null>(null);
-  
-  const handleSeek = useCallback((time: number) => {
-    setCurrentTime(time);
-    setSeekTo(time); // VideoPreview에 시간 이동 요청
   }, []);
 
-  const handleSeekComplete = useCallback(() => {
-    setSeekTo(null); // 시간 이동 완료 후 초기화
+  const handleGlobalDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    // relatedTarget === null means cursor left the window
+    if (!e.relatedTarget) {
+      setIsDraggingFile(false);
+    }
   }, []);
 
-  // 새로 시작
-  const handleReset = useCallback(() => {
-    if (videoUrl) {
-      URL.revokeObjectURL(videoUrl);
-    }
-    setStage('upload');
-    setVideoFile(null);
-    setVideoUrl(null);
-    setTranscripts([]);
-    setSubtitles([]);
-    setCurrentTime(0);
-    setSelectedSubtitleId(null);
-    setError(null);
-    setProgress({ stage: '', percent: 0, message: '' });
-  }, [videoUrl]);
+  const handleGlobalDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingFile(false);
+    Array.from(e.dataTransfer.files).forEach(importFile);
+  }, [importFile]);
+
+  // Callbacks for Timeline toolbar buttons (used for split/trim from toolbar)
+  const handleSplit = useCallback(() => {
+    const selId = selectedClipIdRef.current;
+    if (!selId) return;
+    const clip = clipsRef.current.find(c => c.id === selId);
+    if (!clip) return;
+    const t = currentTimeRef.current;
+    if (t <= clip.startTime || t >= clip.startTime + clip.duration) return;
+    const firstDur = t - clip.startTime;
+    const secondDur = clip.duration - firstDur;
+    const secondId = genId();
+    setClips(prev => [
+      ...prev.map(c => c.id === clip.id ? { ...c, duration: firstDur } : c),
+      { ...clip, id: secondId, startTime: t, duration: secondDur },
+    ]);
+    setSelectedClipId(secondId);
+  }, []);
+
+  const handleTrimLeft = useCallback(() => {
+    const selId = selectedClipIdRef.current;
+    const clip = clipsRef.current.find(c => c.id === selId);
+    if (!clip) return;
+    const t = currentTimeRef.current;
+    const clipEnd = clip.startTime + clip.duration;
+    if (t <= clip.startTime || t >= clipEnd) return;
+    setClips(prev => prev.map(c => c.id === clip.id ? { ...c, startTime: t, duration: clipEnd - t } : c));
+  }, []);
+
+  const handleTrimRight = useCallback(() => {
+    const selId = selectedClipIdRef.current;
+    const clip = clipsRef.current.find(c => c.id === selId);
+    if (!clip) return;
+    const t = currentTimeRef.current;
+    if (t <= clip.startTime || t >= clip.startTime + clip.duration) return;
+    setClips(prev => prev.map(c => c.id === clip.id ? { ...c, duration: t - clip.startTime } : c));
+  }, []);
 
   return (
-    <div className="min-h-screen" style={{ background: 'hsl(220 20% 4%)' }}>
-      {/* 렌더링 모달 */}
-      {renderProgress && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
-          <div 
-            className="w-full max-w-sm p-6 rounded-2xl text-center"
-            style={{ 
-              background: 'linear-gradient(135deg, hsl(220 18% 10%) 0%, hsl(220 18% 6%) 100%)',
-              border: '1px solid hsl(220 15% 18%)'
-            }}
-          >
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full flex items-center justify-center"
-              style={{ background: 'hsl(185 100% 50% / 0.1)' }}
-            >
-              <svg className="w-8 h-8 animate-spin" style={{ color: 'hsl(185 100% 50%)' }} fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            </div>
-            <h3 className="text-lg font-semibold mb-2" style={{ color: 'hsl(210 40% 98%)' }}>
-              {renderProgress.message}
-            </h3>
-            <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: 'hsl(220 15% 15%)' }}>
-              <div 
-                className="h-full transition-all duration-300"
-                style={{ 
-                  width: `${renderProgress.progress}%`,
-                  background: 'linear-gradient(90deg, hsl(185 100% 50%), hsl(330 80% 60%))'
-                }}
-              />
-            </div>
-            <p className="text-sm mt-2" style={{ color: 'hsl(215 20% 55%)' }}>
-              {renderProgress.progress}%
-            </p>
-            <button
-              onClick={handleCancelRender}
-              className="mt-4 px-4 py-2 rounded-lg text-sm font-medium transition-all hover:opacity-80"
-              style={{ 
-                background: 'hsl(0 60% 50%)',
-                color: 'white'
-              }}
-            >
-              ✕ 렌더링 취소
-            </button>
+    <div 
+      className="bg-editor-bg text-white font-display h-screen flex flex-col overflow-hidden selection:bg-primary/30" 
+      tabIndex={-1}
+      onDragOver={handleGlobalDragOver}
+      onDragLeave={handleGlobalDragLeave}
+      onDrop={handleGlobalDrop}
+    >
+      {/* Drop overlay */}
+      {isDraggingFile && (
+        <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="border-4 border-dashed border-[#00D4D4] rounded-2xl p-16 flex flex-col items-center gap-4 bg-black/60">
+            <span className="text-7xl">📁</span>
+            <span className="text-3xl font-bold text-white">파일을 여기에 놓으세요</span>
+            <span className="text-lg text-gray-400">동영상, 사진, 오디오, 자막 파일 지원</span>
           </div>
         </div>
       )}
 
-      {/* 헤더 */}
-      <header 
-        className="sticky top-0 z-40 px-6 py-3 flex items-center justify-between"
-        style={{ 
-          background: 'hsl(220 20% 4% / 0.95)',
-          borderBottom: '1px solid hsl(220 15% 18%)',
-          backdropFilter: 'blur(10px)'
-        }}
-      >
-        <div className="flex items-center gap-3">
-          <div 
-            className="w-10 h-10 rounded-xl flex items-center justify-center"
-            style={{ background: 'linear-gradient(135deg, hsl(185 100% 50%), hsl(330 80% 60%))' }}
-          >
-            <span className="text-xl">🎬</span>
-          </div>
-          <div>
-            <h1 className="font-bold text-lg tracking-wide" style={{ color: 'hsl(210 40% 98%)' }}>EDITORY</h1>
-            <p className="text-xs" style={{ color: 'hsl(215 20% 55%)' }}>AI-Powered Creative Studio</p>
-          </div>
+      {/* Toast notification */}
+      {importToast && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[9998] bg-gray-900 border border-[#00D4D4] rounded-lg px-6 py-3 shadow-2xl animate-fade-in">
+          <span className="text-white text-sm font-medium">{importToast}</span>
         </div>
-
-        <div className="flex items-center gap-3">
-          {/* 새 영상 업로드 버튼 - 항상 표시 */}
-          {(stage === 'editing' || stage === 'transcribing') && (
-            <button
-              onClick={handleReset}
-              className="px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 hover:scale-105"
-              style={{ 
-                background: 'linear-gradient(135deg, hsl(185 100% 45%), hsl(185 100% 35%))', 
-                color: 'white',
-              }}
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              새 영상
-            </button>
-          )}
-
-          {stage === 'editing' && (
-            <>
-              {/* 대본 SRT 다운로드 */}
-              <button
-                onClick={() => {
-                  const transcriptSubtitles = transcripts.map(t => ({
-                    id: t.id,
-                    startTime: t.startTime,
-                    endTime: t.endTime,
-                    text: t.editedText || t.originalText,
-                    type: 'TRANSCRIPT' as const,
-                    style: globalStyle,
-                    confidence: 1,
-                  }));
-                  downloadSRT(transcriptSubtitles, '대본.srt');
-                }}
-                disabled={transcripts.length === 0}
-                className="px-4 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-50"
-                style={{ 
-                  background: 'hsl(220 15% 15%)', 
-                  color: 'hsl(210 40% 98%)',
-                  border: '1px solid hsl(220 15% 25%)'
-                }}
-              >
-                대본 SRT
-              </button>
-              {/* AI 자막 SRT 다운로드 */}
-              <button
-                onClick={() => downloadSRT(subtitles, 'AI자막.srt')}
-                disabled={subtitles.length === 0}
-                className="px-4 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-50"
-                style={{ 
-                  background: 'hsl(220 15% 15%)', 
-                  color: 'hsl(210 40% 98%)',
-                  border: '1px solid hsl(220 15% 25%)'
-                }}
-              >
-                AI자막 SRT
-              </button>
-              <button
-                onClick={handleRenderVideo}
-                disabled={subtitles.length === 0}
-                className="px-4 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-50"
-                style={{ 
-                  background: 'linear-gradient(135deg, hsl(185 100% 50%), hsl(185 100% 40%))',
-                  color: 'hsl(220 20% 4%)'
-                }}
-              >
-                영상 다운로드
-              </button>
-            </>
-          )}
-        </div>
-      </header>
-
-      {/* 메인 콘텐츠 */}
-      {stage === 'upload' && (
-        <main className="max-w-4xl mx-auto p-6">
-          <div className="text-center mb-8 pt-12">
-            <h2 className="text-5xl font-bold mb-2 tracking-wider" style={{ 
-              background: 'linear-gradient(135deg, hsl(185 100% 50%), hsl(330 80% 60%))',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
-            }}>
-              EDITORY
-            </h2>
-            <p className="text-lg mb-4" style={{ color: 'hsl(210 40% 98%)' }}>
-              AI-Powered <span style={{ color: 'hsl(185 100% 50%)' }}>Creative Studio</span>
-            </p>
-            <p className="text-sm" style={{ color: 'hsl(215 20% 55%)' }}>
-              음성인식 → AI 자막 생성 → 영상 렌더링까지 한번에
-            </p>
-          </div>
-
-          {error && (
-            <div 
-              className="mb-6 p-4 rounded-xl text-sm"
-              style={{ 
-                background: 'hsl(0 72% 50% / 0.1)', 
-                border: '1px solid hsl(0 72% 50% / 0.3)',
-                color: 'hsl(0 72% 65%)'
-              }}
-            >
-              {error}
-            </div>
-          )}
-
-          <VideoUploader 
-            onFileReady={handleVideoUpload}
-            maxSizeMB={2048}
-          />
-
-          <div className="grid grid-cols-3 gap-4 mt-8">
-            {[
-              { icon: '🎙️', title: '음성인식', desc: 'OpenAI Whisper' },
-              { icon: '🤖', title: 'AI 자막', desc: 'AI 기반 생성' },
-              { icon: '🎬', title: '영상 렌더링', desc: 'FFmpeg.wasm' },
-            ].map((item, i) => (
-              <div 
-                key={i}
-                className="p-4 rounded-xl text-center"
-                style={{ 
-                  background: 'hsl(220 18% 8%)',
-                  border: '1px solid hsl(220 15% 18%)'
-                }}
-              >
-                <span className="text-2xl">{item.icon}</span>
-                <h3 className="font-medium mt-2" style={{ color: 'hsl(210 40% 98%)' }}>{item.title}</h3>
-                <p className="text-xs mt-1" style={{ color: 'hsl(215 20% 55%)' }}>{item.desc}</p>
-              </div>
-            ))}
-          </div>
-        </main>
       )}
 
-      {stage === 'transcribing' && (
-        <main className="max-w-md mx-auto p-6 pt-20 text-center">
-          <div 
-            className="w-20 h-20 mx-auto mb-6 rounded-full flex items-center justify-center"
-            style={{ background: 'hsl(185 100% 50% / 0.1)' }}
-          >
-            <svg className="w-10 h-10 animate-spin" style={{ color: 'hsl(185 100% 50%)' }} fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-          </div>
-          <h2 className="text-xl font-bold mb-2" style={{ color: 'hsl(210 40% 98%)' }}>
-            {progress.message}
-          </h2>
-          <div 
-            className="w-full h-2 rounded-full overflow-hidden mt-4"
-            style={{ background: 'hsl(220 15% 15%)' }}
-          >
-            <div 
-              className="h-full transition-all duration-300"
-              style={{ 
-                width: `${progress.percent}%`,
-                background: 'linear-gradient(90deg, hsl(185 100% 50%), hsl(330 80% 60%))'
-              }}
-            />
-          </div>
-        </main>
-      )}
-
-      {stage === 'editing' && (
-        <main className="h-[calc(100vh-60px)] flex flex-col lg:flex-row overflow-hidden">
-          {/* 왼쪽 패널 - 대본 & AI 자막 */}
-          <div 
-            className="w-full lg:w-80 flex flex-col order-2 lg:order-1 max-h-[30vh] lg:max-h-[calc(100vh-60px)] shrink-0 overflow-hidden"
-            style={{ 
-              background: 'hsl(220 18% 6%)',
-              borderRight: '1px solid hsl(220 15% 18%)',
-              borderTop: '1px solid hsl(220 15% 18%)'
-            }}
-          >
-            {/* 탭 + AI 자막 생성 버튼 (항상 보이도록 상단에 고정) */}
-            <div className="shrink-0">
-              {/* 탭 */}
-              <div className="flex" style={{ borderBottom: '1px solid hsl(220 15% 18%)' }}>
-                {[
-                  { id: 'transcript', label: '대본', icon: '📝' },
-                  { id: 'subtitle', label: 'AI자막', icon: '🎭' },
-                ].map((tab) => (
-                  <button
-                    key={tab.id}
-                    onClick={() => setActivePanel(tab.id as any)}
-                    className={`flex-1 py-2 lg:py-3 text-xs lg:text-sm font-medium transition-all`}
-                    style={{
-                      background: activePanel === tab.id ? 'hsl(185 100% 50% / 0.1)' : 'transparent',
-                      color: activePanel === tab.id ? 'hsl(185 100% 50%)' : 'hsl(215 20% 55%)',
-                      borderBottom: activePanel === tab.id ? '2px solid hsl(185 100% 50%)' : '2px solid transparent'
-                    }}
-                  >
-                    {tab.icon} {tab.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* AI 자막 생성 버튼 - 탭 바로 아래 (항상 보임) */}
-              {activePanel === 'transcript' && (
-                <div className="p-2 lg:p-3" style={{ borderBottom: '1px solid hsl(220 15% 18%)' }}>
-                {isGeneratingAI ? (
-                  <div className="flex gap-2">
-                    <div 
-                      className="flex-1 py-2 lg:py-3 rounded-lg lg:rounded-xl font-medium text-sm"
-                      style={{ 
-                        background: 'linear-gradient(135deg, hsl(330 80% 60%), hsl(280 70% 50%))',
-                        color: 'white'
-                      }}
-                    >
-                      <div className="flex items-center justify-center gap-2 px-2">
-                        <svg className="w-4 h-4 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        <span className="truncate">{aiProgress.message || '생성 중...'}</span>
-                        <span className="text-xs opacity-80 shrink-0">{aiProgress.percent}%</span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={stopAIGeneration}
-                      className="px-3 py-2 lg:px-4 lg:py-3 rounded-lg lg:rounded-xl font-medium transition-all text-sm"
-                      style={{ 
-                        background: 'hsl(0 70% 50%)',
-                        color: 'white'
-                      }}
-                    >
-                      중지
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={generateAISubtitles}
-                    disabled={transcripts.length === 0}
-                    className="w-full py-2 lg:py-3 rounded-lg lg:rounded-xl font-medium transition-all disabled:opacity-50 text-sm lg:text-base"
-                    style={{ 
-                      background: 'linear-gradient(135deg, hsl(330 80% 60%), hsl(280 70% 50%))',
-                      color: 'white'
-                    }}
-                  >
-                    🤖 AI 자막 생성
-                  </button>
-                )}
-                </div>
-              )}
-            </div>
-
-            {/* 패널 콘텐츠 */}
-            <div className="flex-1 min-h-0 overflow-y-auto">
-              {activePanel === 'transcript' && (
-                <TranscriptEditor
-                  transcripts={transcripts}
-                  currentTime={currentTime}
-                  onUpdate={handleTranscriptUpdate}
-                  onSeek={handleSeek}
-                />
-              )}
-              {activePanel === 'subtitle' && (
-                <>
-                  {/* 자막 유형 필터 버튼 */}
-                  <div className="flex gap-1 p-2 shrink-0" style={{ borderBottom: '1px solid hsl(220 15% 18%)' }}>
-                    {[
-                      { id: 'ALL', label: '전체', color: 'hsl(215 20% 55%)' },
-                      { id: 'ENTERTAINMENT', label: '🎭 예능', color: 'hsl(330 80% 60%)' },
-                      { id: 'SITUATION', label: '💬 상황', color: 'hsl(210 80% 60%)' },
-                      { id: 'EXPLANATION', label: '📝 설명', color: 'hsl(150 80% 50%)' },
-                    ].map((type) => (
-                      <button
-                        key={type.id}
-                        onClick={() => setSubtitleTypeFilter(type.id as any)}
-                        className="flex-1 py-1.5 text-xs font-medium rounded-md transition-all"
-                        style={{
-                          background: subtitleTypeFilter === type.id ? `${type.color}22` : 'transparent',
-                          color: subtitleTypeFilter === type.id ? type.color : 'hsl(215 20% 55%)',
-                          border: subtitleTypeFilter === type.id ? `1px solid ${type.color}44` : '1px solid transparent',
-                        }}
-                      >
-                        {type.label}
-                      </button>
-                    ))}
-                  </div>
-                  <AISubtitleEditor
-                    subtitles={subtitleTypeFilter === 'ALL' 
-                      ? subtitles 
-                      : subtitles.filter(s => s.type === subtitleTypeFilter)
-                    }
-                    currentTime={currentTime}
-                    selectedId={selectedSubtitleId}
-                    onSelect={setSelectedSubtitleId}
-                    onUpdate={handleSubtitleUpdate}
-                    onDelete={handleSubtitleDelete}
-                    onSeek={handleSeek}
-                    onAdd={handleSubtitleAdd}
-                    onMergeWithPrevious={handleMergeWithPrevious}
-                    onSplitSubtitle={handleSplitSubtitle}
-                    onRegenerateWithType={handleRegenerateWithType}
-                  />
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* 중앙 - 비디오 프리뷰 (모바일에서는 위에 표시) */}
-          <div className="flex-1 p-2 lg:p-4 flex flex-col items-center overflow-y-auto order-1 lg:order-2">
-            {error && (
-              <div 
-                className="mb-2 p-3 rounded-lg text-sm w-full"
-                style={{ 
-                  background: 'hsl(0 72% 50% / 0.1)', 
-                  border: '1px solid hsl(0 72% 50% / 0.3)',
-                  color: 'hsl(0 72% 65%)'
-                }}
-              >
-                {error}
-              </div>
-            )}
-
-            {/* 비디오 프리뷰 */}
-            <div className="w-full max-w-lg">
-              <VideoPreview
-                videoUrl={videoUrl}
-                subtitles={subtitles}
-                globalStyle={globalStyle}
-                currentTime={currentTime}
-                onTimeUpdate={setCurrentTime}
-                selectedSubtitleId={selectedSubtitleId}
-                onSelectSubtitle={setSelectedSubtitleId}
-                onSubtitleDrag={handleSubtitleDrag}
-                onSubtitleResize={handleSubtitleResize}
-                onSubtitleRotate={handleSubtitleRotate}
-                onSubtitleDelete={handleSubtitleDelete}
-                onSubtitleTextChange={handleSubtitleTextChange}
-                onSubtitleWidthChange={handleSubtitleWidthChange}
-                seekTo={seekTo}
-                onSeekComplete={handleSeekComplete}
-              />
-            </div>
-
-          </div>
-
-          {/* 오른쪽 - 스타일 패널 (PC에서만 표시) */}
-          <div 
-            className="hidden lg:flex w-72 flex-col order-3 h-full overflow-y-auto"
-            style={{ 
-              background: 'hsl(220 18% 6%)',
-              borderLeft: '1px solid hsl(220 15% 18%)'
-            }}
-          >
-            <div className="p-3" style={{ borderBottom: '1px solid hsl(220 15% 18%)' }}>
-              <h3 className="text-sm font-medium" style={{ color: 'hsl(210 40% 98%)' }}>
-                🎨 스타일 설정
-              </h3>
-            </div>
-            <div className="p-3 flex-1 overflow-y-auto">
-              <StylePanel
-                style={selectedSubtitleId 
-                  ? { ...globalStyle, ...subtitles.find(s => s.id === selectedSubtitleId)?.style }
-                  : globalStyle
-                }
-                onChange={handleStyleChange}
-                onApplyToAll={handleApplyStyleToAll}
-                compact={false}
-              />
-            </div>
-          </div>
-        </main>
-      )}
+      <Header
+        activeFileName={activeFileName}
+        activeFileDuration={activeFileDuration}
+        onRename={handleRename}
+      />
+      <SecondaryToolbar
+        onTabChange={setActiveTab}
+        onSoundEffect={handleSoundEffect}
+        onSticker={handleSticker}
+        onAutoColorCorrection={handleAutoColorCorrection}
+        onAnimationEffect={handleAnimationEffect}
+      />
+      <div className="flex-1 flex overflow-hidden">
+        <LeftSidebar 
+          onVideoAdd={handleVideoAdd} 
+          onSubtitleImport={handleSubtitleImport}
+          clips={clips}
+          selectedClipId={selectedClipId}
+          onClipSelect={handleClipSelect}
+        />
+        <Player
+          videoUrl={currentVideoUrl}
+          currentTime={currentTime}
+          selectedClipId={selectedClipId}
+          clips={clips}
+          isPlaying={isPlaying}
+          onPlayingChange={setIsPlaying}
+          onTimeUpdate={setCurrentTime}
+          onSeek={handleSeek}
+          onClipSelect={handleClipSelect}
+          onClipDelete={handleClipDelete}
+          onClipUpdate={handleClipUpdate}
+          videoRefCallback={(ref) => { videoRef.current = ref; }}
+          onPresetDrop={handlePresetDrop}
+        />
+        <RightSidebar
+          transcripts={transcripts}
+          subtitles={subtitles}
+          currentTime={currentTime}
+          selectedClip={selectedClip}
+          videoFile={currentVideoFile}
+          clips={clips}
+          onTranscriptsUpdate={setTranscripts}
+          onSubtitlesUpdate={setSubtitles}
+          onSeek={handleSeek}
+          onClipUpdate={handleClipUpdate}
+          onAddSubtitleClips={handleAddSubtitleClips}
+          onAddTextClip={handleAddTextClip}
+        />
+      </div>
+      <Timeline
+        clips={clips}
+        playheadPosition={currentTime}
+        selectedClipId={selectedClipId}
+        zoom={timelineZoom}
+        onZoomChange={setTimelineZoom}
+        snapEnabled={snapEnabled}
+        onSnapToggle={() => setSnapEnabled(prev => !prev)}
+        onPlayheadChange={handlePlayheadChange}
+        onClipAdd={handleClipAdd}
+        onClipUpdate={handleClipUpdate}
+        onClipSelect={handleClipSelect}
+        onClipDelete={handleClipDelete}
+        onSplit={handleSplit}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        onSpeedChange={handleSpeedChange}
+        onFitToScreen={handleFitToScreen}
+        onTrimLeft={handleTrimLeft}
+        onTrimRight={handleTrimRight}
+        isTimelineHovered={isTimelineHovered}
+        onHoverChange={setIsTimelineHovered}
+      />
     </div>
   );
 }

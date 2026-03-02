@@ -225,9 +225,24 @@ export default function StylePanel({ style, onChange, onApplyToAll, compact = fa
   return (
     <div className="h-full flex flex-col">
       {/* 헤더 */}
-      <div className="flex items-center gap-3 p-4" style={{ borderBottom: '1px solid hsl(220 15% 18%)' }}>
-        <div className="w-1 h-5 rounded-full" style={{ background: 'hsl(45 80% 60%)' }} />
-        <h3 className="font-semibold" style={{ color: 'hsl(210 40% 98%)' }}>스타일 설정</h3>
+      <div className="flex items-center justify-between gap-3 p-4" style={{ borderBottom: '1px solid hsl(220 15% 18%)' }}>
+        <div className="flex items-center gap-3">
+          <div className="w-1 h-5 rounded-full" style={{ background: 'hsl(45 80% 60%)' }} />
+          <h3 className="font-semibold" style={{ color: 'hsl(210 40% 98%)' }}>스타일 설정</h3>
+        </div>
+        {onApplyToAll && (
+          <button
+            onClick={onApplyToAll}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all hover:scale-105 active:scale-95"
+            style={{ 
+              background: 'linear-gradient(135deg, hsl(185 100% 50%), hsl(200 100% 45%))',
+              color: '#000'
+            }}
+            title="현재 스타일을 모든 자막에 적용"
+          >
+            ✨ 모두 적용
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import AnalyticsProvider from '@/components/analytics/AnalyticsProvider';
 
 export const metadata: Metadata = {
   title: '자막 추천 시스템 | Subtitle Recommender',
@@ -12,9 +13,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="ko">
-      <body className="min-h-screen bg-gray-950 antialiased">
-        {children}
+    <html lang="ko" className="dark">
+      <head>
+        <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
+        <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+      </head>
+      <body className="min-h-screen bg-editor-bg antialiased overflow-hidden">
+        <AnalyticsProvider>
+          {children}
+        </AnalyticsProvider>
       </body>
     </html>
   );

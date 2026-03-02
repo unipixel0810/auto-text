@@ -31,27 +31,25 @@ function buildPrompt(transcripts: TranscriptItem[]): string {
     .map(t => `[${t.startTime.toFixed(1)}s - ${t.endTime.toFixed(1)}s] ${t.editedText || t.originalText}`)
     .join('\n');
 
-  return `당신은 유튜브 영상 자막 전문가입니다. 시청자가 재미있게 볼 수 있는 자막을 만들어주세요.
+  return `당신은 예능 PD입니다. 영상에 **재미있는 자막**을 촘촘하게 넣어주세요.
 
-## 원본 대본 (STT) - 참고용
+## 원본 대본
 ${transcriptText}
 
-## 자막 유형 가이드
-1. **예능 자막 (ENTERTAINMENT)** - 재미있는 표현, 강조, 리액션
-   예: "이거 진짜 대박인데?", "아니 근데 진심으로?", "실화냐고요 ㄷㄷ"
-2. **상황 자막 (SITUATION)** - 상황 설명, 심리 묘사
-   예: "(살짝 긴장하는 중)", "지금 완전 신나는 상황", "(이게 되네...?)"
-3. **설명 자막 (EXPLANATION)** - 내용 요약, 핵심 정보
-   예: "결론은 이렇습니다", "여기서 중요한 포인트!", "쉽게 말하면~"
+## 핵심: 대본 그대로 X, 꾸며서 표현!
 
-## 중요 규칙
-- 원본 대본을 **재미있고 자연스럽게** 다시 표현할 것
-- 말하듯이 자연스러운 문장으로 (뚝뚝 끊기지 않게)
-- 이모지는 **가끔만 랜덤하게** 사용 (매번 넣지 말 것!)
-- 각 시간대에 **하나의 자막만** 생성
-- JSON 배열만 출력 (마크다운 없이)
+## 자막 유형
+1. **ENTERTAINMENT** - 리액션 ("실화?? 🤯", "아니 ㅋㅋㅋ")
+2. **SITUATION** - 상황 ("(긴장 MAX)", "(멘붕)")  
+3. **EXPLANATION** - 포인트 ("⚡ 핵심!", "결론: ~")
 
-출력: [{"startTime": 0.0, "endTime": 2.5, "text": "자막 내용", "type": "ENTERTAINMENT", "reason": "이유"}]`;
+## ⚠️ 필수 규칙
+- **3~5초마다 하나씩** 자막 생성
+- **재미있고 임팩트 있게!** (예능처럼)
+- 10-20자 적당한 길이
+- ⛔ 텍스트에 시간 넣지 말 것!
+
+출력: [{"startTime": 0.0, "endTime": 2.5, "text": "자막", "type": "ENTERTAINMENT", "reason": "이유"}]`;
 }
 
 // ============================================
@@ -106,24 +104,54 @@ export async function generateSubtitlesWithGemini(
 // 자막 변환
 // ============================================
 
+// 랜덤 스타일 프리셋 (다양한 색상/배경 조합)
+const RANDOM_STYLES = [
+  // 흰색 글씨 + 검정 테두리 (기본)
+  { color: '#FFFFFF', backgroundColor: 'transparent', strokeColor: '#000000', strokeWidth: 3 },
+  // 노란색 글씨 + 검정 테두리
+  { color: '#FFFF00', backgroundColor: 'transparent', strokeColor: '#000000', strokeWidth: 3 },
+  // 흰색 글씨 + 빨간 배경
+  { color: '#FFFFFF', backgroundColor: '#FF0000', strokeColor: '#000000', strokeWidth: 1 },
+  // 검정 글씨 + 노란 배경
+  { color: '#000000', backgroundColor: '#FFFF00', strokeColor: '#000000', strokeWidth: 0 },
+  // 흰색 글씨 + 파란 배경
+  { color: '#FFFFFF', backgroundColor: '#0066FF', strokeColor: '#000000', strokeWidth: 1 },
+  // 검정 글씨 + 흰색 배경
+  { color: '#000000', backgroundColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 0 },
+  // 시안 글씨 + 검정 테두리
+  { color: '#00FFFF', backgroundColor: 'transparent', strokeColor: '#000000', strokeWidth: 3 },
+  // 핑크 글씨 + 검정 테두리
+  { color: '#FF69B4', backgroundColor: 'transparent', strokeColor: '#000000', strokeWidth: 3 },
+  // 흰색 글씨 + 초록 배경
+  { color: '#FFFFFF', backgroundColor: '#00CC00', strokeColor: '#000000', strokeWidth: 1 },
+  // 흰색 글씨 + 주황 배경
+  { color: '#000000', backgroundColor: '#FF9900', strokeColor: '#000000', strokeWidth: 0 },
+];
+
 export function convertToSubtitleItems(
   generated: GeneratedSubtitle[]
 ): SubtitleItem[] {
-  return generated.map((item, index) => ({
-    id: `ai_${Date.now()}_${index}`,
-    startTime: item.startTime,
-    endTime: item.endTime,
-    text: item.text,
-    type: item.type,
-    confidence: 0.9,
-    metadata: {
+  return generated.map((item, index) => {
+    // 랜덤 스타일 선택
+    const randomStyle = RANDOM_STYLES[Math.floor(Math.random() * RANDOM_STYLES.length)];
+    
+    return {
+      id: `ai_${Date.now()}_${index}`,
+      startTime: item.startTime,
+      endTime: item.endTime,
+      text: item.text,
       type: item.type,
-      summary: item.reason,
-      detail: '',
-      keywords: [],
-      score: 90,
-    },
-  }));
+      confidence: 0.9,
+      style: randomStyle, // 랜덤 스타일 적용
+      metadata: {
+        type: item.type,
+        summary: item.reason,
+        detail: '',
+        keywords: [],
+        score: 90,
+      },
+    };
+  });
 }
 
 // ============================================
