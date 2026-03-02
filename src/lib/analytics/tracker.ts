@@ -1,5 +1,6 @@
-import type { AnalyticsEvent, AnalyticsEventType } from './types';
+import type { AnalyticsEvent, AnalyticsEventType, PageView } from './types';
 import { getSessionId } from './session';
+import { UAParser } from 'ua-parser-js';
 
 const BATCH_INTERVAL = 3000;
 const BATCH_SIZE = 20;
@@ -15,10 +16,37 @@ let reachedScrollDepths = new Set<number>();
 let clickHistory: { x: number; y: number; time: number }[] = [];
 let isInitialized = false;
 
+function getUtmParams() {
+  if (typeof window === 'undefined') return {};
+  const params = new URLSearchParams(window.location.search);
+  return {
+    utm_source: params.get('utm_source') || undefined,
+    utm_medium: params.get('utm_medium') || undefined,
+    utm_campaign: params.get('utm_campaign') || undefined,
+  };
+}
+
+function getDeviceInfo() {
+  const parser = new UAParser();
+  const result = parser.getResult();
+  const deviceType = result.device.type === 'mobile' ? 'mobile' : 
+                     result.device.type === 'tablet' ? 'tablet' : 'desktop';
+  
+  return {
+    device_type: deviceType as 'mobile' | 'tablet' | 'desktop',
+    browser: result.browser.name || 'Unknown',
+    os: result.os.name || 'Unknown',
+    screen_width: window.innerWidth,
+  };
+}
+
 function buildEvent(
   type: AnalyticsEventType,
   extra: Partial<AnalyticsEvent> = {}
 ): AnalyticsEvent {
+  const utm = type === 'page_view' ? getUtmParams() : {};
+  const device = type === 'page_view' ? getDeviceInfo() : {};
+
   return {
     event_type: type,
     page_url: window.location.pathname + window.location.search,
@@ -29,6 +57,8 @@ function buildEvent(
     viewport_width: window.innerWidth,
     viewport_height: window.innerHeight,
     created_at: new Date().toISOString(),
+    ...utm,
+    ...device,
     ...extra,
   };
 }

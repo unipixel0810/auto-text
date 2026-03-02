@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { queryEvents, getDistinctPages } from '@/lib/analytics/store';
+import { queryEvents, getDistinctPages, getStats, getChartData } from '@/lib/analytics/store';
 
 export async function GET(req: NextRequest) {
   try {
@@ -10,6 +10,18 @@ export async function GET(req: NextRequest) {
       const days = searchParams.get('days');
       const pages = await getDistinctPages(days ? parseInt(days) : undefined);
       return NextResponse.json({ pages });
+    }
+
+    if (action === 'stats') {
+      const days = searchParams.get('days');
+      const stats = await getStats(days ? parseInt(days) : 30);
+      return NextResponse.json(stats);
+    }
+
+    if (action === 'charts') {
+      const days = searchParams.get('days');
+      const charts = await getChartData(days ? parseInt(days) : 30);
+      return NextResponse.json(charts);
     }
 
     const page_url = searchParams.get('page_url') || undefined;

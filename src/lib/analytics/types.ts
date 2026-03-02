@@ -26,6 +26,14 @@ export interface AnalyticsEvent {
   viewport_height?: number;
   time_on_page?: number;
   created_at?: string;
+  // 추가 방문자 정보 (page_view 시)
+  utm_source?: string;
+  utm_medium?: string;
+  utm_campaign?: string;
+  device_type?: 'mobile' | 'tablet' | 'desktop';
+  browser?: string;
+  os?: string;
+  screen_width?: number;
 }
 
 export interface AnalyticsSession {
@@ -55,10 +63,36 @@ export interface RageClickEntry {
   last_occurred: string;
 }
 
-export interface DateFilter {
-  label: string;
-  value: 'today' | '7d' | '30d';
-  days: number;
+export interface PageView {
+  id?: string;
+  session_id: string;
+  page_url: string;
+  referrer?: string;
+  utm_source?: string;
+  utm_medium?: string;
+  utm_campaign?: string;
+  device_type: 'mobile' | 'tablet' | 'desktop';
+  browser: string;
+  os: string;
+  screen_width: number;
+  duration_seconds: number;
+  is_bounce: boolean;
+  created_at?: string;
+}
+
+export interface VisitorStats {
+  today_visitors: number;
+  yesterday_visitors: number;
+  visitor_change_pct: number;
+  avg_duration: number;
+  bounce_rate: number;
+  top_page: string;
+}
+
+export interface ChartDataPoint {
+  name: string;
+  value: number;
+  [key: string]: any;
 }
 
 export const DATE_FILTERS: DateFilter[] = [
