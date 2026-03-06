@@ -110,9 +110,7 @@ export default function RightSidebar({
     setIsTranscribing(true); setTranscriptionProgress(0); setTranscriptionStatus('음성 인식 준비 중...');
     transcriptionAbortController.current = new AbortController();
     try {
-      const apiKey = process.env.NEXT_PUBLIC_OPENAI_API_KEY || '';
-      if (!apiKey) throw new Error('OpenAI API 키가 설정되지 않았습니다.');
-      const result = await transcribeVideo(videoFile, apiKey, (status) => {
+      const result = await transcribeVideo(videoFile, 'backend-proxy', (status) => {
         setTranscriptionStatus(status);
         if (status.includes('오디오 추출')) setTranscriptionProgress(20);
         else if (status.includes('파일 처리')) setTranscriptionProgress(40);
@@ -488,9 +486,16 @@ export default function RightSidebar({
                         <span className="material-icons text-xs text-primary">auto_awesome</span>AI 생성 대본
                       </h4>
                     </div>
-                    <div className="flex-1 p-2 overflow-y-auto">
-                      {aiScript ? <div className="text-xs text-white whitespace-pre-wrap">{aiScript}</div>
-                        : <div className="text-text-secondary text-[10px] text-center py-4">AI 자막 생성 버튼을 눌러주세요</div>}
+                    <div className="flex-1 p-0 flex flex-col overflow-hidden">
+                      {aiScript ? (
+                        <textarea
+                          value={aiScript}
+                          onChange={(e) => setAiScript(e.target.value)}
+                          className="flex-1 p-2 bg-transparent text-xs text-white placeholder-text-secondary resize-none focus:outline-none"
+                        />
+                      ) : (
+                        <div className="text-text-secondary text-[10px] text-center p-4">AI 자막 생성 버튼을 눌러주세요</div>
+                      )}
                     </div>
                   </div>
                 </div>
