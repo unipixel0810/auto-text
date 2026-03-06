@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <title>A/B 테스트 디버깅 리포트</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            padding: 40px;
+            max-width: 800px;
+            margin: 0 auto;
+            line-height: 1.6;
+            color: #333;
+        }
+
+        h1 {
+            border-bottom: 2px solid #eaecef;
+            padding-bottom: .3em;
+            color: #0366d6;
+        }
+
+        h2 {
+            border-bottom: 1px solid #eaecef;
+            padding-bottom: .3em;
+            margin-top: 1.5em;
+            color: #24292e;
+        }
+
+        h3 {
+            margin-top: 1.5em;
+            color: #24292e;
+        }
+
+        code {
+            background-color: #f6f8fa;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+            font-size: 85%;
+            color: #e36209;
+        }
+
+        blockquote {
+            border-left: 4px solid #dfe2e5;
+            color: #6a737d;
+            margin: 0;
+            padding: 0 1em;
+        }
+
+        ul,
+        ol {
+            padding-left: 2em;
+        }
+
+        li {
+            margin-bottom: 0.5em;
+        }
+
+        .highlight {
+            background-color: #fffbdd;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="content"></div>
+    <script>
+        const markdownContent = `
+## a/b test 분석 (gemini)
+
+현재 어드민 페이지(A/B 테스트 대시보드)에서 A/B 테스트 기능이 제대로 작동하지 않고 "활성화된 실험이 없습니다." 등으로 나타나는 원인을 코드(\`src/lib/analytics/store.ts\`, \`ab-experiments.ts\`, \`ab-test.ts\` 등)를 바탕으로 분석한 결과입니다. 크게 세 가지 주요 원인이 파악되었습니다.
+
+### 1. 실험 데이터가 0건일 때 대시보드에 노출되지 않는 로직 (가장 유력한 버그 - <span class="highlight">해결 완료</span>)
+* **원인:** \`src/lib/analytics/store.ts\` 파일의 \`getABExperimentResults()\` 함수를 보면, 실험 목록을 불러올 때 \`ab_experiments\`(실험 설정 테이블)를 조회하지 않고, **\`ab_events\`(유저의 노출/클릭 이벤트 테이블)**만 조회하여 실험별 결과를 그룹화하고 있었습니다.
+* **문제:** 관리자 페이지에서 '새 실험 생성'을 통해 버튼이나 텍스트를 등록했더라도, **아직 방문자가 한 명도 없어서 이벤트(impression)가 찍히지 않았다면** 대시보드에 그 실험 자체가 나타나지 않습니다.
+* **해결책 적용:** 방금 제가 코드를 수정하여 \`ab_experiments\` 테이블에서 진행 중인 실험 목록 전체를 먼저 불러온 뒤 매핑하도록 개편했습니다. 이제 **조회수가 0건이더라도 어드민 리스트에 정상적으로 등록된 테스트가 표시**될 것입니다.
+
+### 2. Supabase DB 세팅 및 환경변수 문제 
+* **원인:** \`.env.local\` 파일에 \`NEXT_PUBLIC_SUPABASE_URL\` 및 \`NEXT_PUBLIC_SUPABASE_ANON_KEY\` 값이 올바르지 않은 경우.
+* **문제:** Supabase 연결이 안 되면 애널리틱스 이벤트가 백엔드로 전송되지 않고 증발하며, 테이블(\`ab_experiments\`, \`ab_events\`) 자체가 생성되지 않은 프로젝트라면 500 데이터베이스 에러가 발생해 화면에 보이지 않습니다.
+* **점검 필요:** Supabase 홈페이지를 열어 해당 프로젝트 스키마(Table)들이 정상적으로 생성되어 있는지, 환경변수에 올바른 Key를 넣었는지 확인해야 합니다.
+
+### 3. 어드민 페이지 내 트래킹 무시 조건
+* **원인:** A/B 테스트의 대상(예: \`data-ab-test\`가 달린 버튼)을 고객 화면이 아닌 관리자 페이지(\`/admin/...\`) 안에 넣었을 수 있습니다.
+* **문제:** 현재 코드에서 애널리틱스는 의도적으로 \`/admin/%\` 경로 하위에서 발생한 이벤트 트래킹을 무시하거나 통계에서 배제시키는 코드가 존재합니다.
+* **점검 필요:** A/B 테스트가 적용된 실제 버튼 컴포넌트 위치가 관리자 페이지가 아닌 일반 사용자용 페이지(\`src/app/page.tsx\` 등)에 있는지 레이아웃을 확인하세요.
+
+---
+**[현황 및 다음 단계]**
+가장 핵심 원인이었던 코딩 버그(데이터 0건일 때 누락되는 현상)는 제가 방금 코드를 수정하여 **조치 완료**했습니다. 로컬 서버의 어드민 대시보드를 새로고침하여 테스트 항목이 잘 뜨는지 점검해 보시기 바랍니다!
+        `;
+        document.getElementById('content').innerHTML = marked.parse(markdownContent);
+    </script>
+</body>
+
+</html>

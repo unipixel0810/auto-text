@@ -18,15 +18,29 @@ export default function ExperimentsDashboard() {
   const [loading, setLoading] = useState(true);
   const [aiAnalysis, setAiAnalysis] = useState<Record<string, string>>({});
   const [analyzing, setAnalyzing] = useState<string | null>(null);
+  const [supabaseConfigured, setSupabaseConfigured] = useState<boolean>(true);
 
   const fetchResults = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch('/api/analytics/query?action=ab-results');
+      if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+      }
       const data = await res.json();
-      setExperiments(data.experiments || []);
+      if (data.error) {
+        console.error('API error:', data.error);
+        if (data.error.includes('Supabase configuration is missing')) {
+          setSupabaseConfigured(false);
+        }
+        setExperiments([]);
+      } else {
+        setSupabaseConfigured(true);
+        setExperiments(data.experiments || []);
+      }
     } catch (err) {
       console.error('Failed to fetch experiment results:', err);
+      setExperiments([]);
     } finally {
       setLoading(false);
     }
@@ -49,13 +63,13 @@ export default function ExperimentsDashboard() {
         
         Please provide a concise analysis and recommendation.
       `;
-      
+
       const res = await fetch('/api/ai/analyze-ab', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
       });
-      
+
       const data = await res.json();
       setAiAnalysis(prev => ({ ...prev, [exp.name]: data.analysis }));
     } catch (err) {
@@ -76,19 +90,46 @@ export default function ExperimentsDashboard() {
           <span className="material-symbols-outlined text-[#00D4D4] text-[24px]">science</span>
           <h1 className="text-lg font-semibold">A/B 테스트 대시보드</h1>
         </div>
-        <button
-          onClick={fetchResults}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs bg-[#1a1a1a] border border-[#222] text-gray-400 hover:text-white hover:border-[#444] transition-all"
-        >
-          <span className={`material-symbols-outlined text-[16px] ${loading ? 'animate-spin' : ''}`}>refresh</span>
-          새로고침
-        </button>
+        <div className="flex items-center gap-3">
+          <a
+            href="/admin/experiments/create"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs bg-[#00D4D4] text-black font-bold hover:bg-[#00b8b8] transition-all"
+          >
+            <span className="material-symbols-outlined text-[16px]">add</span>
+            새 실험 생성
+          </a>
+          <button
+            onClick={fetchResults}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs bg-[#1a1a1a] border border-[#222] text-gray-400 hover:text-white hover:border-[#444] transition-all"
+          >
+            <span className={`material-symbols-outlined text-[16px] ${loading ? 'animate-spin' : ''}`}>refresh</span>
+            새로고침
+          </button>
+        </div>
       </header>
 
       <main className="p-8 max-w-6xl mx-auto">
         {loading ? (
-          <div className="flex items-center justify-center py-20">
+          <div className="flex flex-col items-center justify-center py-20 gap-4">
             <span className="material-symbols-outlined text-[48px] text-[#00D4D4] animate-spin">refresh</span>
+            <p className="text-gray-500 text-sm animate-pulse">실험 데이터를 불러오는 중...</p>
+          </div>
+        ) : !supabaseConfigured ? (
+          <div className="text-center py-16 bg-[#2a1a1a] rounded-2xl border border-red-900/30 px-6">
+            <span className="material-symbols-outlined text-[48px] text-red-500 mb-4">database_off</span>
+            <h2 className="text-xl font-bold text-white mb-2">Supabase 설정이 필요합니다</h2>
+            <p className="text-gray-400 text-sm mb-6 max-w-md mx-auto">
+              A/B 테스트 데이터를 저장하고 불러오려면 Supabase 데이터베이스 연결이 필요합니다.
+              <code className="bg-black/50 px-2 py-1 rounded mx-1">.env.local</code> 파일에 설정을 추가해주세요.
+            </p>
+            <a
+              href="https://supabase.com"
+              target="_blank"
+              className="inline-flex items-center gap-2 text-[#00D4D4] hover:underline text-sm font-medium"
+            >
+              Supabase 공식 문서 확인하기
+              <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+            </a>
           </div>
         ) : experiments.length === 0 ? (
           <div className="text-center py-20 bg-[#1a1a1a] rounded-2xl border border-[#222]">
@@ -111,7 +152,7 @@ export default function ExperimentsDashboard() {
                     </span>
                   )}
                 </div>
-                
+
                 <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
                   {/* Stats Table */}
                   <div className="space-y-4">
@@ -121,18 +162,18 @@ export default function ExperimentsDashboard() {
                       <div className="text-right">Clicks</div>
                       <div className="text-right text-[#00D4D4]">CTR (%)</div>
                     </div>
-                    
-                    <VariantRow 
-                      label="A (Control)" 
-                      stats={exp.variants.A} 
-                      isWinner={exp.winner === 'A'} 
+
+                    <VariantRow
+                      label="A (Control)"
+                      stats={exp.variants.A}
+                      isWinner={exp.winner === 'A'}
                     />
-                    <VariantRow 
-                      label="B (Test)" 
-                      stats={exp.variants.B} 
-                      isWinner={exp.winner === 'B'} 
+                    <VariantRow
+                      label="B (Test)"
+                      stats={exp.variants.B}
+                      isWinner={exp.winner === 'B'}
                     />
-                    
+
                     <div className="pt-4 border-t border-[#333] flex items-center justify-between text-[11px] text-gray-500 font-mono">
                       <span>p-value: {exp.pValue}</span>
                       <span>Confidence: {((1 - exp.pValue) * 100).toFixed(1)}%</span>
@@ -154,7 +195,7 @@ export default function ExperimentsDashboard() {
                         {analyzing === exp.name ? '분석 중...' : 'AI 분석하기'}
                       </button>
                     </div>
-                    
+
                     <div className="flex-1 text-sm text-gray-300 leading-relaxed italic">
                       {aiAnalysis[exp.name] ? (
                         <p>{aiAnalysis[exp.name]}</p>
@@ -175,9 +216,8 @@ export default function ExperimentsDashboard() {
 
 function VariantRow({ label, stats, isWinner }: { label: string, stats: any, isWinner: boolean }) {
   return (
-    <div className={`grid grid-cols-4 items-center px-3 py-4 rounded-xl border transition-all ${
-      isWinner ? 'bg-[#00D4D4]/5 border-[#00D4D4]/30 shadow-[0_0_15px_rgba(0,212,212,0.05)]' : 'bg-black/20 border-transparent'
-    }`}>
+    <div className={`grid grid-cols-4 items-center px-3 py-4 rounded-xl border transition-all ${isWinner ? 'bg-[#00D4D4]/5 border-[#00D4D4]/30 shadow-[0_0_15px_rgba(0,212,212,0.05)]' : 'bg-black/20 border-transparent'
+      }`}>
       <div className="font-bold text-sm">
         {label}
         {isWinner && <span className="ml-2 text-[10px] text-[#00D4D4]">Winner 🏆</span>}

@@ -8,7 +8,13 @@ export function getSupabase(): SupabaseClient | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  if (!url || !key) return null;
+  if (!url || !key) {
+    if (typeof window === 'undefined') {
+      console.warn('[Supabase] Missing environment variables: NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY');
+      console.warn('[Supabase] Please check your .env.local file.');
+    }
+    return null;
+  }
 
   supabase = createClient(url, key);
   return supabase;

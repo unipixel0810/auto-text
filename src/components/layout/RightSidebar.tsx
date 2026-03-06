@@ -21,11 +21,12 @@ interface RightSidebarProps {
   onClipUpdate?: (clipId: string, updates: Partial<VideoClip>) => void;
   onAddSubtitleClips?: (items: TranscriptItem[]) => void;
   onAddTextClip?: (preset: SubtitlePreset) => void;
+  onExport?: () => void;
 }
 
 export default function RightSidebar({
   transcripts = [], subtitles = [], currentTime = 0, selectedClip = null, videoFile = null, clips = [],
-  onTranscriptsUpdate, onSubtitlesUpdate, onSeek, onClipUpdate, onAddSubtitleClips, onAddTextClip,
+  onTranscriptsUpdate, onSubtitlesUpdate, onSeek, onClipUpdate, onAddSubtitleClips, onAddTextClip, onExport,
 }: RightSidebarProps) {
   const [activeTab, setActiveTab] = useState<'details' | 'export' | 'caption'>('details');
   const [scale, setScale] = useState(selectedClip?.scale ?? 100);
@@ -76,6 +77,13 @@ export default function RightSidebar({
   const transcriptionAbortController = useRef<AbortController | null>(null);
   const scriptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const subtitleFileRef = useRef<HTMLInputElement>(null);
+
+  // === AUTO PIPELINE STATE ===
+  const [pipelineActive, setPipelineActive] = useState(false);
+  const [pipelineStep, setPipelineStep] = useState<'idle' | 'stt' | 'ai' | 'done'>('idle');
+  const [pipelineProgress, setPipelineProgress] = useState(0);
+  const [pipelineStatus, setPipelineStatus] = useState('');
+  const processedFileRef = useRef<string | null>(null);
 
   const filteredTranscripts = transcripts.filter((t) =>
     (t.editedText || t.originalText).toLowerCase().includes(searchQuery.toLowerCase())
@@ -186,6 +194,111 @@ export default function RightSidebar({
     }
   }, [videoFile, geminiApiKey, transcripts, subtitles, onTranscriptsUpdate, onSubtitlesUpdate]);
 
+  // === AUTO PIPELINE: Triggers when videoFile changes ===
+  useEffect(() => {
+    if (!videoFile) return;
+    // Prevent re-running for the same file
+    const fileKey = `${videoFile.name}_${videoFile.size}_${videoFile.lastModified}`;
+    if (processedFileRef.current === fileKey) return;
+    processedFileRef.current = fileKey;
+
+    const runPipeline = async () => {
+      setPipelineActive(true);
+      setPipelineStep('stt');
+      setPipelineProgress(0);
+      setPipelineStatus('🎤 음성 인식 준비 중...');
+
+      // Step 1: STT (Whisper)
+      try {
+        const apiKey = process.env.NEXT_PUBLIC_OPENAI_API_KEY || '';
+        if (apiKey) {
+          const result = await transcribeVideo(videoFile, apiKey, (status) => {
+            setPipelineStatus(`🎤 ${status}`);
+            if (status.includes('오디오 추출')) setPipelineProgress(10);
+            else if (status.includes('파일 처리')) setPipelineProgress(20);
+            else if (status.includes('음성 인식')) {
+              const m = status.match(/(\d+)\/(\d+)/);
+              if (m) setPipelineProgress(20 + (parseInt(m[1]) / parseInt(m[2])) * 25);
+            }
+            else if (status.includes('완료')) setPipelineProgress(45);
+          });
+
+          const newT: TranscriptItem[] = [];
+          let seg: { words: typeof result.words; startTime: number } | null = null;
+          for (const word of result.words) {
+            if (!seg || word.startTime - seg.startTime >= 3) {
+              if (seg) {
+                newT.push({ id: `t_${Date.now()}_${newT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
+              }
+              seg = { words: [word], startTime: word.startTime };
+            } else seg.words.push(word);
+          }
+          if (seg) newT.push({ id: `t_${Date.now()}_${newT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
+          onTranscriptsUpdate?.(newT);
+        }
+      } catch (err) {
+        console.warn('[Auto Pipeline] STT 단계 건너뜀:', err);
+      }
+
+      // Step 2: AI Subtitle Generation (Gemini)
+      setPipelineStep('ai');
+      setPipelineProgress(50);
+      setPipelineStatus('🤖 AI 자막 생성 중...');
+
+      try {
+        const key = geminiApiKey || localStorage.getItem('gemini_api_key') || '';
+        if (key) {
+          const results = await generateSubtitlesFromAudio(videoFile, key, (pct, msg) => {
+            setPipelineProgress(50 + (pct / 2));
+            setPipelineStatus(`🤖 ${msg}`);
+          });
+
+          const newT: TranscriptItem[] = results.map((r, i) => ({
+            id: `gem_${Date.now()}_${i}`,
+            startTime: r.start_time,
+            endTime: r.end_time,
+            originalText: r.text,
+            editedText: r.text,
+            isEdited: false,
+          }));
+          // Merge with existing transcripts from STT step
+          onTranscriptsUpdate?.(newT);
+
+          const newSubs: SubtitleItem[] = results.map((r, i) => ({
+            id: `gemsub_${Date.now()}_${i}`,
+            startTime: r.start_time,
+            endTime: r.end_time,
+            text: r.text,
+            type: r.style_type === '예능자막' ? 'ENTERTAINMENT' as const : r.style_type === '설명자막' ? 'EXPLANATION' as const : 'SITUATION' as const,
+            confidence: 0.9,
+          }));
+          onSubtitlesUpdate?.([...subtitles, ...newSubs]);
+          setAiScript(results.map(r => `[${r.style_type}] ${r.text}`).join('\n'));
+
+          // Auto-add to timeline
+          if (onAddSubtitleClips && newT.length > 0) {
+            onAddSubtitleClips(newT);
+          }
+        }
+      } catch (err) {
+        console.warn('[Auto Pipeline] AI 자막 단계 건너뜀:', err);
+      }
+
+      setPipelineStep('done');
+      setPipelineProgress(100);
+      setPipelineStatus('✅ 자동 자막 생성 완료!');
+      setTimeout(() => {
+        setPipelineActive(false);
+        setPipelineStep('idle');
+        setPipelineProgress(0);
+        setPipelineStatus('');
+      }, 3000);
+    };
+
+    runPipeline();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoFile]);
+
   const handleSaveApiKey = () => {
     localStorage.setItem('gemini_api_key', geminiApiKey);
     setShowApiKeyModal(false);
@@ -206,7 +319,43 @@ export default function RightSidebar({
   };
 
   return (
-    <aside className="w-72 bg-panel-bg border-l border-border-color flex flex-col shrink-0">
+    <aside className="w-full h-full bg-panel-bg border-l border-border-color flex flex-col overflow-hidden">
+      {/* Auto Pipeline Progress Overlay */}
+      {pipelineActive && (
+        <div className="bg-gradient-to-r from-blue-900/80 to-cyan-900/80 border-b border-cyan-500/30 px-3 py-2.5 animate-pulse-subtle">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] font-semibold text-white flex items-center gap-1">
+              <span className="material-icons text-sm text-cyan-400 animate-spin">autorenew</span>
+              자동 자막 파이프라인
+            </span>
+            <span className="text-[10px] text-cyan-300 font-mono">{Math.round(pipelineProgress)}%</span>
+          </div>
+          <div className="w-full h-2 bg-black/30 rounded-full overflow-hidden mb-1">
+            <div
+              className="h-full rounded-full transition-all duration-500 ease-out"
+              style={{
+                width: `${pipelineProgress}%`,
+                background: pipelineStep === 'stt'
+                  ? 'linear-gradient(90deg, #3B82F6, #2563EB)'
+                  : pipelineStep === 'ai'
+                    ? 'linear-gradient(90deg, #06B6D4, #0891B2)'
+                    : 'linear-gradient(90deg, #10B981, #059669)',
+              }}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] text-gray-300">{pipelineStatus}</span>
+            <div className="flex gap-1">
+              {['stt', 'ai', 'done'].map((step, i) => (
+                <div key={step} className={`w-1.5 h-1.5 rounded-full transition-all ${pipelineStep === step ? 'bg-cyan-400 scale-125' :
+                  ['stt', 'ai', 'done'].indexOf(pipelineStep) > i ? 'bg-green-400' : 'bg-gray-600'
+                  }`} />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="flex border-b border-border-color">
         {[
@@ -215,9 +364,8 @@ export default function RightSidebar({
           { id: 'export' as const, icon: 'file_download', tip: 'Export' },
         ].map(tab => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id)} title={tab.tip}
-            className={`flex-1 py-2 flex items-center justify-center transition-all relative group ${
-              activeTab === tab.id ? 'text-white border-b-2 border-primary bg-white/5' : 'text-text-secondary hover:text-white hover:bg-white/5'
-            } active:scale-95`}>
+            className={`flex-1 py-2 flex items-center justify-center transition-all relative group ${activeTab === tab.id ? 'text-white border-b-2 border-primary bg-white/5' : 'text-text-secondary hover:text-white hover:bg-white/5'
+              } active:scale-95`}>
             <span className="material-icons text-lg">{tab.icon}</span>
           </button>
         ))}
@@ -292,11 +440,10 @@ export default function RightSidebar({
                     </div>
                     {/* Button 1: 자막대본 자동생성 */}
                     <button onClick={handleAutoTranscribe} disabled={isTranscribing || !videoFile}
-                      className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-all active:scale-95 shadow-md ${
-                        isTranscribing || !videoFile
-                          ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none'
-                          : 'bg-gradient-to-r from-[#3B82F6] to-[#2563EB] text-white hover:shadow-blue-500/30 hover:brightness-110'
-                      }`}>
+                      className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-all active:scale-95 shadow-md ${isTranscribing || !videoFile
+                        ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none'
+                        : 'bg-gradient-to-r from-[#3B82F6] to-[#2563EB] text-white hover:shadow-blue-500/30 hover:brightness-110'
+                        }`}>
                       {isTranscribing ? (
                         <><span className="material-icons text-sm animate-spin">refresh</span>{transcriptionStatus || '인식 중...'}</>
                       ) : (
@@ -318,11 +465,10 @@ export default function RightSidebar({
 
                     {/* Button 2: Gemini AI 자막생성 */}
                     <button onClick={handleGeminiAudioGenerate} disabled={isGeminiGenerating || !videoFile}
-                      className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-all active:scale-95 shadow-md ${
-                        isGeminiGenerating || !videoFile
-                          ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none'
-                          : 'bg-gradient-to-r from-[#06B6D4] to-[#0891B2] text-white hover:shadow-cyan-500/30 hover:brightness-110'
-                      }`}>
+                      className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-all active:scale-95 shadow-md ${isGeminiGenerating || !videoFile
+                        ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none'
+                        : 'bg-gradient-to-r from-[#06B6D4] to-[#0891B2] text-white hover:shadow-cyan-500/30 hover:brightness-110'
+                        }`}>
                       {isGeminiGenerating ? (
                         <><span className="material-icons text-sm animate-spin">refresh</span>{geminiStatus || '생성 중...'}</>
                       ) : (
@@ -374,9 +520,8 @@ export default function RightSidebar({
                       onDragStart={(e) => handlePresetDragStart(e, preset)}
                       onClick={() => handlePresetClick(preset)}
                       title={preset.name}
-                      className={`relative rounded-lg border-2 flex items-center justify-center overflow-hidden transition-all active:scale-90 cursor-grab active:cursor-grabbing ${
-                        selectedPresetId === preset.id ? 'border-primary ring-2 ring-primary scale-105' : 'border-gray-700 hover:border-gray-500'
-                      }`}
+                      className={`relative rounded-lg border-2 flex items-center justify-center overflow-hidden transition-all active:scale-90 cursor-grab active:cursor-grabbing ${selectedPresetId === preset.id ? 'border-primary ring-2 ring-primary scale-105' : 'border-gray-700 hover:border-gray-500'
+                        }`}
                       style={{
                         minHeight: '56px',
                         backgroundColor: preset.backgroundColor === 'transparent' ? '#1a1a2e' : preset.backgroundColor,
@@ -393,8 +538,8 @@ export default function RightSidebar({
                           textShadow: preset.glowColor
                             ? `0 0 ${preset.shadowBlur}px ${preset.glowColor}, 0 0 ${preset.shadowBlur * 2}px ${preset.glowColor}`
                             : preset.shadowBlur > 0
-                            ? `${preset.shadowOffsetX}px ${preset.shadowOffsetY}px ${preset.shadowBlur}px ${preset.shadowColor}`
-                            : 'none',
+                              ? `${preset.shadowOffsetX}px ${preset.shadowOffsetY}px ${preset.shadowBlur}px ${preset.shadowColor}`
+                              : 'none',
                           WebkitTextStroke: preset.strokeWidth > 0 ? `${Math.min(preset.strokeWidth, 2)}px ${preset.strokeColor}` : 'none',
                           lineHeight: 1,
                         }}>
@@ -419,7 +564,7 @@ export default function RightSidebar({
             {!selectedClip && (
               <div className="flex flex-col items-center justify-center py-8 text-center gap-2">
                 <span className="material-icons text-4xl text-gray-600">touch_app</span>
-                <p className="text-xs text-gray-500">프리뷰 또는 타임라인에서<br/>영상을 선택해주세요</p>
+                <p className="text-xs text-gray-500">프리뷰 또는 타임라인에서<br />영상을 선택해주세요</p>
               </div>
             )}
             <div className={`space-y-3 ${!selectedClip ? 'opacity-40 pointer-events-none' : ''}`}>
@@ -538,7 +683,7 @@ export default function RightSidebar({
                   <option>Low</option>
                 </select>
               </div>
-              <button className="w-full bg-primary hover:bg-blue-500 text-white py-2 rounded text-xs font-semibold transition-all active:scale-95">
+              <button onClick={onExport} className="w-full bg-primary hover:bg-blue-500 text-white py-2 rounded text-xs font-semibold transition-all active:scale-95">
                 <span className="flex items-center justify-center gap-1">
                   <span className="material-icons text-sm">file_download</span>
                   Export Video
@@ -558,7 +703,7 @@ export default function RightSidebar({
               Gemini API Key 설정
             </h3>
             <p className="text-[11px] text-gray-400 mb-3">
-              Gemini AI 자막 생성을 위해 API 키를 입력해주세요.<br/>
+              Gemini AI 자막 생성을 위해 API 키를 입력해주세요.<br />
               <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" className="text-[#00D4D4] hover:underline">Google AI Studio</a>에서 발급받을 수 있습니다.
             </p>
             <input

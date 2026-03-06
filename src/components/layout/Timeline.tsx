@@ -14,6 +14,7 @@ interface TimelineProps {
   snapEnabled?: boolean;
   onSnapToggle?: () => void;
   onPlayheadChange?: (position: number) => void;
+  onHoverTimeChange?: (time: number | null) => void;
   onClipAdd?: (file: File, trackIndex: number, startTime: number) => void;
   onClipUpdate?: (clipId: string, updates: Partial<VideoClip>) => void;
   onClipSelect?: (clipId: string | null) => void;
@@ -36,22 +37,38 @@ const SNAP_THRESHOLD_PX = 8;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 5;
 
-// Timeline layer order (top to bottom): Subtitles > Video > Audio
+// Timeline layer order (top to bottom): Overlays(10-14) > Main Video(1) > Audio(20-24)
 const TRACKS = [
-  { trackIndex: 0, label: 'Subtitles', icon: 'subtitles', color: 'purple', height: 'h-12' },
-  { trackIndex: 1, label: 'Video', icon: 'movie', color: 'blue', height: 'h-16' },
-  { trackIndex: 2, label: 'Audio', icon: 'audiotrack', color: 'green', height: 'h-12' },
+  { trackIndex: 14, label: 'Overlay 5', icon: 'layers', color: 'cyan', height: 'h-9' },
+  { trackIndex: 13, label: 'Overlay 4', icon: 'layers', color: 'cyan', height: 'h-9' },
+  { trackIndex: 12, label: 'Overlay 3', icon: 'layers', color: 'cyan', height: 'h-9' },
+  { trackIndex: 11, label: 'Overlay 2', icon: 'layers', color: 'cyan', height: 'h-9' },
+  { trackIndex: 10, label: 'Overlay 1', icon: 'layers', color: 'cyan', height: 'h-9' },
+  { trackIndex: 0, label: 'Subtitles', icon: 'subtitles', color: 'purple', height: 'h-8' },
+  { trackIndex: 1, label: 'Main Video', icon: 'movie', color: 'blue', height: 'h-12' },
+  { trackIndex: 20, label: 'Audio 1', icon: 'audiotrack', color: 'green', height: 'h-9' },
+  { trackIndex: 21, label: 'Audio 2', icon: 'audiotrack', color: 'green', height: 'h-9' },
+  { trackIndex: 22, label: 'Audio 3', icon: 'audiotrack', color: 'green', height: 'h-9' },
 ];
 
 const TRACK_COLORS: Record<number, { bg: string; bgSel: string; border: string; text: string }> = {
   0: { bg: 'bg-purple-900/50', bgSel: 'bg-purple-700/60', border: 'border-purple-500/50', text: 'text-purple-100' },
   1: { bg: 'bg-blue-900/50', bgSel: 'bg-blue-700/60', border: 'border-blue-500/50', text: 'text-white' },
-  2: { bg: 'bg-green-900/50', bgSel: 'bg-green-700/60', border: 'border-green-500/50', text: 'text-green-100' },
+  // Overlays (10-14)
+  10: { bg: 'bg-cyan-900/40', bgSel: 'bg-cyan-700/60', border: 'border-cyan-500/40', text: 'text-cyan-100' },
+  11: { bg: 'bg-cyan-900/40', bgSel: 'bg-cyan-700/60', border: 'border-cyan-500/40', text: 'text-cyan-100' },
+  12: { bg: 'bg-cyan-900/40', bgSel: 'bg-cyan-700/60', border: 'border-cyan-500/40', text: 'text-cyan-100' },
+  13: { bg: 'bg-cyan-900/40', bgSel: 'bg-cyan-700/60', border: 'border-cyan-500/40', text: 'text-cyan-100' },
+  14: { bg: 'bg-cyan-900/40', bgSel: 'bg-cyan-700/60', border: 'border-cyan-500/40', text: 'text-cyan-100' },
+  // Audio (20-24)
+  20: { bg: 'bg-green-900/40', bgSel: 'bg-green-700/60', border: 'border-green-500/40', text: 'text-green-100' },
+  21: { bg: 'bg-green-900/40', bgSel: 'bg-green-700/60', border: 'border-green-500/40', text: 'text-green-100' },
+  22: { bg: 'bg-green-900/40', bgSel: 'bg-green-700/60', border: 'border-green-500/40', text: 'text-green-100' },
 };
 
 export default function Timeline({
   clips, playheadPosition, selectedClipId, zoom, onZoomChange, snapEnabled = true, onSnapToggle,
-  onPlayheadChange, onClipAdd, onClipUpdate, onClipSelect, onClipDelete,
+  onPlayheadChange, onHoverTimeChange, onClipAdd, onClipUpdate, onClipSelect, onClipDelete,
   onSplit, onUndo, onRedo, onSpeedChange, onFitToScreen, onTrimLeft, onTrimRight, isTimelineHovered, onHoverChange,
 }: TimelineProps) {
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
@@ -61,20 +78,30 @@ export default function Timeline({
   } | null>(null);
   const [resizePreview, setResizePreview] = useState<{ clipId: string; newDuration: number } | null>(null);
   const [draggingClip, setDraggingClip] = useState<{
-    clipId: string; initialMouseX: number; initialStartTime: number;
+    clipId: string; initialMouseX: number; initialStartTime: number; initialMouseY: number;
   } | null>(null);
   const [showSpeedPopup, setShowSpeedPopup] = useState(false);
   const [speedValue, setSpeedValue] = useState(1);
   const [showLinkMenu, setShowLinkMenu] = useState(false);
   const [showSnapMenu, setShowSnapMenu] = useState(false);
+  const [showViewMenu, setShowViewMenu] = useState(false);
   const [previewOverlay, setPreviewOverlay] = useState(false);
-  const [trackVisibility, setTrackVisibility] = useState<Record<number, boolean>>({ 0: true, 1: true, 2: true });
-  const [trackLocked, setTrackLocked] = useState<Record<number, boolean>>({ 0: false, 1: false, 2: false });
+  const [trackVisibility, setTrackVisibility] = useState<Record<number, boolean>>(() => {
+    const obj: Record<number, boolean> = {};
+    TRACKS.forEach(t => obj[t.trackIndex] = true);
+    return obj;
+  });
+  const [trackLocked, setTrackLocked] = useState<Record<number, boolean>>(() => {
+    const obj: Record<number, boolean> = {};
+    TRACKS.forEach(t => obj[t.trackIndex] = false);
+    return obj;
+  });
 
   // Scrub mode
   const [scrubMode, setScrubMode] = useState<'click' | 'hover'>('click');
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubTime, setScrubTime] = useState<number | null>(null);
+  const [hoverTime, setHoverTime] = useState<number | null>(null);
   const lastScrubRef = useRef(0);
 
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -191,7 +218,7 @@ export default function Timeline({
     e.preventDefault(); e.stopPropagation();
     const clip = clips.find(c => c.id === clipId);
     if (!clip) return;
-    setDraggingClip({ clipId, initialMouseX: e.clientX, initialStartTime: clip.startTime });
+    setDraggingClip({ clipId, initialMouseX: e.clientX, initialStartTime: clip.startTime, initialMouseY: e.clientY });
     onClipSelect?.(clipId);
   }, [clips, onClipSelect]);
 
@@ -203,11 +230,38 @@ export default function Timeline({
       const deltaX = e.clientX - draggingClip.initialMouseX;
       const deltaTime = deltaX / pixelsPerSecond;
       let newStart = Math.max(0, draggingClip.initialStartTime + deltaTime);
-      newStart = findSnapTime(newStart, draggingClip.clipId, clip.trackIndex);
-      const endSnap = findSnapTime(newStart + clip.duration, draggingClip.clipId, clip.trackIndex);
+
+      // Track Index Calculation (Vertical Dragging)
+      const deltaY = e.clientY - (draggingClip.initialMouseY ?? e.clientY);
+      const trackRows = Array.from(tracksRef.current?.children || []).filter(c => c.classList.contains('flex'));
+      const currentTrackEl = trackRows.find(row => {
+        const rect = row.getBoundingClientRect();
+        return e.clientY >= rect.top && e.clientY <= rect.bottom;
+      });
+
+      let newTrackIndex = clip.trackIndex;
+      if (currentTrackEl) {
+        const trackIdxIdx = trackRows.indexOf(currentTrackEl);
+        if (trackIdxIdx !== -1 && TRACKS[trackIdxIdx]) {
+          const potentialTrack = TRACKS[trackIdxIdx].trackIndex;
+
+          // Compatability check: Visual clips (1, 10-14, 0) can't move to Audio (20-24)
+          const isVisual = (idx: number) => idx === 1 || (idx >= 10 && idx <= 14) || idx === 0;
+          const isAudio = (idx: number) => idx >= 20 && idx <= 24;
+
+          if ((isVisual(clip.trackIndex) && isVisual(potentialTrack)) ||
+            (isAudio(clip.trackIndex) && isAudio(potentialTrack))) {
+            newTrackIndex = potentialTrack;
+          }
+        }
+      }
+
+      newStart = findSnapTime(newStart, draggingClip.clipId, newTrackIndex);
+      const endSnap = findSnapTime(newStart + clip.duration, draggingClip.clipId, newTrackIndex);
       if (endSnap !== newStart + clip.duration) newStart = endSnap - clip.duration;
       if (newStart < 0) newStart = 0;
-      onClipUpdate?.(draggingClip.clipId, { startTime: newStart });
+
+      onClipUpdate?.(draggingClip.clipId, { startTime: newStart, trackIndex: newTrackIndex });
     };
     const up = () => setDraggingClip(null);
     document.addEventListener('mousemove', move);
@@ -237,21 +291,27 @@ export default function Timeline({
     if (now - lastScrubRef.current < 33) return; // 30fps throttle
     lastScrubRef.current = now;
     setScrubTime(time);
-    onPlayheadChange?.(time);
-  }, [onPlayheadChange]);
+    if (isScrubbing || scrubMode === 'hover') {
+      onPlayheadChange?.(time);
+    }
+    // Always update hoverTime for real-time previewing
+    onHoverTimeChange?.(time);
+  }, [onPlayheadChange, onHoverTimeChange, isScrubbing, scrubMode]);
 
   const handleScrubMouseDown = useCallback((e: React.MouseEvent) => {
     if (scrubMode === 'click') {
       setIsScrubbing(true);
+      const time = getTimeFromMouseX(e.clientX);
+      onPlayheadChange?.(time);
     }
-  }, [scrubMode]);
+  }, [scrubMode, getTimeFromMouseX, onPlayheadChange]);
 
   const handleScrubMouseMove = useCallback((e: React.MouseEvent) => {
-    if (scrubMode === 'hover' || isScrubbing) {
-      const time = getTimeFromMouseX(e.clientX);
-      throttledScrub(time);
-    }
-  }, [scrubMode, isScrubbing, getTimeFromMouseX, throttledScrub]);
+    const time = getTimeFromMouseX(e.clientX);
+    // Always update hover time for the hover scrubber line
+    setHoverTime(time);
+    throttledScrub(time);
+  }, [getTimeFromMouseX, throttledScrub]);
 
   const handleScrubMouseUp = useCallback(() => {
     if (scrubMode === 'click') {
@@ -261,9 +321,11 @@ export default function Timeline({
   }, [scrubMode]);
 
   const handleScrubMouseLeave = useCallback(() => {
+    setHoverTime(null);
+    onHoverTimeChange?.(null);
     setScrubTime(null);
     if (scrubMode === 'click') setIsScrubbing(false);
-  }, [scrubMode]);
+  }, [scrubMode, onHoverTimeChange]);
 
   // Toggle scrub mode with S key
   useEffect(() => {
@@ -307,11 +369,10 @@ export default function Timeline({
         onClick={(e) => handleClipClick(e, clip.id)}
         onContextMenu={(e) => handleClipContextMenu(e, clip.id)}
         onMouseDown={(e) => handleClipDragStart(e, clip.id)}
-        className={`absolute top-1 bottom-1 rounded flex overflow-hidden select-none ${
-          isAboutToDelete ? 'bg-red-900/60 border-2 border-red-500 shadow-lg shadow-red-500/50'
+        className={`absolute top-1 bottom-1 rounded flex overflow-hidden select-none ${isAboutToDelete ? 'bg-red-900/60 border-2 border-red-500 shadow-lg shadow-red-500/50'
           : isSel ? `${colors.bgSel} border-2 border-primary shadow-lg shadow-primary/30`
-          : `${colors.bg} border ${colors.border} hover:brightness-125`
-        } ${isResizing || isDrag ? '' : 'transition-all duration-75'}`}
+            : `${colors.bg} border ${colors.border} hover:brightness-125`
+          } ${isResizing || isDrag ? '' : 'transition-all duration-75'}`}
         style={{
           left: `${clip.startTime * pixelsPerSecond}px`,
           width: `${Math.max(clip.duration * pixelsPerSecond, 4)}px`,
@@ -341,8 +402,7 @@ export default function Timeline({
   };
 
   const cyanBtn = (active?: boolean) =>
-    `p-1 rounded transition-all active:scale-90 ${
-      active ? 'bg-[#00D4D4]/20 text-[#00D4D4]' : 'text-[#00D4D4] hover:bg-[#00D4D4]/10 hover:text-[#00D4D4]'
+    `p-1 rounded transition-all active:scale-90 ${active ? 'bg-[#00D4D4]/20 text-[#00D4D4]' : 'text-[#00D4D4] hover:bg-[#00D4D4]/10 hover:text-[#00D4D4]'
     }`;
 
   return (
@@ -449,7 +509,7 @@ export default function Timeline({
           </Tooltip>
 
           {/* Fit to Screen */}
-          <Tooltip label="Fit" shortcut="⌘⇧F">
+          <Tooltip label="Fit" shortcut="⇧Z">
             <button onClick={onFitToScreen} className={cyanBtn()}>
               <span className="material-symbols-outlined text-[18px]">fit_screen</span>
             </button>
@@ -468,11 +528,10 @@ export default function Timeline({
           <Tooltip label={scrubMode === 'hover' ? '스크럽: 호버 모드 (S)' : '스크럽: 클릭 모드 (S)'}>
             <button
               onClick={() => setScrubMode(prev => prev === 'click' ? 'hover' : 'click')}
-              className={`px-1.5 py-0.5 rounded text-[9px] font-semibold transition-all active:scale-90 ${
-                scrubMode === 'hover'
-                  ? 'bg-[#00D4D4] text-black'
-                  : 'text-[#00D4D4] hover:bg-[#00D4D4]/10'
-              }`}
+              className={`px-1.5 py-0.5 rounded text-[9px] font-semibold transition-all active:scale-90 ${scrubMode === 'hover'
+                ? 'bg-[#00D4D4] text-black'
+                : 'text-[#00D4D4] hover:bg-[#00D4D4]/10'
+                }`}
             >
               스크럽
             </button>
@@ -505,8 +564,50 @@ export default function Timeline({
           </Tooltip>
         </div>
 
-        {/* Right side: Zoom controls */}
+        {/* Right side: View menu + Zoom controls */}
         <div className="flex items-center space-x-1.5">
+          {/* View Menu (eye icon) */}
+          <div className="relative">
+            <Tooltip label="View">
+              <button
+                onClick={() => setShowViewMenu(prev => !prev)}
+                className={`p-1 rounded transition-all active:scale-90 ${showViewMenu ? 'text-[#00D4D4] bg-[#00D4D4]/10' : 'text-gray-400 hover:text-white hover:bg-white/10'}`}
+              >
+                <span className="material-icons text-sm">visibility</span>
+              </button>
+            </Tooltip>
+            {showViewMenu && (
+              <div className="absolute bottom-full right-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 py-1 w-48">
+                <button className="w-full text-left px-3 py-1.5 text-xs text-white hover:bg-[#00D4D4]/10 flex items-center justify-between"
+                  onClick={() => { onZoomChange?.(Math.min(MAX_ZOOM, zoom * 1.25)); setShowViewMenu(false); }}>
+                  <span>타임라인 확대</span><span className="text-gray-500 text-[10px]">⌘=</span>
+                </button>
+                <button className="w-full text-left px-3 py-1.5 text-xs text-white hover:bg-[#00D4D4]/10 flex items-center justify-between"
+                  onClick={() => { onZoomChange?.(Math.max(MIN_ZOOM, zoom / 1.25)); setShowViewMenu(false); }}>
+                  <span>타임라인 축소</span><span className="text-gray-500 text-[10px]">⌘-</span>
+                </button>
+                <button className="w-full text-left px-3 py-1.5 text-xs text-white hover:bg-[#00D4D4]/10 flex items-center justify-between"
+                  onClick={() => { onFitToScreen?.(); setShowViewMenu(false); }}>
+                  <span>화면에 맞추기</span><span className="text-gray-500 text-[10px]">⇧Z</span>
+                </button>
+                <div className="border-t border-gray-700 my-1" />
+                <button className="w-full text-left px-3 py-1.5 text-xs text-white hover:bg-[#00D4D4]/10 flex items-center justify-between"
+                  onClick={() => { onSnapToggle?.(); setShowViewMenu(false); }}>
+                  <span>스냅 토글</span><span className="text-gray-500 text-[10px]">N</span>
+                </button>
+                <div className="border-t border-gray-700 my-1" />
+                <button className="w-full text-left px-3 py-1.5 text-xs text-white hover:bg-[#00D4D4]/10 flex items-center justify-between"
+                  onClick={() => {
+                    if (document.fullscreenElement) document.exitFullscreen();
+                    else document.documentElement.requestFullscreen();
+                    setShowViewMenu(false);
+                  }}>
+                  <span>전체 화면</span><span className="text-gray-500 text-[10px]">F11</span>
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="w-px h-4 bg-gray-700" />
           <Tooltip label="Zoom Out" shortcut="⌘-">
             <button onClick={() => onZoomChange?.(Math.max(MIN_ZOOM, zoom / 1.25))} className={cyanBtn()}>
               <span className="material-icons text-sm">remove</span>
@@ -536,19 +637,29 @@ export default function Timeline({
               </span>
             ))}
           </div>
+          {/* Ruler Playhead Marker (Cyan) */}
+          <div className="absolute top-0 bottom-0 w-px bg-[#00D4D4] z-20" style={{ left: `${playheadPosition * pixelsPerSecond}px` }}>
+            <div className="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-[#00D4D4] -ml-[5.5px]" />
+          </div>
+          {/* Ruler Hover Marker (Orange) */}
+          {hoverTime !== null && (
+            <div className="absolute top-0 bottom-0 w-px bg-orange-400/70 z-15" style={{ left: `${hoverTime * pixelsPerSecond}px` }}>
+              <div className="w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-t-[7px] border-t-orange-400 -ml-[4.5px]" />
+            </div>
+          )}
         </div>
       </div>
 
       {/* Tracks */}
       <div
         ref={timelineRef}
-        className={`flex-1 overflow-y-auto overflow-x-auto relative bg-black/20 ${scrubMode === 'hover' ? 'cursor-crosshair' : ''}`}
+        className={`flex-1 overflow-y-auto overflow-x-auto relative bg-[#151515] ${scrubMode === 'hover' ? 'cursor-crosshair' : ''}`}
         onMouseDown={handleScrubMouseDown}
         onMouseMove={handleScrubMouseMove}
         onMouseUp={handleScrubMouseUp}
         onMouseLeave={handleScrubMouseLeave}
       >
-        {/* Scrub time tooltip */}
+        {/* Scrub time tooltip (fixed playhead feedback) */}
         {scrubTime !== null && (
           <div
             className="absolute -top-1 z-30 bg-[#00D4D4] text-black text-[9px] font-mono px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap"
@@ -558,50 +669,72 @@ export default function Timeline({
           </div>
         )}
 
-        <div className="absolute top-0 bottom-0 w-px bg-primary z-20 cursor-ew-resize" style={{ left: `${playheadX}px` }} onMouseDown={handlePlayheadMouseDown}>
-          <div className="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-primary -ml-[5.5px]" />
-        </div>
+        <div ref={tracksRef} className="flex flex-col min-h-full relative flex-1" style={{ width: `${TRACK_CONTROLS_WIDTH + maxTime * pixelsPerSecond}px`, minWidth: '100%' }} onClick={handleTimelineClick}>
+          {/* Hover Scrubber Line (orange, follows mouse) */}
+          {hoverTime !== null && (
+            <div
+              className="absolute top-0 bottom-0 z-15 pointer-events-none"
+              style={{ left: `${TRACK_CONTROLS_WIDTH + hoverTime * pixelsPerSecond}px` }}
+            >
+              <div className="absolute top-0 bottom-0 w-px bg-orange-400/80" style={{ left: 0 }} />
+              {/* Hover Scrubber Time Tooltip */}
+              <div
+                className="absolute -top-6 z-40 bg-orange-500 text-black text-[9px] font-mono px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap shadow-lg"
+                style={{ transform: 'translateX(-50%)' }}
+              >
+                {fmtTime(hoverTime)}
+              </div>
+            </div>
+          )}
 
-        <div ref={tracksRef} className="flex flex-col min-h-full" style={{ width: `${TRACK_CONTROLS_WIDTH + maxTime * pixelsPerSecond}px`, minWidth: '100%' }} onClick={handleTimelineClick}>
+          {/* Fixed Playhead Line (cyan, click to set position) */}
+          <div className="absolute top-0 bottom-0 w-px bg-[#00D4D4] z-20 cursor-ew-resize" style={{ left: `${playheadX}px` }} onMouseDown={handlePlayheadMouseDown}>
+            <div className="absolute top-0 bottom-0 w-px bg-[#00D4D4]" style={{ left: 0 }} />
+          </div>
+
           {TRACKS.map((track) => {
             const isVisible = trackVisibility[track.trackIndex];
             const isLocked = trackLocked[track.trackIndex];
             return (
-            <div key={track.trackIndex} className={`flex ${track.height} border-b border-gray-800`}>
-              <div className="w-24 bg-panel-bg border-r border-border-color flex flex-col justify-center items-center shrink-0 z-10">
-                <div className="flex space-x-2 mb-1">
-                  <span 
-                    className={`material-icons text-[14px] cursor-pointer hover:text-white transition-all active:scale-90 ${isVisible ? 'text-gray-400' : 'text-gray-600'}`}
-                    title={isVisible ? 'Hide' : 'Show'}
-                    onClick={() => setTrackVisibility(prev => ({ ...prev, [track.trackIndex]: !prev[track.trackIndex] }))}
-                  >
-                    {isVisible ? 'visibility' : 'visibility_off'}
-                  </span>
-                  <span 
-                    className={`material-icons text-[14px] cursor-pointer hover:text-white transition-all active:scale-90 ${isLocked ? 'text-[#00D4D4]' : 'text-gray-400'}`}
-                    title={isLocked ? 'Unlock' : 'Lock'}
-                    onClick={() => setTrackLocked(prev => ({ ...prev, [track.trackIndex]: !prev[track.trackIndex] }))}
-                  >
-                    {isLocked ? 'lock' : 'lock_open'}
-                  </span>
-                </div>
-                <span className={`material-icons text-lg text-${track.color}-400`} title={track.label}>{track.icon}</span>
-              </div>
-              <div className={`flex-1 relative bg-gray-900/30 ${!isVisible ? 'opacity-30' : ''}`}
-                onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('bg-primary/10'); }}
-                onDragLeave={(e) => { e.currentTarget.classList.remove('bg-primary/10'); }}
-                onDrop={(e) => { e.currentTarget.classList.remove('bg-primary/10'); handleTrackDrop(e, track.trackIndex); }}>
-                {clips.filter(c => c.trackIndex === track.trackIndex).length === 0 && (
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <span className="text-xs text-gray-600">Drag {track.label.toLowerCase()} here</span>
+              <div key={track.trackIndex} className={`flex ${track.height} border-b border-gray-800 shrink-0`}>
+                <div className="w-24 bg-panel-bg border-r border-border-color flex flex-col justify-center items-center shrink-0 z-10">
+                  <div className="flex space-x-2 mb-1">
+                    <span
+                      className={`material-icons text-[14px] cursor-pointer hover:text-white transition-all active:scale-90 ${isVisible ? 'text-gray-400' : 'text-gray-600'}`}
+                      title={isVisible ? 'Hide' : 'Show'}
+                      onClick={() => setTrackVisibility(prev => ({ ...prev, [track.trackIndex]: !prev[track.trackIndex] }))}
+                    >
+                      {isVisible ? 'visibility' : 'visibility_off'}
+                    </span>
+                    <span
+                      className={`material-icons text-[14px] cursor-pointer hover:text-white transition-all active:scale-90 ${isLocked ? 'text-[#00D4D4]' : 'text-gray-400'}`}
+                      title={isLocked ? 'Unlock' : 'Lock'}
+                      onClick={() => setTrackLocked(prev => ({ ...prev, [track.trackIndex]: !prev[track.trackIndex] }))}
+                    >
+                      {isLocked ? 'lock' : 'lock_open'}
+                    </span>
                   </div>
-                )}
-                {clips.filter(c => c.trackIndex === track.trackIndex && isVisible).map(renderClip)}
+                  <span className={`material-icons text-lg text-${track.color}-400`} title={track.label}>{track.icon}</span>
+                </div>
+                <div className={`flex-1 relative bg-gray-900/30 ${!isVisible ? 'opacity-30' : ''}`}
+                  onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('bg-primary/10'); }}
+                  onDragLeave={(e) => { e.currentTarget.classList.remove('bg-primary/10'); }}
+                  onDrop={(e) => { e.currentTarget.classList.remove('bg-primary/10'); handleTrackDrop(e, track.trackIndex); }}>
+                  {clips.filter(c => c.trackIndex === track.trackIndex).length === 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <span className="text-xs text-gray-600">Drag {track.label.toLowerCase()} here</span>
+                    </div>
+                  )}
+                  {clips.filter(c => c.trackIndex === track.trackIndex && isVisible).map(renderClip)}
+                </div>
               </div>
-            </div>
-          );
+            );
           })}
-          <div className="flex-1 bg-editor-bg border-b border-dashed border-gray-800" />
+          {/* Filler area to make timeline look full to the bottom */}
+          <div className="flex-1 flex min-h-[50px] bg-gray-900/10">
+            <div className="w-24 bg-panel-bg border-r border-border-color shrink-0 h-full" />
+            <div className="flex-1 h-full" />
+          </div>
         </div>
       </div>
 
@@ -617,5 +750,5 @@ function fmtTime(s: number): string {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = Math.floor(s % 60);
-  return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`;
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
 }

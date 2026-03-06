@@ -65,15 +65,16 @@ function ThumbnailItem({ clip, isSelected, onSelect }: { clip: VideoClip; isSele
   return (
     <button
       onClick={onSelect}
-      className={`relative group rounded-lg overflow-hidden border transition-all duration-150 hover:scale-[1.03] active:scale-95 ${
-        isSelected ? 'border-primary ring-1 ring-primary' : 'border-transparent hover:border-gray-600'
-      }`}
+      className={`relative group rounded-lg overflow-hidden border transition-all duration-150 hover:scale-[1.03] active:scale-95 ${isSelected ? 'border-primary ring-1 ring-primary' : 'border-transparent hover:border-gray-600'
+        }`}
       title={clip.name}
     >
       {/* Thumbnail area */}
       <div className="aspect-video bg-gray-800 flex items-center justify-center">
         {isVideo && thumbnail ? (
           <img src={thumbnail} alt={clip.name} className="w-full h-full object-cover" />
+        ) : (clip.trackIndex === 1 && (clip.url.match(/\.(jpg|jpeg|png|gif|webp|svg)/i) || clip.name.match(/\.(jpg|jpeg|png|gif|webp|svg)/i))) ? (
+          <img src={clip.url} alt={clip.name} className="w-full h-full object-cover" />
         ) : isVideo ? (
           <span className="material-icons text-gray-500 text-3xl">movie</span>
         ) : isAudio ? (
@@ -159,7 +160,7 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, clips = [], 
   }, []);
 
   return (
-    <aside className="w-80 flex flex-col border-r border-border-color bg-editor-bg shrink-0">
+    <aside className="w-full h-full flex flex-col border-r border-border-color bg-editor-bg">
       {/* Hidden file input */}
       <input
         ref={fileInputRef}
@@ -173,7 +174,7 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, clips = [], 
       <div className="flex-1 flex flex-col p-4 overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold">Local</h2>
-          <button 
+          <button
             className="text-primary hover:text-white transition-all duration-200 relative group active:scale-90 hover:scale-110"
             title="Import History"
           >
@@ -182,26 +183,23 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, clips = [], 
         </div>
 
         {/* Import Button */}
-        <button 
+        <button
           onClick={handleImportClick}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`group w-full h-24 border border-dashed rounded-lg flex flex-col items-center justify-center transition-all mb-4 active:scale-95 hover:scale-[1.02] shrink-0 ${
-            isDragging
-              ? 'border-primary bg-primary/10 border-2'
-              : 'border-border-color hover:border-primary bg-panel-bg'
-          }`}
+          className={`group w-full h-24 border border-dashed rounded-lg flex flex-col items-center justify-center transition-all mb-4 active:scale-95 hover:scale-[1.02] shrink-0 ${isDragging
+            ? 'border-primary bg-primary/10 border-2'
+            : 'border-border-color hover:border-primary bg-panel-bg'
+            }`}
           title="Import Media"
         >
-          <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-200 ${
-            isDragging
-              ? 'bg-primary/30 scale-125'
-              : 'bg-primary/10 group-hover:bg-primary/20'
-          }`}>
-            <span className={`material-icons text-primary text-xl transition-transform duration-200 ${
-              isDragging ? 'animate-bounce' : 'group-hover:rotate-90'
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-200 ${isDragging
+            ? 'bg-primary/30 scale-125'
+            : 'bg-primary/10 group-hover:bg-primary/20'
             }`}>
+            <span className={`material-icons text-primary text-xl transition-transform duration-200 ${isDragging ? 'animate-bounce' : 'group-hover:rotate-90'
+              }`}>
               add
             </span>
           </div>

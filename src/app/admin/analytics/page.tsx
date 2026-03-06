@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { AnalyticsEvent, DateFilter, RageClickEntry, ScrollDepthData, VisitorStats } from '@/lib/analytics/types';
+import type { AnalyticsEvent, DateFilter, VisitorStats } from '@/lib/analytics/types';
 import { DATE_FILTERS } from '@/lib/analytics/types';
 import {
   ResponsiveContainer,
@@ -19,12 +19,11 @@ import {
   Legend,
 } from 'recharts';
 
+const COLORS = ['#00D4D4', '#3B82F6', '#8B5CF6', '#10B981', '#F59E0B', '#EF4444'];
 const HEATMAP_RADIUS = 30;
 const HEATMAP_MAX_ALPHA = 0.7;
 const PREVIEW_WIDTH = 1200;
 const PREVIEW_HEIGHT = 750;
-
-const COLORS = ['#00D4D4', '#3B82F6', '#8B5CF6', '#10B981', '#F59E0B', '#EF4444'];
 
 const formatDuration = (seconds: number) => {
   if (seconds < 60) return `${seconds}초`;
@@ -43,7 +42,7 @@ export default function AnalyticsDashboard() {
   const [charts, setCharts] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [dataLoading, setDataLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'summary' | 'heatmap' | 'scroll' | 'rage' | 'dead'>('summary');
+  const [activeTab, setActiveTab] = useState<'summary' | 'heatmap' | 'scroll' | 'rage' | 'dead' | 'recordings'>('summary');
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
@@ -58,7 +57,7 @@ export default function AnalyticsDashboard() {
       const res = await fetch(`/api/analytics/query?action=pages&days=${activeFilter.days}`);
       const data = await res.json();
       const pageList: string[] = data.pages || [];
-      setPages(pageList);
+      setPages(pageList.filter(p => !p.startsWith('/admin')));
       if (pageList.length > 0 && !selectedPage) {
         setSelectedPage(pageList[0]);
       }
@@ -71,10 +70,11 @@ export default function AnalyticsDashboard() {
     try {
       const res = await fetch(`/api/analytics/query?action=stats&days=${activeFilter.days}`);
       const data = await res.json();
-      setStats(data);
+      if (data && typeof data === 'object') {
+        setStats(data);
+      }
     } catch (err) {
       console.error('Failed to fetch stats:', err);
-      setStats(null);
     }
   }, [activeFilter.days]);
 
@@ -82,10 +82,11 @@ export default function AnalyticsDashboard() {
     try {
       const res = await fetch(`/api/analytics/query?action=charts&days=${activeFilter.days}`);
       const data = await res.json();
-      setCharts(data);
+      if (data && typeof data === 'object') {
+        setCharts(data);
+      }
     } catch (err) {
       console.error('Failed to fetch charts:', err);
-      setCharts(null);
     }
   }, [activeFilter.days]);
 
@@ -108,176 +109,142 @@ export default function AnalyticsDashboard() {
     }
   }, [selectedPage, activeFilter.days]);
 
-  const fetchData = useCallback(async () => {
-    if (!mounted) return;
-    setDataLoading(true);
-    try {
-      await Promise.all([
-        fetchPages(),
-        fetchStats(),
-        fetchCharts(),
-        selectedPage ? fetchEvents() : Promise.resolve(),
-      ]);
-    } finally {
-      setDataLoading(false);
-    }
-  }, [mounted, selectedPage, fetchPages, fetchStats, fetchCharts, fetchEvents]);
-
   useEffect(() => {
     if (!mounted) return;
-    fetchData();
+
+    const loadData = async () => {
+      setDataLoading(true);
+      try {
+        await Promise.all([
+          fetchPages(),
+          fetchStats(),
+          fetchCharts(),
+          selectedPage ? fetchEvents() : Promise.resolve(),
+        ]);
+      } catch (err) {
+        console.error('Failed to fetch data:', err);
+      } finally {
+        setDataLoading(false);
+      }
+    };
+
+    const timeoutId = setTimeout(loadData, 100);
+    const interval = setInterval(loadData, 30000);
+
+    return () => {
+      clearTimeout(timeoutId);
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, activeFilter.days, selectedPage]);
-
-  useEffect(() => {
-    if (!mounted) return;
-    const interval = setInterval(fetchData, 30000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
 
   const clickEvents = events.filter(e => e.event_type === 'click' && e.x_pos != null && e.y_pos != null);
   const scrollEvents = events.filter(e => e.event_type === 'scroll');
   const rageEvents = events.filter(e => e.event_type === 'rage_click');
   const deadEvents = events.filter(e => e.event_type === 'dead_click');
   const pageViews = events.filter(e => e.event_type === 'page_view');
-  const pageLeaves = events.filter(e => e.event_type === 'page_leave');
 
-  const scrollDepthData: ScrollDepthData[] = [25, 50, 75, 100].map(depth => {
-    const count = scrollEvents.filter(e => e.scroll_depth === depth).length;
-    const total = Math.max(pageViews.length, 1);
-    return { depth, count, percentage: Math.round((count / total) * 100) };
-  });
-
-  const rageClickList: RageClickEntry[] = (() => {
-    const map = new Map<string, RageClickEntry>();
-    rageEvents.forEach(e => {
-      const key = `${Math.round((e.x_pos || 0) / 50)}_${Math.round((e.y_pos || 0) / 50)}`;
-      const existing = map.get(key);
-      if (existing) {
-        existing.count++;
-        if (e.created_at && e.created_at > existing.last_occurred) {
-          existing.last_occurred = e.created_at;
+  // 히트맵 그리기 (안정화된 버전)
+  useEffect(() => {
+    if (activeTab !== 'heatmap' || !iframeLoaded) {
+      // 탭이 변경되거나 iframe이 로드되지 않았으면 캔버스 클리어
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
         }
-      } else {
-        map.set(key, {
-          x_pos: e.x_pos || 0,
-          y_pos: e.y_pos || 0,
-          element_info: `${e.element_tag || ''}${e.element_class ? '.' + e.element_class.split(' ')[0] : ''}`,
-          page_url: e.page_url,
-          count: 1,
-          last_occurred: e.created_at || '',
-        });
       }
-    });
-    return Array.from(map.values()).sort((a, b) => b.count - a.count);
-  })();
+      return;
+    }
 
-  const deadClickList = (() => {
-    const map = new Map<string, { info: string; count: number; x: number; y: number; last: string }>();
-    deadEvents.forEach(e => {
-      const key = `${e.element_tag}_${(e.element_class || '').split(' ')[0]}`;
-      const existing = map.get(key);
-      if (existing) {
-        existing.count++;
-      } else {
-        map.set(key, {
-          info: `<${e.element_tag}> ${e.element_text || e.element_class || ''}`.trim(),
-          count: 1,
-          x: e.x_pos || 0,
-          y: e.y_pos || 0,
-          last: e.created_at || '',
-        });
-      }
-    });
-    return Array.from(map.values()).sort((a, b) => b.count - a.count).slice(0, 30);
-  })();
-
-  const drawHeatmapRef = useRef<(() => void) | null>(null);
-  
-  const drawHeatmap = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    const filteredClicks = clickEvents.filter(c => c.x_pos != null && c.y_pos != null);
+    if (filteredClicks.length === 0) {
+      // 클릭 이벤트가 없으면 캔버스 클리어
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      return;
+    }
+
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
+    // requestAnimationFrame으로 렌더링 최적화
+    const renderFrame = () => {
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
 
-    if (clickEvents.length === 0) return;
+      const maxVW = Math.max(...filteredClicks.map(c => c.viewport_width || 1920), 1920);
+      const maxVH = Math.max(...filteredClicks.map(c => c.viewport_height || 1080), 1080);
 
-    const maxVW = Math.max(...clickEvents.map(c => c.viewport_width || 1920));
-    const maxVH = Math.max(...clickEvents.map(c => c.viewport_height || 1080));
+      const grid = new Float32Array(w * h);
+      let maxVal = 0;
 
-    const grid = new Float32Array(w * h);
-    let maxVal = 0;
+      filteredClicks.forEach(c => {
+        const nx = ((c.x_pos || 0) / maxVW) * w;
+        const ny = ((c.y_pos || 0) / maxVH) * h;
+        const ix = Math.round(nx);
+        const iy = Math.round(ny);
 
-    clickEvents.forEach(c => {
-      const nx = ((c.x_pos || 0) / maxVW) * w;
-      const ny = ((c.y_pos || 0) / maxVH) * h;
-      const ix = Math.round(nx);
-      const iy = Math.round(ny);
-
-      for (let dy = -HEATMAP_RADIUS; dy <= HEATMAP_RADIUS; dy++) {
-        for (let dx = -HEATMAP_RADIUS; dx <= HEATMAP_RADIUS; dx++) {
-          const px = ix + dx;
-          const py = iy + dy;
-          if (px < 0 || px >= w || py < 0 || py >= h) continue;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist > HEATMAP_RADIUS) continue;
-          const val = 1 - dist / HEATMAP_RADIUS;
-          const idx = py * w + px;
-          grid[idx] += val;
-          if (grid[idx] > maxVal) maxVal = grid[idx];
+        for (let dy = -HEATMAP_RADIUS; dy <= HEATMAP_RADIUS; dy++) {
+          for (let dx = -HEATMAP_RADIUS; dx <= HEATMAP_RADIUS; dx++) {
+            const px = ix + dx;
+            const py = iy + dy;
+            if (px < 0 || px >= w || py < 0 || py >= h) continue;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > HEATMAP_RADIUS) continue;
+            const val = 1 - dist / HEATMAP_RADIUS;
+            const idx = py * w + px;
+            grid[idx] += val;
+            if (grid[idx] > maxVal) maxVal = grid[idx];
+          }
         }
+      });
+
+      if (maxVal === 0) return;
+
+      const imageData = ctx.createImageData(w, h);
+      const data = imageData.data;
+
+      for (let i = 0; i < grid.length; i++) {
+        const v = grid[i] / maxVal;
+        if (v < 0.01) continue;
+
+        const pi = i * 4;
+        let r: number, g: number, b: number;
+
+        if (v < 0.25) {
+          r = 0; g = 0; b = Math.round(128 + v * 4 * 127);
+        } else if (v < 0.5) {
+          const t = (v - 0.25) * 4;
+          r = 0; g = Math.round(t * 255); b = Math.round(255 * (1 - t));
+        } else if (v < 0.75) {
+          const t = (v - 0.5) * 4;
+          r = Math.round(t * 255); g = 255; b = 0;
+        } else {
+          const t = (v - 0.75) * 4;
+          r = 255; g = Math.round(255 * (1 - t)); b = 0;
+        }
+
+        const alpha = Math.min(v * HEATMAP_MAX_ALPHA * 255, HEATMAP_MAX_ALPHA * 255);
+        data[pi] = r;
+        data[pi + 1] = g;
+        data[pi + 2] = b;
+        data[pi + 3] = Math.round(alpha);
       }
-    });
 
-    if (maxVal === 0) return;
+      ctx.putImageData(imageData, 0, 0);
+    };
 
-    const imageData = ctx.createImageData(w, h);
-    const data = imageData.data;
-
-    for (let i = 0; i < grid.length; i++) {
-      const v = grid[i] / maxVal;
-      if (v < 0.01) continue;
-
-      const pi = i * 4;
-      let r: number, g: number, b: number;
-
-      if (v < 0.25) {
-        r = 0; g = 0; b = Math.round(128 + v * 4 * 127);
-      } else if (v < 0.5) {
-        const t = (v - 0.25) * 4;
-        r = 0; g = Math.round(t * 255); b = Math.round(255 * (1 - t));
-      } else if (v < 0.75) {
-        const t = (v - 0.5) * 4;
-        r = Math.round(t * 255); g = 255; b = 0;
-      } else {
-        const t = (v - 0.75) * 4;
-        r = 255; g = Math.round(255 * (1 - t)); b = 0;
-      }
-
-      const alpha = Math.min(v * HEATMAP_MAX_ALPHA * 255, HEATMAP_MAX_ALPHA * 255);
-      data[pi] = r;
-      data[pi + 1] = g;
-      data[pi + 2] = b;
-      data[pi + 3] = Math.round(alpha);
-    }
-
-    ctx.putImageData(imageData, 0, 0);
-  }, [clickEvents]);
-  
-  useEffect(() => {
-    drawHeatmapRef.current = drawHeatmap;
-  }, [drawHeatmap]);
-
-  useEffect(() => {
-    if (activeTab !== 'heatmap') return;
-    const timer = setTimeout(() => {
-      drawHeatmapRef.current?.();
-    }, 100);
-    return () => clearTimeout(timer);
-  }, [activeTab, drawHeatmap, events, iframeLoaded, heatmapOpacity]);
+    const rafId = requestAnimationFrame(renderFrame);
+    return () => cancelAnimationFrame(rafId);
+  }, [activeTab, clickEvents.length, iframeLoaded, heatmapOpacity, selectedPage]);
 
   const iframeUrl = selectedPage && typeof window !== 'undefined'
     ? `${window.location.origin}${selectedPage}?_analytics_preview=1`
@@ -287,7 +254,6 @@ export default function AnalyticsDashboard() {
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] text-white">
-      {/* Header */}
       <header className="border-b border-[#222] px-6 py-3 flex items-center justify-between sticky top-0 bg-[#0d0d0d] z-50">
         <div className="flex items-center gap-3">
           <a href="/" className="text-gray-400 hover:text-white transition-colors">
@@ -301,524 +267,725 @@ export default function AnalyticsDashboard() {
             href="/admin/experiments"
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs bg-[#1a1a1a] border border-[#222] text-gray-400 hover:text-[#00D4D4] hover:border-[#00D4D4]/30 transition-all"
           >
-            <span className="material-symbols-outlined text-[16px]">science</span>
+            <span className="material-symbols-outlined text-[14px]">science</span>
             A/B 테스트
           </a>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 bg-[#1a1a1a] rounded-lg p-1">
-            {DATE_FILTERS.map(f => (
-              <button
-                key={f.value}
-                onClick={() => setActiveFilter(f)}
-                className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
-                  activeFilter.value === f.value
-                    ? 'bg-[#00D4D4] text-black shadow-[0_0_10px_rgba(0,212,212,0.4)]'
-                    : 'text-gray-400 hover:text-white hover:bg-[#252525]'
+          {DATE_FILTERS.map(filter => (
+            <button
+              key={filter.days}
+              onClick={() => setActiveFilter(filter)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${activeFilter.days === filter.days
+                ? 'bg-[#00D4D4] text-black'
+                : 'bg-[#1a1a1a] border border-[#222] text-gray-400 hover:text-white'
                 }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
+            >
+              {filter.label}
+            </button>
+          ))}
           <button
-            onClick={fetchData}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs bg-[#1a1a1a] border border-[#222] text-gray-400 hover:text-white hover:border-[#444] transition-all active:scale-95"
+            onClick={() => {
+              fetchPages();
+              fetchStats();
+              fetchCharts();
+              if (selectedPage) fetchEvents();
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-[#1a1a1a] border border-[#222] text-gray-400 hover:text-white hover:border-[#444] transition-all"
           >
-            <span className={`material-symbols-outlined text-[16px] ${loading ? 'animate-spin' : ''}`}>refresh</span>
+            <span className={`material-symbols-outlined text-[16px] ${dataLoading ? 'animate-spin' : ''}`}>refresh</span>
             새로고침
           </button>
         </div>
       </header>
 
-      <div className="flex h-[calc(100vh-57px)]">
-        {/* Sidebar */}
-        <aside className="w-64 border-r border-[#222] flex flex-col bg-[#0f0f0f]">
-          <div className="p-5 border-b border-[#222]">
-            <h2 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-3">페이지 필터</h2>
-            <div className="space-y-1 max-h-[300px] overflow-y-auto custom-scrollbar pr-1">
-              {pages.length === 0 ? (
-                <div className="py-8 text-center text-gray-600">
-                  <span className="material-symbols-outlined text-[24px] mb-1 opacity-20">cloud_off</span>
-                  <p className="text-[10px]">수집된 페이지 없음</p>
-                </div>
-              ) : (
-                pages.map(p => (
-                  <button
-                    key={p}
-                    onClick={() => setSelectedPage(p)}
-                    className={`w-full text-left px-3 py-2.5 rounded-lg text-xs truncate transition-all border ${
-                      selectedPage === p
-                        ? 'bg-[#00D4D4]/10 text-[#00D4D4] border-[#00D4D4]/30 font-semibold'
-                        : 'text-gray-400 hover:bg-[#1a1a1a] border-transparent'
-                    }`}
-                  >
-                    {p === '/' ? 'Home (/) ' : p}
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div className="p-5 flex-1 overflow-y-auto space-y-4">
-            <h2 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-1">실시간 요약</h2>
-            <div className="space-y-2">
-              <StatSidebarItem label="전체 이벤트" value={events.length.toLocaleString()} icon="hub" />
-              <StatSidebarItem label="Rage Clicks" value={String(rageEvents.length)} icon="warning" color="#F87171" />
-              <StatSidebarItem label="Dead Clicks" value={String(deadEvents.length)} icon="block" color="#FB923C" />
-            </div>
-          </div>
-        </aside>
-
-        {/* Main Content */}
-        <main className="flex-1 flex flex-col overflow-hidden bg-[#0d0d0d]">
-          {/* Tabs */}
-          <div className="px-8 pt-6 pb-4 flex items-center justify-between border-b border-[#222]/50">
-            <div className="flex gap-1 bg-[#1a1a1a] border border-[#222] rounded-xl p-1 shadow-inner">
-              {[
-                { id: 'summary', label: '대시보드 요약', icon: 'dashboard' },
-                { id: 'heatmap', label: '클릭 히트맵', icon: 'touch_app' },
-                { id: 'scroll', label: '스크롤 맵', icon: 'swap_vert' },
-                { id: 'rage', label: 'Rage Click', icon: 'warning' },
-                { id: 'dead', label: 'Dead Click', icon: 'block' },
-              ].map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id as any)}
-                  className={`flex items-center gap-2 px-5 py-2 rounded-lg text-xs font-semibold transition-all ${
-                    activeTab === tab.id
-                      ? 'bg-[#2a2a2a] text-[#00D4D4] shadow-md border border-[#333]'
-                      : 'text-gray-500 hover:text-gray-300'
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[18px]">{tab.icon}</span>
-                  {tab.label}
-                </button>
+      <main className="p-8 max-w-7xl mx-auto">
+        {/* 페이지 선택 */}
+        {pages.length > 0 && (
+          <div className="mb-6">
+            <label className="block text-xs text-gray-500 mb-2">페이지 필터</label>
+            <select
+              value={selectedPage}
+              onChange={(e) => setSelectedPage(e.target.value)}
+              className="bg-black border border-[#333] rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-[#00D4D4]"
+            >
+              <option value="">전체 페이지</option>
+              {pages.map(page => (
+                <option key={page} value={page}>{page}</option>
               ))}
-            </div>
-
-            {activeTab === 'heatmap' && (
-              <div className="flex items-center gap-4 px-4 py-2 bg-[#1a1a1a] rounded-lg border border-[#222]">
-                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">히트맵 농도</span>
-                <input
-                  type="range"
-                  min={10}
-                  max={100}
-                  value={heatmapOpacity}
-                  onChange={e => setHeatmapOpacity(Number(e.target.value))}
-                  className="w-32 h-1 accent-[#00D4D4] cursor-pointer"
-                />
-                <span className="text-[11px] font-mono text-[#00D4D4] w-8">{heatmapOpacity}%</span>
-              </div>
-            )}
+            </select>
           </div>
+        )}
 
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-8">
-            {/* KPI Summary Cards (Visible on Summary Tab) */}
-            {activeTab === 'summary' && (
-              <div className="space-y-8 animate-fade-in">
-                {dataLoading ? (
-                  <div className="flex items-center justify-center py-20">
-                    <div className="text-center">
-                      <span className="material-symbols-outlined text-[48px] text-[#00D4D4] animate-spin mb-4">refresh</span>
-                      <p className="text-sm text-gray-400 font-medium">데이터를 불러오는 중...</p>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                      <KPICard
-                        title="오늘 방문자 수"
-                        value={stats?.today_visitors ? stats.today_visitors.toLocaleString() : '0'}
-                        change={stats?.visitor_change_pct}
-                        icon="group"
-                        color="#00D4D4"
-                      />
-                      <KPICard
-                        title="평균 체류시간"
-                        value={formatDuration(stats?.avg_duration || 0)}
-                        subtitle="세션당 평균"
-                        icon="timer"
-                        color="#3B82F6"
-                      />
-                      <KPICard
-                        title="이탈률"
-                        value={`${stats?.bounce_rate || 0}%`}
-                        subtitle="단일 페이지 방문"
-                        icon="exit_to_app"
-                        color="#F87171"
-                      />
-                      <KPICard
-                        title="가장 많이 본 페이지"
-                        value={stats?.top_page === '/' ? 'Home' : (stats?.top_page || '/')}
-                        subtitle="조회수 기준 TOP"
-                        icon="trending_up"
-                        color="#10B981"
-                      />
-                    </div>
+        {/* 실시간 요약 */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          <KPICard
+            title="전체 이벤트"
+            value={events.length.toLocaleString()}
+            icon="hub"
+            color="#00D4D4"
+          />
+          <KPICard
+            title="RAGE CLICKS"
+            value={rageEvents.length.toLocaleString()}
+            icon="warning"
+            color="#EF4444"
+          />
+          <KPICard
+            title="DEAD CLICKS"
+            value={deadEvents.length.toLocaleString()}
+            icon="cancel"
+            color="#F59E0B"
+          />
+        </div>
 
-                    {/* Charts Grid */}
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                        {/* Visitor Trend Area Chart */}
-                        <ChartCard title="일별 방문자 추이 (최근 30일)" icon="show_chart">
-                          <ResponsiveContainer width="100%" height={300}>
-                            <AreaChart data={charts?.visitorsTrend || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                              <defs>
-                                <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="5%" stopColor="#00D4D4" stopOpacity={0.3} />
-                                  <stop offset="95%" stopColor="#00D4D4" stopOpacity={0} />
-                                </linearGradient>
-                              </defs>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
-                              <XAxis
-                                dataKey="name"
-                                axisLine={false}
-                                tickLine={false}
-                                tick={{ fill: '#666', fontSize: 10 }}
-                                minTickGap={30}
-                              />
-                              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 10 }} />
-                              <RechartsTooltip content={<CustomTooltip />} />
-                              <Area
-                                type="monotone"
-                                dataKey="value"
-                                stroke="#00D4D4"
-                                strokeWidth={2}
-                                fillOpacity={1}
-                                fill="url(#colorValue)"
-                              />
-                            </AreaChart>
-                          </ResponsiveContainer>
-                        </ChartCard>
+        {/* 탭 네비게이션 */}
+        <div className="flex gap-2 mb-6 border-b border-[#222]">
+          {[
+            { id: 'summary', label: '대시보드 요약', icon: 'dashboard' },
+            { id: 'heatmap', label: '클릭 히트맵', icon: 'heat_map' },
+            { id: 'scroll', label: '스크롤 맵', icon: 'vertical_align_bottom' },
+            { id: 'rage', label: 'Rage Click', icon: 'warning' },
+            { id: 'dead', label: 'Dead Click', icon: 'cancel' },
+            { id: 'recordings', label: '세션 녹화', icon: 'videocam' },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === tab.id
+                ? 'border-[#00D4D4] text-[#00D4D4]'
+                : 'border-transparent text-gray-400 hover:text-white'
+                }`}
+            >
+              <span className="material-symbols-outlined text-[18px]">{tab.icon}</span>
+              {tab.label}
+            </button>
+          ))}
+        </div>
 
-                        {/* Hourly Distribution Bar Chart */}
-                        <ChartCard title="시간대별 방문 분포" icon="schedule">
-                          <ResponsiveContainer width="100%" height={300}>
-                            <BarChart data={charts?.hourly || []} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
-                              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 9 }} />
-                              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 10 }} />
-                              <RechartsTooltip content={<CustomTooltip />} />
-                              <Bar dataKey="value" fill="#3B82F6" radius={[4, 4, 0, 0]} />
-                            </BarChart>
-                          </ResponsiveContainer>
-                        </ChartCard>
-
-                        {/* Referral Pie Chart */}
-                        <ChartCard title="유입 경로 비율" icon="source" className="h-full">
-                          <div className="flex flex-col md:flex-row items-center h-full">
-                            <ResponsiveContainer width="100%" height={260}>
-                              <PieChart>
-                                <Pie
-                                  data={charts?.referralSources || []}
-                                  innerRadius={60}
-                                  outerRadius={80}
-                                  paddingAngle={5}
-                                  dataKey="value"
-                                  nameKey="name"
-                                >
-                                  {(charts?.referralSources || []).map((entry: any, index: number) => (
-                                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                  ))}
-                                </Pie>
-                                <RechartsTooltip content={<CustomTooltip />} />
-                                <Legend
-                                  verticalAlign="middle"
-                                  align="right"
-                                  layout="vertical"
-                                  wrapperStyle={{ paddingLeft: '20px', fontSize: '11px' }}
-                                />
-                              </PieChart>
-                            </ResponsiveContainer>
-                          </div>
-                        </ChartCard>
-
-                        {/* Device Donut Chart */}
-                        <ChartCard title="디바이스별 분류" icon="devices">
-                          <ResponsiveContainer width="100%" height={260}>
-                            <PieChart>
-                              <Pie
-                                data={charts?.deviceDist || []}
-                                cx="50%"
-                                cy="50%"
-                                innerRadius={60}
-                                outerRadius={80}
-                                fill="#8884d8"
-                                paddingAngle={8}
-                                dataKey="value"
-                              >
-                                {charts?.deviceDist?.map((entry: any, index: number) => (
-                                  <Cell key={`cell-${index}`} fill={entry.name === 'desktop' ? '#3B82F6' : entry.name === 'mobile' ? '#00D4D4' : '#8B5CF6'} />
-                                ))}
-                              </Pie>
-                              <RechartsTooltip content={<CustomTooltip />} />
-                              <Legend verticalAlign="bottom" wrapperStyle={{ paddingTop: '20px', fontSize: '11px' }} />
-                            </PieChart>
-                          </ResponsiveContainer>
-                        </ChartCard>
-
-                        {/* Top Pages Horizontal Bar Chart */}
-                        <ChartCard title="페이지별 평균 체류시간 TOP 5" icon="timer" className="xl:col-span-2">
-                          <ResponsiveContainer width="100%" height={250}>
-                            <BarChart
-                              layout="vertical"
-                              data={charts?.topDurations || []}
-                              margin={{ top: 5, right: 30, left: 100, bottom: 5 }}
-                            >
-                              <CartesianGrid strokeDasharray="3 3" stroke="#222" horizontal={false} />
-                              <XAxis type="number" hide />
-                              <YAxis
-                                type="category"
-                                dataKey="name"
-                                axisLine={false}
-                                tickLine={false}
-                                tick={{ fill: '#aaa', fontSize: 11 }}
-                                width={140}
-                              />
-                              <RechartsTooltip content={<CustomTooltip unit="초" />} />
-                              <Bar dataKey="value" fill="#10B981" radius={[0, 4, 4, 0]} barSize={20} />
-                            </BarChart>
-                          </ResponsiveContainer>
-                        </ChartCard>
-                      </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* Heatmap Tab */}
-            {activeTab === 'heatmap' && (
-              <div className="space-y-4">
-                {!selectedPage ? (
-                  <div className="flex items-center justify-center py-20">
-                    <div className="text-center">
-                      <span className="material-symbols-outlined text-[48px] text-gray-500 mb-4 opacity-50">filter_list</span>
-                      <p className="text-sm text-gray-400 font-medium">왼쪽 사이드바에서 분석할 페이지를 선택해주세요</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div
-                    className="relative bg-[#111] rounded-2xl border border-[#222] overflow-hidden shadow-2xl mx-auto"
-                    style={{ width: '100%', maxWidth: PREVIEW_WIDTH, aspectRatio: `${PREVIEW_WIDTH}/${PREVIEW_HEIGHT}` }}
-                  >
-                    {iframeUrl && (
-                      <iframe
-                        ref={iframeRef}
-                        src={iframeUrl}
-                        className="absolute inset-0 w-full h-full border-0 pointer-events-none opacity-90"
-                        onLoad={() => setIframeLoaded(true)}
-                        sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-                        title="Page Preview"
-                        onError={() => {
-                          console.error('[Analytics] Iframe load error');
-                          setIframeLoaded(false);
-                        }}
-                      />
-                    )}
-                    <canvas
-                      ref={canvasRef}
-                      width={PREVIEW_WIDTH}
-                      height={PREVIEW_HEIGHT}
-                      className="absolute inset-0 w-full h-full"
-                      style={{
-                        opacity: heatmapOpacity / 100,
-                        mixBlendMode: 'screen',
-                        pointerEvents: 'none',
-                      }}
-                    />
-                    {!iframeLoaded && iframeUrl && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-[#111]">
-                        <div className="text-center">
-                          <span className="material-symbols-outlined text-[40px] text-[#00D4D4] animate-spin mb-3">refresh</span>
-                          <p className="text-sm text-gray-500 font-medium">실시간 페이지 뷰 렌더링 중...</p>
-                        </div>
-                      </div>
-                    )}
-                    {clickEvents.length === 0 && iframeLoaded && (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="bg-black/80 backdrop-blur-md rounded-2xl px-8 py-5 text-center border border-[#333]">
-                          <span className="material-symbols-outlined text-[32px] text-gray-500 mb-2">touch_app</span>
-                          <p className="text-sm text-gray-400 font-medium">수집된 클릭 데이터가 없습니다</p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div className="flex items-center justify-between px-2">
-                  <div className="flex items-center gap-6">
-                    <LegendItem color="rgb(0,0,200)" label="낮음" />
-                    <LegendItem color="rgb(0,200,0)" label="보통" />
-                    <LegendItem color="rgb(255,255,0)" label="높음" />
-                    <LegendItem color="rgb(255,0,0)" label="매우 높음" />
-                  </div>
-                  <p className="text-xs text-gray-600 italic flex items-center gap-1">
-                    <span className="material-symbols-outlined text-[14px]">info</span>
-                    실제 화면 위에 사용자의 실시간 클릭 지점이 합성되어 표시됩니다
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* Scroll/Rage/Dead tabs - previous logic wrapped in new containers ... */}
-            {(activeTab === 'scroll' || activeTab === 'rage' || activeTab === 'dead') && (
-              <div className="max-w-6xl mx-auto space-y-6">
-                <div className="bg-[#1a1a1a] border border-[#222] rounded-2xl p-6 shadow-lg">
-                  <h3 className="text-lg font-bold flex items-center gap-2 mb-6">
-                    <span className="material-symbols-outlined text-[#00D4D4]">
-                      {activeTab === 'scroll' ? 'swap_vert' : activeTab === 'rage' ? 'warning' : 'block'}
-                    </span>
-                    {activeTab === 'scroll' ? '스크롤 도달 범위' : activeTab === 'rage' ? '분노 클릭 (Rage Click)' : '무반응 클릭 (Dead Click)'}
-                  </h3>
-                  
-                  {activeTab === 'scroll' && (
-                    <div className="space-y-6">
-                      {scrollDepthData.map(d => (
-                        <div key={d.depth} className="bg-[#0d0d0d] border border-[#222] rounded-xl p-5 hover:border-[#333] transition-colors">
-                          <div className="flex items-center justify-between mb-3">
-                            <span className="text-sm font-bold text-gray-300">{d.depth}% 도달</span>
-                            <span className="text-xs font-mono text-[#00D4D4]">{d.count}회 방문 ({d.percentage}%)</span>
-                          </div>
-                          <div className="h-3 bg-[#1a1a1a] rounded-full overflow-hidden p-[2px]">
-                            <div
-                              className="h-full rounded-full transition-all duration-1000 ease-out"
-                              style={{
-                                width: `${d.percentage}%`,
-                                background: `linear-gradient(90deg, #00D4D4, ${d.depth <= 50 ? '#3B82F6' : '#F87171'})`,
-                                boxShadow: '0 0 10px rgba(0,212,212,0.3)'
-                              }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {activeTab === 'rage' && (
-                    <div className="space-y-3">
-                      {rageClickList.length === 0 ? (
-                        <EmptyState icon="sentiment_satisfied" text="사용자가 분노한 순간이 아직 없습니다!" />
-                      ) : (
-                        rageClickList.map((r, i) => <IssueItem key={i} entry={r} type="rage" />)
-                      )}
-                    </div>
-                  )}
-
-                  {activeTab === 'dead' && (
-                    <div className="space-y-3">
-                      {deadClickList.length === 0 ? (
-                        <EmptyState icon="check_circle" text="모든 클릭이 정상적으로 반응하고 있습니다." />
-                      ) : (
-                        deadClickList.map((d, i) => <IssueItem key={i} entry={d} type="dead" />)
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+        {/* 콘텐츠 영역 */}
+        {dataLoading ? (
+          <div className="flex items-center justify-center py-20">
+            <span className="material-symbols-outlined text-[48px] text-[#00D4D4] animate-spin">refresh</span>
           </div>
-        </main>
-      </div>
+        ) : activeTab === 'summary' ? (
+          <SummaryTab stats={stats} charts={charts} />
+        ) : activeTab === 'heatmap' ? (
+          <HeatmapTab
+            selectedPage={selectedPage}
+            clickEvents={clickEvents}
+            canvasRef={canvasRef}
+            iframeRef={iframeRef}
+            iframeLoaded={iframeLoaded}
+            setIframeLoaded={setIframeLoaded}
+            iframeUrl={iframeUrl}
+            heatmapOpacity={heatmapOpacity}
+            setHeatmapOpacity={setHeatmapOpacity}
+          />
+        ) : activeTab === 'scroll' ? (
+          <ScrollMapTab scrollEvents={scrollEvents} selectedPage={selectedPage} />
+        ) : activeTab === 'rage' ? (
+          <RageClickTab rageEvents={rageEvents} />
+        ) : activeTab === 'recordings' ? (
+          <SessionRecordingsTab activeFilter={activeFilter} />
+        ) : (
+          <DeadClickTab deadEvents={deadEvents} />
+        )}
+      </main>
     </div>
   );
 }
 
-// Sub-components
-function KPICard({ title, value, change, icon, color, subtitle }: any) {
-  const isPositive = change > 0;
+function SummaryTab({ stats, charts }: { stats: VisitorStats | null; charts: any }) {
   return (
-    <div className="bg-[#1a1a1a] border border-[#222] rounded-2xl p-6 shadow-lg hover:border-[#333] transition-all group">
-      <div className="flex items-start justify-between mb-4">
-        <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-[#0d0d0d] border border-[#222] text-gray-400 group-hover:text-white transition-colors" style={{ color: color }}>
-          <span className="material-symbols-outlined">{icon}</span>
+    <div className="space-y-6">
+      {/* 요약 카드 */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <KPICard
+          title="오늘 방문자"
+          value={stats?.today_visitors ? stats.today_visitors.toLocaleString() : '0'}
+          change={stats?.visitor_change_pct}
+          icon="people"
+          color="#00D4D4"
+        />
+        <KPICard
+          title="평균 체류시간"
+          value={stats?.avg_duration ? formatDuration(stats.avg_duration) : '0초'}
+          icon="schedule"
+          color="#3B82F6"
+        />
+        <KPICard
+          title="이탈률"
+          value={stats?.bounce_rate ? `${stats.bounce_rate.toFixed(1)}%` : '0%'}
+          icon="trending_down"
+          color="#EF4444"
+        />
+        <KPICard
+          title="가장 많이 본 페이지"
+          value={stats?.top_page || '-'}
+          icon="web"
+          color="#10B981"
+        />
+      </div>
+
+      {/* 차트 섹션 */}
+      {charts && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* 일별 방문자 추이 */}
+          {charts.daily && charts.daily.length > 0 && (
+            <ChartCard title="일별 방문자 추이" icon="trending_up">
+              <ResponsiveContainer width="100%" height={300}>
+                <AreaChart data={charts.daily} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#00D4D4" stopOpacity={0.8} />
+                      <stop offset="95%" stopColor="#00D4D4" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 9 }} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 10 }} />
+                  <RechartsTooltip content={<CustomTooltip />} />
+                  <Area
+                    type="monotone"
+                    dataKey="value"
+                    stroke="#00D4D4"
+                    strokeWidth={2}
+                    fillOpacity={1}
+                    fill="url(#colorValue)"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </ChartCard>
+          )}
+
+          {/* 유입 경로 비율 */}
+          {charts.referralSources && charts.referralSources.length > 0 && (
+            <ChartCard title="유입 경로 비율" icon="source">
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={charts.referralSources}
+                    innerRadius={60}
+                    outerRadius={80}
+                    paddingAngle={5}
+                    dataKey="value"
+                    nameKey="name"
+                  >
+                    {charts.referralSources.map((entry: any, index: number) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <RechartsTooltip content={<CustomTooltip />} />
+                  <Legend
+                    verticalAlign="middle"
+                    align="right"
+                    layout="vertical"
+                    wrapperStyle={{ paddingLeft: '20px', fontSize: '11px' }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </ChartCard>
+          )}
+
+          {/* 디바이스 분포 */}
+          {charts.devices && charts.devices.length > 0 && (
+            <ChartCard title="디바이스 분포" icon="devices">
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={charts.devices}
+                    innerRadius={60}
+                    outerRadius={80}
+                    paddingAngle={5}
+                    dataKey="value"
+                    nameKey="name"
+                  >
+                    {charts.devices.map((entry: any, index: number) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <RechartsTooltip content={<CustomTooltip />} />
+                  <Legend
+                    verticalAlign="middle"
+                    align="right"
+                    layout="vertical"
+                    wrapperStyle={{ paddingLeft: '20px', fontSize: '11px' }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </ChartCard>
+          )}
+
+          {/* 시간대별 방문 분포 */}
+          {charts.hourly && charts.hourly.length > 0 && (
+            <ChartCard title="시간대별 방문 분포" icon="schedule">
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={charts.hourly} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 9 }} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 10 }} />
+                  <RechartsTooltip content={<CustomTooltip />} />
+                  <Bar dataKey="value" fill="#3B82F6" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartCard>
+          )}
+
+          {/* 페이지별 체류시간 TOP 5 */}
+          {charts.topPages && charts.topPages.length > 0 && (
+            <ChartCard title="페이지별 체류시간 TOP 5" icon="web">
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart
+                  data={charts.topPages}
+                  layout="vertical"
+                  margin={{ top: 10, right: 10, left: 100, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#222" horizontal={false} />
+                  <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: '#666', fontSize: 9 }} />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: '#666', fontSize: 9 }}
+                    width={90}
+                  />
+                  <RechartsTooltip content={<CustomTooltip />} />
+                  <Bar dataKey="value" fill="#10B981" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartCard>
+          )}
         </div>
-        {change !== undefined && (
-          <div className={`flex items-center gap-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full ${isPositive ? 'text-green-400 bg-green-400/10' : 'text-red-400 bg-red-400/10'}`}>
-            <span className="material-symbols-outlined text-[14px]">{isPositive ? 'arrow_upward' : 'arrow_downward'}</span>
-            {Math.abs(change)}%
+      )}
+    </div>
+  );
+}
+
+function RageClickTab({ rageEvents }: { rageEvents: AnalyticsEvent[] }) {
+  const grouped = rageEvents.reduce((acc, e) => {
+    const key = `${Math.round((e.x_pos || 0) / 50)}_${Math.round((e.y_pos || 0) / 50)}`;
+    if (!acc[key]) {
+      acc[key] = { ...e, count: 0 };
+    }
+    acc[key].count++;
+    return acc;
+  }, {} as Record<string, AnalyticsEvent & { count: number }>);
+
+  const sorted = Object.values(grouped).sort((a, b) => b.count - a.count);
+
+  return (
+    <div className="space-y-4">
+      {sorted.length === 0 ? (
+        <div className="text-center py-20 text-gray-400">
+          <span className="material-symbols-outlined text-[48px] mb-4">warning</span>
+          <p>Rage Click 이벤트가 없습니다.</p>
+        </div>
+      ) : (
+        sorted.map((entry, idx) => (
+          <div key={idx} className="bg-[#1a1a1a] border border-[#222] rounded-xl p-4">
+            <div className="flex items-start justify-between">
+              <div className="flex-1">
+                <p className="text-sm font-bold text-red-400 mb-1">
+                  {entry.element_tag || 'Unknown'} - {entry.count}회 클릭
+                </p>
+                <p className="text-xs text-gray-500 mb-2">{entry.page_url}</p>
+                <p className="text-[10px] text-gray-600">
+                  좌표: ({entry.x_pos || 0}, {entry.y_pos || 0})
+                </p>
+              </div>
+            </div>
           </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+function DeadClickTab({ deadEvents }: { deadEvents: AnalyticsEvent[] }) {
+  const grouped = deadEvents.reduce((acc, e) => {
+    const key = `${e.element_tag}_${(e.element_class || '').split(' ')[0]}`;
+    if (!acc[key]) {
+      acc[key] = { ...e, count: 0 };
+    }
+    acc[key].count++;
+    return acc;
+  }, {} as Record<string, AnalyticsEvent & { count: number }>);
+
+  const sorted = Object.values(grouped).sort((a, b) => b.count - a.count).slice(0, 30);
+
+  return (
+    <div className="space-y-4">
+      {sorted.length === 0 ? (
+        <div className="text-center py-20 text-gray-400">
+          <span className="material-symbols-outlined text-[48px] mb-4">cancel</span>
+          <p>Dead Click 이벤트가 없습니다.</p>
+        </div>
+      ) : (
+        sorted.map((entry, idx) => (
+          <div key={idx} className="bg-[#1a1a1a] border border-[#222] rounded-xl p-4">
+            <div className="flex items-start justify-between">
+              <div className="flex-1">
+                <p className="text-sm font-bold text-orange-400 mb-1">
+                  &lt;{entry.element_tag}&gt; {entry.element_text || entry.element_class || ''} - {entry.count}회
+                </p>
+                <p className="text-xs text-gray-500 mb-2">{entry.page_url}</p>
+                <p className="text-[10px] text-gray-600">
+                  좌표: ({entry.x_pos || 0}, {entry.y_pos || 0})
+                </p>
+              </div>
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+function KPICard({ title, value, change, icon, color, subtitle }: any) {
+  return (
+    <div className="bg-[#1a1a1a] border border-[#222] rounded-xl p-6">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-gray-500 font-medium">{title}</span>
+        <span className="material-symbols-outlined text-[20px]" style={{ color }}>
+          {icon}
+        </span>
+      </div>
+      <div className="flex items-baseline gap-2">
+        <p className="text-2xl font-black text-white">{value}</p>
+        {change !== undefined && change !== null && (
+          <span className={`text-xs font-bold ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            {change >= 0 ? '+' : ''}{change.toFixed(1)}%
+          </span>
         )}
       </div>
-      <p className="text-xs text-gray-500 font-semibold mb-1 uppercase tracking-wider">{title}</p>
-      <p className="text-2xl font-bold text-white mb-1">{value}</p>
-      {subtitle && <p className="text-[10px] text-gray-600">{subtitle}</p>}
+      {subtitle && <p className="text-xs text-gray-500 mt-1">{subtitle}</p>}
     </div>
   );
 }
 
 function ChartCard({ title, icon, children, className }: any) {
   return (
-    <div className={`bg-[#1a1a1a] border border-[#222] rounded-2xl p-6 shadow-lg ${className}`}>
-      <div className="flex items-center gap-2 mb-6">
-        <span className="material-symbols-outlined text-[20px] text-gray-500">{icon}</span>
-        <h3 className="text-sm font-bold text-gray-300">{title}</h3>
+    <div className={`bg-[#1a1a1a] border border-[#222] rounded-xl p-6 ${className || ''}`}>
+      <div className="flex items-center gap-2 mb-4">
+        <span className="material-symbols-outlined text-[18px] text-[#00D4D4]">{icon}</span>
+        <h3 className="text-sm font-bold text-white">{title}</h3>
       </div>
-      <div className="w-full">
-        {children}
-      </div>
+      {children}
     </div>
   );
 }
 
-function CustomTooltip({ active, payload, label, unit = '' }: any) {
-  if (active && payload && payload.length) {
+function HeatmapTab({
+  selectedPage,
+  clickEvents,
+  canvasRef,
+  iframeRef,
+  iframeLoaded,
+  setIframeLoaded,
+  iframeUrl,
+  heatmapOpacity,
+  setHeatmapOpacity,
+}: {
+  selectedPage: string;
+  clickEvents: AnalyticsEvent[];
+  canvasRef: React.RefObject<HTMLCanvasElement>;
+  iframeRef: React.RefObject<HTMLIFrameElement>;
+  iframeLoaded: boolean;
+  setIframeLoaded: (loaded: boolean) => void;
+  iframeUrl: string;
+  heatmapOpacity: number;
+  setHeatmapOpacity: (opacity: number) => void;
+}) {
+  if (!selectedPage) {
     return (
-      <div className="bg-[#1a1a1a] border border-[#333] rounded-lg p-3 shadow-xl backdrop-blur-md">
-        <p className="text-[10px] text-gray-500 font-bold mb-1 uppercase">{label}</p>
-        <p className="text-sm font-bold text-[#00D4D4]">
-          {payload[0].value.toLocaleString()}{unit}
-        </p>
+      <div className="text-center py-20 text-gray-400">
+        <span className="material-symbols-outlined text-[48px] mb-4">heat_map</span>
+        <p>히트맵을 보려면 위에서 페이지를 선택해주세요.</p>
       </div>
     );
   }
-  return null;
-}
 
-function StatSidebarItem({ label, value, icon, color }: any) {
   return (
-    <div className="bg-[#1a1a1a]/50 rounded-xl p-3 border border-[#222]/50 flex items-center gap-3">
-      <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-[#0d0d0d] text-gray-500" style={{ color }}>
-        <span className="material-symbols-outlined text-[18px]">{icon}</span>
+    <div className="space-y-4">
+      {/* 히트맵 컨트롤 */}
+      <div className="flex items-center justify-between bg-[#1a1a1a] border border-[#222] rounded-xl p-4">
+        <div className="flex items-center gap-4">
+          <span className="text-xs text-gray-400 font-medium">히트맵 투명도</span>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={heatmapOpacity}
+            onChange={e => setHeatmapOpacity(Number(e.target.value))}
+            className="flex-1 max-w-[200px] h-2 bg-[#222] rounded-lg appearance-none cursor-pointer accent-[#00D4D4]"
+          />
+          <span className="text-[11px] font-mono text-[#00D4D4] w-8">{heatmapOpacity}%</span>
+        </div>
+        <div className="text-xs text-gray-500">
+          클릭 이벤트: <span className="text-[#00D4D4] font-bold">{clickEvents.length}</span>개
+        </div>
       </div>
-      <div>
-        <p className="text-[9px] text-gray-600 font-bold uppercase">{label}</p>
-        <p className="text-sm font-bold text-white leading-none">{value}</p>
+
+      {/* 히트맵 미리보기 */}
+      <div className="relative bg-[#111] border border-[#222] rounded-xl overflow-hidden" style={{ aspectRatio: `${PREVIEW_WIDTH}/${PREVIEW_HEIGHT}` }}>
+        {iframeUrl && (
+          <iframe
+            ref={iframeRef}
+            src={iframeUrl}
+            className="absolute inset-0 w-full h-full border-0 pointer-events-none opacity-90"
+            onLoad={() => setIframeLoaded(true)}
+            title="Page Preview"
+            onError={() => {
+              console.error('[Analytics] Iframe load error');
+              setIframeLoaded(false);
+            }}
+          />
+        )}
+        <canvas
+          ref={canvasRef}
+          width={PREVIEW_WIDTH}
+          height={PREVIEW_HEIGHT}
+          className="absolute inset-0 w-full h-full"
+          style={{
+            opacity: heatmapOpacity / 100,
+            mixBlendMode: 'screen',
+            pointerEvents: 'none',
+          }}
+        />
+        {!iframeLoaded && iframeUrl && (
+          <div className="absolute inset-0 flex items-center justify-center bg-[#111]">
+            <div className="text-center">
+              <span className="material-symbols-outlined text-[40px] text-[#00D4D4] animate-spin mb-3">refresh</span>
+              <p className="text-sm text-gray-500 font-medium">페이지 로딩 중...</p>
+            </div>
+          </div>
+        )}
+        {clickEvents.length === 0 && iframeLoaded && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="text-center">
+              <span className="material-symbols-outlined text-[48px] text-gray-600 mb-3">touch_app</span>
+              <p className="text-sm text-gray-500 font-medium">이 페이지에 클릭 데이터가 없습니다.</p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function IssueItem({ entry, type }: any) {
-  const isRage = type === 'rage';
+function ScrollMapTab({ scrollEvents, selectedPage }: { scrollEvents: AnalyticsEvent[]; selectedPage: string }) {
+  if (!selectedPage) {
+    return (
+      <div className="text-center py-20 text-gray-400">
+        <span className="material-symbols-outlined text-[48px] mb-4">vertical_align_bottom</span>
+        <p>스크롤 맵을 보려면 위에서 페이지를 선택해주세요.</p>
+      </div>
+    );
+  }
+
+  // 스크롤 깊이별 통계 계산
+  const depthStats = [0, 25, 50, 75, 100].map(depth => {
+    const reached = scrollEvents.filter(e => (e.scroll_depth || 0) >= depth);
+    return {
+      depth,
+      count: reached.length,
+      percentage: scrollEvents.length > 0 ? (reached.length / scrollEvents.length) * 100 : 0,
+    };
+  });
+
+  const avgDepth = scrollEvents.length > 0
+    ? scrollEvents.reduce((sum, e) => sum + (e.scroll_depth || 0), 0) / scrollEvents.length
+    : 0;
+
+  const maxCount = Math.max(...depthStats.map(s => s.count), 1);
+
   return (
-    <div className="bg-[#0d0d0d] border border-[#222] rounded-xl p-4 flex items-center gap-4 hover:border-[#333] transition-all">
-      <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${isRage ? 'bg-red-400/10 text-red-400' : 'bg-orange-400/10 text-orange-400'}`}>
-        <span className="material-symbols-outlined">{isRage ? 'warning' : 'block'}</span>
+    <div className="space-y-6">
+      {/* 통계 카드 */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-[#1a1a1a] border border-[#222] rounded-xl p-6">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-gray-500 font-medium">평균 스크롤 깊이</span>
+            <span className="material-symbols-outlined text-[20px] text-[#00D4D4]">trending_up</span>
+          </div>
+          <p className="text-2xl font-black text-white">{avgDepth.toFixed(1)}%</p>
+        </div>
+        <div className="bg-[#1a1a1a] border border-[#222] rounded-xl p-6">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-gray-500 font-medium">전체 스크롤 이벤트</span>
+            <span className="material-symbols-outlined text-[20px] text-[#3B82F6]">scrollable</span>
+          </div>
+          <p className="text-2xl font-black text-white">{scrollEvents.length.toLocaleString()}</p>
+        </div>
+        <div className="bg-[#1a1a1a] border border-[#222] rounded-xl p-6">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-gray-500 font-medium">100% 도달률</span>
+            <span className="material-symbols-outlined text-[20px] text-[#10B981]">check_circle</span>
+          </div>
+          <p className="text-2xl font-black text-white">
+            {depthStats[4].percentage.toFixed(1)}%
+          </p>
+        </div>
       </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-xs font-bold text-white truncate">{isRage ? entry.element_info : entry.info}</p>
-        <p className="text-[10px] text-gray-500 mt-1">좌표: ({entry.x_pos || entry.x}, {entry.y_pos || entry.y})</p>
-      </div>
-      <div className="text-right">
-        <p className={`text-sm font-black ${isRage ? 'text-red-400' : 'text-orange-400'}`}>{entry.count}회</p>
-        {entry.last_occurred && <p className="text-[9px] text-gray-600 mt-0.5">{new Date(entry.last_occurred).toLocaleTimeString()}</p>}
+
+      {/* 스크롤 맵 시각화 */}
+      <div className="bg-[#1a1a1a] border border-[#222] rounded-xl p-6">
+        <div className="flex items-center gap-2 mb-6">
+          <span className="material-symbols-outlined text-[18px] text-[#00D4D4]">vertical_align_bottom</span>
+          <h3 className="text-sm font-bold text-white">스크롤 깊이 분포</h3>
+        </div>
+
+        <div className="space-y-3">
+          {depthStats.slice(1).reverse().map((stat, idx) => {
+            const depth = stat.depth;
+            const prevDepth = idx === depthStats.length - 2 ? 0 : depthStats[depthStats.length - 2 - idx - 1]?.depth || 0;
+            const intensity = stat.count / maxCount;
+
+            // 색상 계산: 파란색(낮음) → 노란색(중간) → 빨간색(높음)
+            let r = 0, g = 0, b = 0;
+            if (intensity < 0.33) {
+              const t = intensity / 0.33;
+              r = 0;
+              g = Math.round(t * 100);
+              b = Math.round(100 + t * 155);
+            } else if (intensity < 0.66) {
+              const t = (intensity - 0.33) / 0.33;
+              r = Math.round(t * 255);
+              g = 255;
+              b = Math.round(255 * (1 - t));
+            } else {
+              const t = (intensity - 0.66) / 0.34;
+              r = 255;
+              g = Math.round(255 * (1 - t));
+              b = 0;
+            }
+
+            return (
+              <div key={depth} className="relative">
+                <div className="flex items-center gap-4 mb-2">
+                  <span className="text-xs text-gray-400 font-mono w-16 text-right">
+                    {prevDepth}% - {depth}%
+                  </span>
+                  <div className="flex-1 relative h-8 bg-[#0d0d0d] rounded-lg overflow-hidden border border-[#222]">
+                    <div
+                      className="absolute inset-0 transition-all duration-500"
+                      style={{
+                        width: `${stat.percentage}%`,
+                        backgroundColor: `rgba(${r}, ${g}, ${b}, ${0.6 + intensity * 0.4})`,
+                        boxShadow: `0 0 20px rgba(${r}, ${g}, ${b}, 0.5)`,
+                      }}
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="text-xs font-bold text-white drop-shadow-lg">
+                        {stat.count}명 ({stat.percentage.toFixed(1)}%)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* 범례 */}
+        <div className="mt-6 pt-6 border-t border-[#222]">
+          <div className="flex items-center gap-4">
+            <span className="text-xs text-gray-500">색상 강도:</span>
+            <div className="flex-1 h-4 bg-gradient-to-r from-blue-500 via-yellow-500 to-red-500 rounded" />
+            <span className="text-xs text-gray-500">낮음 → 높음</span>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-function LegendItem({ color, label }: any) {
+function SessionRecordingsTab({ activeFilter }: { activeFilter: DateFilter }) {
+  const [recordings, setRecordings] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedRecording, setSelectedRecording] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchRecordings = async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/analytics/recordings?days=${activeFilter.days}`);
+        const data = await res.json();
+        setRecordings(data.recordings || []);
+      } catch (err) {
+        console.error('Failed to fetch recordings:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchRecordings();
+  }, [activeFilter.days]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <span className="material-symbols-outlined text-[48px] text-[#00D4D4] animate-spin">refresh</span>
+      </div>
+    );
+  }
+
+  if (recordings.length === 0) {
+    return (
+      <div className="text-center py-20 text-gray-400">
+        <span className="material-symbols-outlined text-[48px] mb-4">videocam</span>
+        <p>세션 녹화가 없습니다.</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex items-center gap-2">
-      <div className="w-3 h-3 rounded-full shadow-inner shadow-black/50" style={{ backgroundColor: color }} />
-      <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">{label}</span>
+    <div className="space-y-4">
+      {recordings.map((recording: any) => {
+        const duration = Math.round((new Date(recording.end_time).getTime() - new Date(recording.start_time).getTime()) / 1000);
+        const eventCount = Array.isArray(recording.events) ? recording.events.length : 0;
+
+        return (
+          <div
+            key={recording.id}
+            className="bg-[#1a1a1a] border border-[#222] rounded-xl p-4 hover:border-[#00D4D4]/50 transition-colors cursor-pointer"
+            onClick={() => setSelectedRecording(selectedRecording === recording.id ? null : recording.id)}
+          >
+            <div className="flex items-start justify-between">
+              <div className="flex-1">
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="material-symbols-outlined text-[#00D4D4] text-[20px]">videocam</span>
+                  <p className="text-sm font-bold text-white">{recording.page_url}</p>
+                </div>
+                <div className="flex items-center gap-4 text-xs text-gray-500">
+                  <span>세션: {recording.session_id.slice(0, 8)}...</span>
+                  <span>지속시간: {formatDuration(duration)}</span>
+                  <span>이벤트: {eventCount}개</span>
+                  <span>{new Date(recording.created_at).toLocaleString('ko-KR')}</span>
+                </div>
+              </div>
+              <button
+                className="px-3 py-1.5 rounded-lg text-xs bg-[#00D4D4] text-black font-bold hover:bg-[#00b8b8] transition-all"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  window.open(`/admin/analytics/recordings/${recording.id}`, '_blank');
+                }}
+              >
+                재생
+              </button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function EmptyState({ icon, text }: any) {
+function CustomTooltip({ active, payload }: any) {
+  if (!active || !payload || payload.length === 0) return null;
   return (
-    <div className="py-12 text-center">
-      <span className="material-symbols-outlined text-[48px] text-gray-700 mb-3 opacity-20">{icon}</span>
-      <p className="text-sm text-gray-600 font-medium">{text}</p>
+    <div className="bg-[#1a1a1a] border border-[#333] rounded-lg px-3 py-2 shadow-xl">
+      <p className="text-xs text-gray-400 mb-1">{payload[0].name}</p>
+      <p className="text-sm font-bold text-white">{payload[0].value}</p>
     </div>
   );
 }

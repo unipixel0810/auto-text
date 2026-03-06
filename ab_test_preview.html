@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>A/B 테스트 설계서</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; line-height: 1.6; color: #333; }
+        h1 { border-bottom: 2px solid #eaecef; padding-bottom: .3em; }
+        h2 { border-bottom: 1px solid #eaecef; padding-bottom: .3em; margin-top: 1.5em; }
+        code { background-color: #f6f8fa; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+        blockquote { border-left: 4px solid #dfe2e5; color: #6a737d; margin: 0; padding: 0 1em; }
+    </style>
+</head>
+<body>
+    <div id="content"></div>
+    <script>
+        const markdownContent = `
+# 랜딩페이지 A/B 테스트 설계서 (예시 사례)
+
+**문서 목적:** 새로운 기능/디자인 도입 전, 기존(Control) 대비 성과 개선 여부를 수치로 검증하기 위한 실험 기획안
+**실험 URL:** \`[실제 랜딩페이지 URL 입력]\`
+*(참고: 아직 실제 수치를 주지 않으셔서 임의의 데이터로 작성한 **완성형 샘플**입니다.)*
+
+---
+
+## 1. 실험 가설 (Hypothesis)
+
+* **If (만약 우리가 ~한다면):** 메인 CTA 버튼의 텍스트를 "시작하기"에서 "가입하고 1개월 자동 체험하기"로 변경한다면
+* **Then (그러면 ~할 것이다):** 서비스(결제/가입) 단계로 이동하는 클릭 전환율(CTR)이 상승할 것이다.
+* **Because (왜냐하면):** 막연한 '시작하기'보다 '1개월 무료'라는 명확한 혜택을 보았을 때 사용자의 심리적 진입장벽이 크게 낮아지기 때문이다.
+
+## 2. 변수 정의 (Variables)
+
+* **독립변수 (원인):** 랜딩페이지에 위치한 첫 번째 메인 CTA 버튼의 텍스트
+* **종속변수 (결과):** 버튼의 클릭 전환율 (버튼을 클릭한 사람의 수 / 랜딩페이지 방문자 수)
+* **통제변수 (고정값):** 버튼의 색상 크기 위치 폰트 페이지 스크롤 길이 기타 모든 디자인 요소 등
+
+## 3. 실험 그룹 (Variants) 구성
+
+본 실험은 사이트 방문자 트래픽을 A와 B, 각각 50:50으로 무작위 노출하여 진행합니다.
+
+* **A안 (Control Group / 기존안):** 기존 텍스트 "시작하기" 버튼 노출
+* **B안 (Variant Group / 실험안):** 새로운 문구 "가입하고 1개월 자동 체험하기" 버튼 노출
+
+## 4. 표본 크기 및 예상 실험 기간
+
+*통계적 검정력(80%) 및 신뢰수준(95%) 확보를 기반으로 최소 요구 표본을 산정합니다.*
+
+* **현재 기준 전환율 (Baseline Conversion Rate):** \`3.0%\`
+* **목표(기대) 전환율 (Expected Conversion Rate):** \`3.5%\` *(상대적 약 16% 증가 스펙)*
+* **일 평균 페이지 방문자 수:** \`1,500명/일\`
+* **신뢰 수준 (Significance Level / 통계적 유의미성):** 95% (p-value < 0.05)
+* **통계적 검정력 (Statistical Power):** 80%
+
+### 필요한 최저 표본 크기 계산
+* **변형 당 최소 표본 수 ($n$):** A안 20,124명 / B안 20,124명
+* **총 실험 최소 규모 (A+B 합계):** 총 \`40,248명\`
+
+### 예상 실험 기간 산출
+* **실험 기간 =** 총 40,248명 / 일 1,500명 유입 = **약 27일 소요 (약 4주 진행)**
+
+## 5. 성공/실패 판단 기준 및 후속 조치
+
+*최소 4주의 실험 종료 후 AB 테스트 데이터 툴(혹은 통계 검정 도구)에서 다음 기준을 만족해야 합니다.*
+
+* **성공 기준 (B안 채택 조건):** 
+    1. B안의 실제 클릭 전환율(%)이 A안보다 명확하게 수치적으로 높게 기록됨.
+    2. 데이터의 **p-value(유의확률)가 0.05 미만**을 기록하여 통계적 타당성을 확보함.
+    *👉 조치: 새로운 텍스트가 성과가 있음을 보장하므로, 전체 트래픽을 B안으로 100% 반영합니다.*
+
+* **실패 혹은 유지 기준 (A안 유지 조건):** 
+    1. B안의 전환율이 오히려 기존 A안보다 낮거나 클릭률 변동이 미미함.
+    2. 수치상으로는 B안이 이겼더라도, **p-value가 0.05를 넘은 경우.**
+    *👉 조치: 성과 증가 데이터가 "통계적인 우연"일 가능성이 큽니다. 리스크를 피하기 위해 기존 A안을 유지하고 다른 가설(ex: 버튼 색상 변경)로 재실험합니다.*
+        `;
+        document.getElementById('content').innerHTML = marked.parse(markdownContent);
+    </script>
+</body>
+</html>

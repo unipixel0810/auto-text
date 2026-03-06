@@ -259,7 +259,7 @@ export async function getStats(days: number = 30): Promise<VisitorStats> {
           };
         }
 
-        const todayPVs = allPVs.filter((pv: any) => 
+        const todayPVs = allPVs.filter((pv: any) =>
           new Date(pv.created_at).getTime() >= todayStart
         );
         const yesterdayPVs = allPVs.filter((pv: any) => {
@@ -269,19 +269,19 @@ export async function getStats(days: number = 30): Promise<VisitorStats> {
 
         const todaySessions = new Set(todayPVs.map((p: any) => p.session_id)).size;
         const yesterdaySessions = new Set(yesterdayPVs.map((p: any) => p.session_id)).size;
-        const change = yesterdaySessions === 0 
+        const change = yesterdaySessions === 0
           ? (todaySessions > 0 ? 100 : 0)
           : Math.round(((todaySessions - yesterdaySessions) / yesterdaySessions) * 100);
 
         // 평균 체류시간
-        const avgDuration = todayPVs.length === 0 
-          ? 0 
+        const avgDuration = todayPVs.length === 0
+          ? 0
           : Math.round(todayPVs.reduce((s: number, p: any) => s + (p.duration_seconds || 0), 0) / todayPVs.length);
 
         // 이탈률 (bounce rate)
         const bounceCount = todayPVs.filter((p: any) => p.is_bounce).length;
-        const bounceRate = todayPVs.length === 0 
-          ? 0 
+        const bounceRate = todayPVs.length === 0
+          ? 0
           : Math.round((bounceCount / todayPVs.length) * 100);
 
         // 가장 많이 본 페이지
@@ -504,64 +504,106 @@ export async function getChartData(days: number = 30) {
 /**
  * Get A/B experiment results
  */
-export async function getABExperimentResults() {
+export async function getABExperimentResults(): Promise<any[] | { error: string }> {
   const supabase = getSupabase();
-  if (!supabase) return [];
-
-  const { data: events, error } = await supabase
-    .from('ab_events')
-    .select('*')
-    .order('created_at', { ascending: true });
-
-  if (error || !events) {
-    console.error('[Analytics] getABExperimentResults error:', error?.message);
-    return [];
+  if (!supabase) {
+    console.warn('[Analytics] Supabase client not initialized');
+    return { error: 'Supabase configuration is missing. Please check .env.local' };
   }
 
-  const results: Record<string, {
-    name: string;
-    variants: {
-      A: { impressions: number; clicks: number };
-      B: { impressions: number; clicks: number };
-    };
-  }> = {};
+  try {
+    // 1. 모든 활성 실험 설정 가져오기
+    const { data: experiments, error: expError } = await supabase
+      .from('ab_experiments')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-  events.forEach(e => {
-    if (!results[e.experiment_name]) {
-      results[e.experiment_name] = {
-        name: e.experiment_name,
-        variants: {
-          A: { impressions: 0, clicks: 0 },
-          B: { impressions: 0, clicks: 0 },
-        }
-      };
+    if (expError) {
+      console.error('[Analytics] fetching ab_experiments error:', expError.message);
     }
-    const v = e.variant as 'A' | 'B';
-    if (e.event_type === 'impression') results[e.experiment_name].variants[v].impressions++;
-    if (e.event_type === 'click') results[e.experiment_name].variants[v].clicks++;
-  });
 
-  return Object.values(results).map(exp => {
-    const vA = exp.variants.A;
-    const vB = exp.variants.B;
-    
-    const ctrA = vA.impressions > 0 ? (vA.clicks / vA.impressions) * 100 : 0;
-    const ctrB = vB.impressions > 0 ? (vB.clicks / vB.impressions) * 100 : 0;
+    // 2. 모든 이벤트 데이터 가져오기
+    const { data: events, error } = await supabase
+      .from('ab_events')
+      .select('*')
+      .order('created_at', { ascending: true });
 
-    // 카이제곱 검정 (간이 구현)
-    const pValue = calculateChiSquared(vA.impressions, vA.clicks, vB.impressions, vB.clicks);
+    if (error) {
+      console.error('[Analytics] getABExperimentResults error:', error.message);
+    }
 
-    return {
-      ...exp,
+    const results: Record<string, {
+      name: string;
       variants: {
-        A: { ...vA, ctr: ctrA },
-        B: { ...vB, ctr: ctrB },
-      },
-      pValue,
-      isSignificant: pValue < 0.05,
-      winner: ctrA > ctrB ? 'A' : (ctrB > ctrA ? 'B' : 'Draw')
-    };
-  });
+        A: { impressions: number; clicks: number };
+        B: { impressions: number; clicks: number };
+      };
+    }> = {};
+
+    // DB에 저장된 실험 목록으로 결과 맵 초기화
+    if (experiments) {
+      experiments.forEach(exp => {
+        results[exp.name] = {
+          name: exp.name,
+          variants: {
+            A: { impressions: 0, clicks: 0 },
+            B: { impressions: 0, clicks: 0 },
+          }
+        };
+      });
+    }
+
+    // 이벤트 데이터를 순회하며 수치 합산
+    if (events) {
+      events.forEach(e => {
+        // 이미 결과 맵에 있는 실험인 경우에만 집계 (혹은 새로 생성)
+        if (!results[e.experiment_name]) {
+          results[e.experiment_name] = {
+            name: e.experiment_name,
+            variants: {
+              A: { impressions: 0, clicks: 0 },
+              B: { impressions: 0, clicks: 0 },
+            }
+          };
+        }
+
+        const variant = e.variant as 'A' | 'B';
+        // 잘못된 variant 값이 들어온 경우 대비
+        if (variant !== 'A' && variant !== 'B') return;
+
+        if (e.event_type === 'impression') {
+          results[e.experiment_name].variants[variant].impressions++;
+        } else if (e.event_type === 'click') {
+          results[e.experiment_name].variants[variant].clicks++;
+        }
+      });
+    }
+
+    return Object.values(results).map(exp => {
+      const vA = exp.variants.A;
+      const vB = exp.variants.B;
+
+      const ctrA = vA.impressions > 0 ? (vA.clicks / vA.impressions) * 100 : 0;
+      const ctrB = vB.impressions > 0 ? (vB.clicks / vB.impressions) * 100 : 0;
+
+      // 통계적 유의미성 검정 (p-value 계산)
+      const pValue = calculateChiSquared(vA.impressions, vA.clicks, vB.impressions, vB.clicks);
+
+      return {
+        ...exp,
+        variants: {
+          A: { ...vA, ctr: ctrA },
+          B: { ...vB, ctr: ctrB },
+        },
+        pValue,
+        isSignificant: pValue < 0.05,
+        winner: ctrA > ctrB ? 'A' : (ctrB > ctrA ? 'B' : 'Draw')
+      };
+    });
+  } catch (err) {
+    console.error('[Analytics] getABExperimentResults exception:', err);
+    return [];
+  }
 }
 
 /**
@@ -588,7 +630,7 @@ function calculateChiSquared(n1: number, x1: number, n2: number, x2: number): nu
   const e21 = (row2 * col1) / total;
   const e22 = (row2 * col2) / total;
 
-  const chiSq = 
+  const chiSq =
     Math.pow(o11 - e11, 2) / e11 +
     Math.pow(o12 - e12, 2) / e12 +
     Math.pow(o21 - e21, 2) / e21 +

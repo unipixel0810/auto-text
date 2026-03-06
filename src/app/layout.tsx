@@ -2,10 +2,11 @@ import type { Metadata } from 'next';
 import { Suspense } from 'react';
 import './globals.css';
 import AnalyticsProvider from '@/components/analytics/AnalyticsProvider';
+import AuthProvider from '@/components/auth/AuthProvider';
 
 export const metadata: Metadata = {
-  title: '자막 추천 시스템 | Subtitle Recommender',
-  description: 'AI 기반 자막 유형 추천 시스템 - 예능, 상황, 설명 자막을 자동으로 분류합니다.',
+  title: 'AutoText | AI 자막 자동 생성',
+  description: 'AI 기반 자막 자동 생성 및 추천 시스템 - 예능, 상황, 설명 자막을 자동으로 생성합니다.',
 };
 
 export default function RootLayout({
@@ -19,12 +20,14 @@ export default function RootLayout({
         <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
         <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
       </head>
-      <body className="min-h-screen bg-editor-bg antialiased overflow-hidden">
-        <Suspense fallback={null}>
-          <AnalyticsProvider>
-            {children}
-          </AnalyticsProvider>
-        </Suspense>
+      <body className="min-h-screen bg-editor-bg antialiased">
+        <AuthProvider>
+          <Suspense fallback={null}>
+            <AnalyticsProvider>
+              {children}
+            </AnalyticsProvider>
+          </Suspense>
+        </AuthProvider>
       </body>
     </html>
   );

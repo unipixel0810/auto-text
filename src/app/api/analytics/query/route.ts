@@ -25,8 +25,16 @@ export async function GET(req: NextRequest) {
     }
 
     if (action === 'ab-results') {
-      const results = await getABExperimentResults();
-      return NextResponse.json({ experiments: results });
+      try {
+        const results = await getABExperimentResults();
+        if (results && 'error' in results) {
+          return NextResponse.json(results);
+        }
+        return NextResponse.json({ experiments: results || [] });
+      } catch (err) {
+        console.error('[Analytics Query] ab-results error:', err);
+        return NextResponse.json({ experiments: [], error: 'Failed to fetch A/B test results' });
+      }
     }
 
     const page_url = searchParams.get('page_url') || undefined;
