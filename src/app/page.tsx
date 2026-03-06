@@ -16,6 +16,7 @@ import {
   saveProject, getProject, getCurrentProjectId, setCurrentProjectId,
   generateProjectId, type SavedProject
 } from '@/lib/projectStorage';
+import { useAuth } from '@/components/auth/AuthProvider';
 
 const FRAME_DURATION = 1 / 30;
 const MIN_ZOOM = 0.1;
@@ -23,6 +24,8 @@ const MAX_ZOOM = 5;
 const ZOOM_STEP = 1.25;
 
 export default function Home() {
+  const { isAuthenticated, signIn } = useAuth();
+
   const [activeTab, setActiveTab] = useState<'media' | 'audio' | 'stickers' | 'effects' | 'transitions'>('media');
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
   const [subtitles, setSubtitles] = useState<SubtitleItem[]>([]);
@@ -66,6 +69,7 @@ export default function Home() {
   const selectedClip = clips.find(c => c.id === selectedClipId) || null;
 
   // ===== REFS for stable access inside document-level keydown =====
+  const isAuthenticatedRef = useRef(isAuthenticated);
   const clipsRef = useRef(clips);
   const selectedClipIdRef = useRef(selectedClipId);
   const currentTimeRef = useRef(currentTime);
@@ -83,6 +87,7 @@ export default function Home() {
   useEffect(() => { isTimelineHoveredRef.current = isTimelineHovered; }, [isTimelineHovered]);
   useEffect(() => { historyRef.current = history; }, [history]);
   useEffect(() => { historyIndexRef.current = historyIndex; }, [historyIndex]);
+  useEffect(() => { isAuthenticatedRef.current = isAuthenticated; }, [isAuthenticated]);
 
   // ===== Project ID & Auto-Save =====
   const [projectId, setProjectId] = useState<string>('');
@@ -449,6 +454,15 @@ export default function Home() {
       // Skip remaining shortcuts when typing
       if (isTyping) return;
 
+      // Check authentication for other shortcuts
+      if (!isAuthenticatedRef.current) {
+        if (!['Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' ', 'Space'].includes(e.key)) {
+          e.preventDefault();
+          alert('로그인이 필요한 기능입니다.');
+          return;
+        }
+      }
+
       // --- PLAYBACK ---
       if (e.code === 'Space' && !cmd) {
         e.preventDefault();
@@ -651,6 +665,15 @@ export default function Home() {
       alert('애니메이션 효과 적용');
     } else alert('구간을 선택해주세요.');
   }, [selectedClip, handleClipUpdate]);
+
+  const handleInteractionGuard = useCallback((e: React.MouseEvent | React.TouchEvent | React.PointerEvent) => {
+    if (!isAuthenticated) {
+      e.preventDefault();
+      e.stopPropagation();
+      alert('로그인이 필요한 기능입니다.');
+      signIn();
+    }
+  }, [isAuthenticated, signIn]);
 
   // Import trigger via file input
   const handleImportClick = useCallback(() => {
@@ -931,7 +954,11 @@ export default function Home() {
           onAutoColorCorrection={handleAutoColorCorrection}
           onAnimationEffect={handleAnimationEffect}
         />
-        <div className="flex-1 flex overflow-hidden relative">
+        <div
+          className="flex-1 flex overflow-hidden relative"
+          onClickCapture={handleInteractionGuard}
+          onPointerDownCapture={handleInteractionGuard}
+        >
           {/* Left Sidebar */}
           <div style={{ width: leftWidth, minWidth: 180, maxWidth: 500 }} className="shrink-0">
             <LeftSidebar
