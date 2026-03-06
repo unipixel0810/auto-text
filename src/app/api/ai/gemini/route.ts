@@ -29,25 +29,30 @@ export async function POST(req: Request) {
             .eq('email', email)
             .single();
 
+        let skipUsageTracking = false;
+
         if (usageError && usageError.code === 'PGRST116') {
             const { data: newUsage, error: insertError } = await supabase
                 .from('user_usages')
                 .insert([{ email }])
                 .select()
                 .single();
-            if (insertError) throw insertError;
-            usage = newUsage;
+            if (insertError) {
+                console.warn('Skipping usage tracking (insert failed):', insertError);
+                skipUsageTracking = true;
+            } else {
+                usage = newUsage;
+            }
         } else if (usageError) {
-            throw usageError;
-        }
-
-        if (!usage) {
-            return NextResponse.json({ error: 'Failed to access usage data' }, { status: 500 });
+            console.warn('Skipping usage tracking (fetch failed):', usageError);
+            skipUsageTracking = true;
         }
 
         const isUserAdmin = isAdmin(email);
-        if (!isUserAdmin && usage.used_seconds >= usage.total_allowed_seconds) {
-            return NextResponse.json({ error: 'Payment Required. Quota Exceeded.' }, { status: 402 });
+        if (!skipUsageTracking && usage && !isUserAdmin) {
+            if (usage.used_seconds >= usage.total_allowed_seconds) {
+                return NextResponse.json({ error: 'Payment Required. Quota Exceeded.' }, { status: 402 });
+            }
         }
 
         const body = await req.json();
@@ -58,8 +63,10 @@ export async function POST(req: Request) {
         }
 
         const durationSeconds = duration ? Math.ceil(parseFloat(duration)) : 60;
-        if (!isUserAdmin && (usage.used_seconds + durationSeconds) > usage.total_allowed_seconds) {
-            return NextResponse.json({ error: 'Payment Required. Not enough quota for this audio.' }, { status: 402 });
+        if (!skipUsageTracking && usage && !isUserAdmin) {
+            if ((usage.used_seconds + durationSeconds) > usage.total_allowed_seconds) {
+                return NextResponse.json({ error: 'Payment Required. Not enough quota for this audio.' }, { status: 402 });
+            }
         }
 
         const geminiKey = process.env.GEMINI_API_KEY;
@@ -114,7 +121,7 @@ export async function POST(req: Request) {
         }
 
         // Successfully generated. Update usage.
-        if (!isUserAdmin) {
+        if (!skipUsageTracking && usage && !isUserAdmin) {
             await supabase
                 .from('user_usages')
                 .update({ used_seconds: usage.used_seconds + durationSeconds })
