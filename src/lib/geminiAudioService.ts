@@ -125,68 +125,48 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
  */
 export async function generateSubtitlesFromAudio(
   videoFile: File,
-  apiKey: string,
+  _apiKey: string, // No longer used directly here
   onProgress?: (percent: number, message: string) => void,
 ): Promise<GeminiSubtitleResult[]> {
   onProgress?.(5, '오디오 추출 중...');
 
   const { base64, mimeType } = await extractAudioBase64(videoFile);
 
-  onProgress?.(30, 'Gemini API 호출 중...');
+  // Approximate duration. In a real app we'd get this from the video element metadata.
+  const duration = 60;
 
-  const prompt = `Analyze this video audio and generate Korean subtitles.
-Create subtitles every 2-3 seconds.
-Mix these styles appropriately:
-- 요약자막: key point summary, white text + black outline
-- 예능자막: fun/emphasis style, yellow text + black bg, large font
-- 설명자막: explanation style, cyan text + dark bg
-Each subtitle must include: start_time, end_time, text, style_type
+  onProgress?.(30, '서버로 전송 중...');
 
-Output ONLY a JSON array:
-[{"start_time": 0.0, "end_time": 2.5, "text": "자막 텍스트", "style_type": "요약자막"}]`;
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            {
-              inline_data: {
-                mime_type: mimeType,
-                data: base64,
-              },
-            },
-            { text: prompt },
-          ],
-        }],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 8192,
-        },
-      }),
-    },
-  );
+  const response = await fetch('/api/ai/gemini', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      base64Audio: base64,
+      mimeType,
+      duration
+    }),
+  });
 
   onProgress?.(70, '응답 처리 중...');
 
   if (!response.ok) {
-    const err = await response.json().catch(() => ({ error: { message: response.statusText } }));
-    throw new Error(err?.error?.message || 'Gemini API 호출 실패. API 키를 확인해주세요.');
+    if (response.status === 402) {
+      throw new Error('PAYMENT_REQUIRED');
+    }
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err?.error || 'Gemini API 호출 실패.');
   }
 
   const data = await response.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-  // Extract JSON from response
-  const jsonMatch = text.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    throw new Error('Gemini 응답에서 자막 데이터를 찾을 수 없습니다.');
+  if (data.error) {
+    if (response.status === 402 || data.error.includes('Payment Required')) {
+      throw new Error('PAYMENT_REQUIRED');
+    }
+    throw new Error(data.error);
   }
 
-  const subtitles: GeminiSubtitleResult[] = JSON.parse(jsonMatch[0]);
+  const subtitles: GeminiSubtitleResult[] = data;
 
   onProgress?.(100, '자막 생성 완료!');
 

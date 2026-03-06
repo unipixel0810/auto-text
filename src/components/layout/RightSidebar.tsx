@@ -7,6 +7,7 @@ import { generateSubtitlesFromAudio } from '@/lib/geminiAudioService';
 import type { TranscriptItem, SubtitleItem } from '@/types/subtitle';
 import type { VideoClip } from '@/types/video';
 import { SUBTITLE_PRESETS, type SubtitlePreset } from '@/lib/subtitlePresets';
+import TossPaymentModal from '@/components/payment/TossPaymentModal';
 
 interface RightSidebarProps {
   transcripts?: TranscriptItem[];
@@ -37,18 +38,13 @@ export default function RightSidebar({
   const [blendMode, setBlendMode] = useState(selectedClip?.blendMode ?? false);
   const [selectedPresetId, setSelectedPresetId] = useState<number>(1);
 
-  // Gemini API Key
-  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
-  const [geminiApiKey, setGeminiApiKey] = useState('');
+  // Quota and Payment
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+
+  // Generation status
   const [isGeminiGenerating, setIsGeminiGenerating] = useState(false);
   const [geminiProgress, setGeminiProgress] = useState(0);
   const [geminiStatus, setGeminiStatus] = useState('');
-
-  // Load API key from localStorage on mount
-  useEffect(() => {
-    const saved = localStorage.getItem('gemini_api_key');
-    if (saved) setGeminiApiKey(saved);
-  }, []);
 
   useEffect(() => {
     if (selectedClip) {
@@ -141,7 +137,11 @@ export default function RightSidebar({
       setTranscriptionStatus('완료!');
       setTimeout(() => { setIsTranscribing(false); setTranscriptionProgress(0); setTranscriptionStatus(''); }, 2000);
     } catch (error: any) {
-      if (error.name !== 'AbortError') alert(`음성 인식 실패: ${error.message}`);
+      if (error.message === 'PAYMENT_REQUIRED') {
+        setShowPaymentModal(true);
+      } else if (error.name !== 'AbortError') {
+        alert(`음성 인식 실패: ${error.message}`);
+      }
       setIsTranscribing(false); setTranscriptionProgress(0); setTranscriptionStatus('');
     }
   }, [videoFile, transcripts, onTranscriptsUpdate]);
@@ -154,14 +154,11 @@ export default function RightSidebar({
   // Gemini Audio-based subtitle generation
   const handleGeminiAudioGenerate = useCallback(async () => {
     if (!videoFile) { alert('비디오 파일이 필요합니다.'); return; }
-    const key = geminiApiKey || localStorage.getItem('gemini_api_key') || '';
-    if (!key) {
-      setShowApiKeyModal(true);
-      return;
-    }
+
     setIsGeminiGenerating(true); setGeminiProgress(0); setGeminiStatus('시작...');
     try {
-      const results = await generateSubtitlesFromAudio(videoFile, key, (pct, msg) => {
+      // The API key is now handled backend-side. Just pass an empty string or dummy.
+      const results = await generateSubtitlesFromAudio(videoFile, 'backend-proxy', (pct, msg) => {
         setGeminiProgress(pct);
         setGeminiStatus(msg);
       });
@@ -189,10 +186,14 @@ export default function RightSidebar({
       setGeminiStatus('완료!');
       setTimeout(() => { setIsGeminiGenerating(false); setGeminiProgress(0); setGeminiStatus(''); }, 2000);
     } catch (err: any) {
-      alert(err.message || 'API 키를 확인해주세요');
+      if (err.message === 'PAYMENT_REQUIRED') {
+        setShowPaymentModal(true);
+      } else {
+        alert(err.message || '자막 생성에 실패했습니다.');
+      }
       setIsGeminiGenerating(false); setGeminiProgress(0); setGeminiStatus('');
     }
-  }, [videoFile, geminiApiKey, transcripts, subtitles, onTranscriptsUpdate, onSubtitlesUpdate]);
+  }, [videoFile, transcripts, subtitles, onTranscriptsUpdate, onSubtitlesUpdate]);
 
   // === AUTO PIPELINE: Triggers when videoFile changes ===
   useEffect(() => {
@@ -210,33 +211,32 @@ export default function RightSidebar({
 
       // Step 1: STT (Whisper)
       try {
-        const apiKey = process.env.NEXT_PUBLIC_OPENAI_API_KEY || '';
-        if (apiKey) {
-          const result = await transcribeVideo(videoFile, apiKey, (status) => {
-            setPipelineStatus(`🎤 ${status}`);
-            if (status.includes('오디오 추출')) setPipelineProgress(10);
-            else if (status.includes('파일 처리')) setPipelineProgress(20);
-            else if (status.includes('음성 인식')) {
-              const m = status.match(/(\d+)\/(\d+)/);
-              if (m) setPipelineProgress(20 + (parseInt(m[1]) / parseInt(m[2])) * 25);
-            }
-            else if (status.includes('완료')) setPipelineProgress(45);
-          });
-
-          const newT: TranscriptItem[] = [];
-          let seg: { words: typeof result.words; startTime: number } | null = null;
-          for (const word of result.words) {
-            if (!seg || word.startTime - seg.startTime >= 3) {
-              if (seg) {
-                newT.push({ id: `t_${Date.now()}_${newT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
-              }
-              seg = { words: [word], startTime: word.startTime };
-            } else seg.words.push(word);
+        // Backend key approach, but we need dummy for signature
+        const result = await transcribeVideo(videoFile, 'backend-proxy', (status) => {
+          setPipelineStatus(`🎤 ${status}`);
+          if (status.includes('오디오 추출')) setPipelineProgress(10);
+          else if (status.includes('파일 처리')) setPipelineProgress(20);
+          else if (status.includes('음성 인식')) {
+            const m = status.match(/(\d+)\/(\d+)/);
+            if (m) setPipelineProgress(20 + (parseInt(m[1]) / parseInt(m[2])) * 25);
           }
-          if (seg) newT.push({ id: `t_${Date.now()}_${newT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
-          onTranscriptsUpdate?.(newT);
+          else if (status.includes('완료')) setPipelineProgress(45);
+        });
+
+        const newT: TranscriptItem[] = [];
+        let seg: { words: typeof result.words; startTime: number } | null = null;
+        for (const word of result.words) {
+          if (!seg || word.startTime - seg.startTime >= 3) {
+            if (seg) {
+              newT.push({ id: `t_${Date.now()}_${newT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
+            }
+            seg = { words: [word], startTime: word.startTime };
+          } else seg.words.push(word);
         }
-      } catch (err) {
+        if (seg) newT.push({ id: `t_${Date.now()}_${newT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
+        onTranscriptsUpdate?.(newT);
+      } catch (err: any) {
+        if (err.message === 'PAYMENT_REQUIRED') setShowPaymentModal(true);
         console.warn('[Auto Pipeline] STT 단계 건너뜀:', err);
       }
 
@@ -246,41 +246,39 @@ export default function RightSidebar({
       setPipelineStatus('🤖 AI 자막 생성 중...');
 
       try {
-        const key = geminiApiKey || localStorage.getItem('gemini_api_key') || '';
-        if (key) {
-          const results = await generateSubtitlesFromAudio(videoFile, key, (pct, msg) => {
-            setPipelineProgress(50 + (pct / 2));
-            setPipelineStatus(`🤖 ${msg}`);
-          });
+        const results = await generateSubtitlesFromAudio(videoFile, 'backend-proxy', (pct, msg) => {
+          setPipelineProgress(50 + (pct / 2));
+          setPipelineStatus(`🤖 ${msg}`);
+        });
 
-          const newT: TranscriptItem[] = results.map((r, i) => ({
-            id: `gem_${Date.now()}_${i}`,
-            startTime: r.start_time,
-            endTime: r.end_time,
-            originalText: r.text,
-            editedText: r.text,
-            isEdited: false,
-          }));
-          // Merge with existing transcripts from STT step
-          onTranscriptsUpdate?.(newT);
+        const newT: TranscriptItem[] = results.map((r, i) => ({
+          id: `gem_${Date.now()}_${i}`,
+          startTime: r.start_time,
+          endTime: r.end_time,
+          originalText: r.text,
+          editedText: r.text,
+          isEdited: false,
+        }));
+        // Merge with existing transcripts from STT step
+        onTranscriptsUpdate?.(newT);
 
-          const newSubs: SubtitleItem[] = results.map((r, i) => ({
-            id: `gemsub_${Date.now()}_${i}`,
-            startTime: r.start_time,
-            endTime: r.end_time,
-            text: r.text,
-            type: r.style_type === '예능자막' ? 'ENTERTAINMENT' as const : r.style_type === '설명자막' ? 'EXPLANATION' as const : 'SITUATION' as const,
-            confidence: 0.9,
-          }));
-          onSubtitlesUpdate?.([...subtitles, ...newSubs]);
-          setAiScript(results.map(r => `[${r.style_type}] ${r.text}`).join('\n'));
+        const newSubs: SubtitleItem[] = results.map((r, i) => ({
+          id: `gemsub_${Date.now()}_${i}`,
+          startTime: r.start_time,
+          endTime: r.end_time,
+          text: r.text,
+          type: r.style_type === '예능자막' ? 'ENTERTAINMENT' as const : r.style_type === '설명자막' ? 'EXPLANATION' as const : 'SITUATION' as const,
+          confidence: 0.9,
+        }));
+        onSubtitlesUpdate?.([...subtitles, ...newSubs]);
+        setAiScript(results.map(r => `[${r.style_type}] ${r.text}`).join('\n'));
 
-          // Auto-add to timeline
-          if (onAddSubtitleClips && newT.length > 0) {
-            onAddSubtitleClips(newT);
-          }
+        // Auto-add to timeline
+        if (onAddSubtitleClips && newT.length > 0) {
+          onAddSubtitleClips(newT);
         }
-      } catch (err) {
+      } catch (err: any) {
+        if (err.message === 'PAYMENT_REQUIRED') setShowPaymentModal(true);
         console.warn('[Auto Pipeline] AI 자막 단계 건너뜀:', err);
       }
 
@@ -298,11 +296,6 @@ export default function RightSidebar({
     runPipeline();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoFile]);
-
-  const handleSaveApiKey = () => {
-    localStorage.setItem('gemini_api_key', geminiApiKey);
-    setShowApiKeyModal(false);
-  };
 
   // Preset click handler — creates text clip at center of canvas
   const handlePresetClick = (preset: SubtitlePreset) => {
@@ -434,9 +427,6 @@ export default function RightSidebar({
                   <div className="p-2 border-b border-border-color bg-panel-bg space-y-2">
                     <div className="flex items-center justify-between">
                       <h3 className="text-xs font-semibold">대본</h3>
-                      <button onClick={() => setShowApiKeyModal(true)} className="p-0.5 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-all" title="Gemini API Key 설정">
-                        <span className="material-icons text-sm">settings</span>
-                      </button>
                     </div>
                     {/* Button 1: 자막대본 자동생성 */}
                     <button onClick={handleAutoTranscribe} disabled={isTranscribing || !videoFile}
@@ -694,32 +684,10 @@ export default function RightSidebar({
         )}
       </div>
 
-      {/* Gemini API Key Modal */}
-      {showApiKeyModal && (
-        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center" onClick={() => setShowApiKeyModal(false)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-6 w-96 max-w-[90vw]" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-              <span className="material-icons text-[#00D4D4]">key</span>
-              Gemini API Key 설정
-            </h3>
-            <p className="text-[11px] text-gray-400 mb-3">
-              Gemini AI 자막 생성을 위해 API 키를 입력해주세요.<br />
-              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" className="text-[#00D4D4] hover:underline">Google AI Studio</a>에서 발급받을 수 있습니다.
-            </p>
-            <input
-              type="password"
-              value={geminiApiKey}
-              onChange={(e) => setGeminiApiKey(e.target.value)}
-              placeholder="AIza..."
-              className="w-full bg-black border border-gray-700 rounded-lg text-xs text-white px-3 py-2 mb-4 focus:outline-none focus:border-[#00D4D4]"
-            />
-            <div className="flex gap-2">
-              <button onClick={() => setShowApiKeyModal(false)} className="flex-1 py-2 bg-gray-800 text-gray-300 rounded-lg text-xs hover:bg-gray-700 transition-all">취소</button>
-              <button onClick={handleSaveApiKey} className="flex-1 py-2 bg-[#00D4D4] text-black rounded-lg text-xs font-semibold hover:bg-[#00D4D4]/80 transition-all active:scale-95">저장</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <TossPaymentModal
+        isOpen={showPaymentModal}
+        onClose={() => setShowPaymentModal(false)}
+      />
     </aside>
   );
 }

@@ -78,13 +78,13 @@ export async function extractAudioFromVideo(
   onProgress?: (status: string) => void
 ): Promise<Blob> {
   const sizeMB = videoFile.size / 1024 / 1024;
-  
+
   // 모바일 감지
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   const maxSize = isMobile ? 4 : VERCEL_MAX_SIZE / 1024 / 1024; // 모바일 4MB, PC는 청크 처리
-  
+
   onProgress?.('오디오 준비 중...');
-  
+
   // 아이폰/모바일: 파일 크기 체크 후 원본 사용 (Whisper가 비디오도 처리 가능)
   if (isMobile) {
     if (sizeMB > maxSize) {
@@ -93,37 +93,37 @@ export async function extractAudioFromVideo(
     onProgress?.(`파일 준비 완료 (${sizeMB.toFixed(1)}MB)`);
     return videoFile;
   }
-  
+
   // PC: 오디오 추출 시도
   return new Promise((resolve, reject) => {
     onProgress?.('오디오 추출 준비 중...');
-    
+
     const video = document.createElement('video');
     video.src = URL.createObjectURL(videoFile);
     video.muted = false;
     video.playsInline = true;
-    
+
     // 타임아웃 설정 (10초)
     const timeout = setTimeout(() => {
       URL.revokeObjectURL(video.src);
       onProgress?.('오디오 추출 완료 (원본 사용)');
       resolve(videoFile);
     }, 10000);
-    
+
     video.onloadedmetadata = async () => {
       try {
         clearTimeout(timeout);
         const duration = video.duration;
         onProgress?.(`영상 길이: ${Math.floor(duration / 60)}분 ${Math.floor(duration % 60)}초`);
-        
+
         // AudioContext 생성 (16kHz)
         const audioContext = new AudioContext({ sampleRate: 16000 });
-        
+
         onProgress?.('오디오 디코딩 중...');
-        
+
         const response = await fetch(video.src);
         const arrayBuffer = await response.arrayBuffer();
-        
+
         let audioBuffer: AudioBuffer;
         try {
           audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
@@ -134,16 +134,16 @@ export async function extractAudioFromVideo(
           resolve(videoFile);
           return;
         }
-        
+
         onProgress?.('오디오 인코딩 중...');
-        
+
         // WAV 형식으로 변환
         const wavBlob = audioBufferToWav(audioBuffer);
-        
+
         URL.revokeObjectURL(video.src);
         onProgress?.(`오디오 추출 완료 (${(wavBlob.size / 1024).toFixed(0)}KB)`);
         resolve(wavBlob);
-        
+
       } catch (error) {
         clearTimeout(timeout);
         URL.revokeObjectURL(video.src);
@@ -152,7 +152,7 @@ export async function extractAudioFromVideo(
         resolve(videoFile);
       }
     };
-    
+
     video.onerror = () => {
       clearTimeout(timeout);
       URL.revokeObjectURL(video.src);
@@ -171,21 +171,21 @@ function audioBufferToWav(buffer: AudioBuffer): Blob {
   const sampleRate = buffer.sampleRate;
   const format = 1; // PCM
   const bitDepth = 16;
-  
+
   // 모노로 다운믹스
   const channelData = buffer.getChannelData(0);
   const samples = new Int16Array(channelData.length);
-  
+
   for (let i = 0; i < channelData.length; i++) {
     const s = Math.max(-1, Math.min(1, channelData[i]));
     samples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
   }
-  
+
   const dataLength = samples.length * 2;
   const bufferLength = 44 + dataLength;
   const arrayBuffer = new ArrayBuffer(bufferLength);
   const view = new DataView(arrayBuffer);
-  
+
   // WAV 헤더 작성
   writeString(view, 0, 'RIFF');
   view.setUint32(4, bufferLength - 8, true);
@@ -200,13 +200,13 @@ function audioBufferToWav(buffer: AudioBuffer): Blob {
   view.setUint16(34, bitDepth, true);
   writeString(view, 36, 'data');
   view.setUint32(40, dataLength, true);
-  
+
   // 오디오 데이터 작성
   const offset = 44;
   for (let i = 0; i < samples.length; i++) {
     view.setInt16(offset + i * 2, samples[i], true);
   }
-  
+
   return new Blob([arrayBuffer], { type: 'audio/wav' });
 }
 
@@ -232,13 +232,13 @@ export async function splitAudioIntoChunks(
   if (audioBlob.size <= VERCEL_MAX_SIZE) {
     return [{ blob: audioBlob, startTime: 0 }];
   }
-  
+
   onProgress?.('대용량 파일 분할 중...');
-  
+
   // AudioContext로 오디오 로드
   const audioContext = new AudioContext();
   const arrayBuffer = await audioBlob.arrayBuffer();
-  
+
   let audioBuffer: AudioBuffer;
   try {
     audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
@@ -246,40 +246,40 @@ export async function splitAudioIntoChunks(
     // 디코딩 실패 시 크기 기반 분할
     return splitBySize(audioBlob, WHISPER_MAX_SIZE);
   }
-  
+
   const duration = audioBuffer.duration;
   const chunks: { blob: Blob; startTime: number }[] = [];
   const numChunks = Math.ceil(duration / chunkDurationSeconds);
-  
+
   for (let i = 0; i < numChunks; i++) {
     const startTime = i * chunkDurationSeconds;
     const endTime = Math.min((i + 1) * chunkDurationSeconds, duration);
     const chunkDuration = endTime - startTime;
-    
+
     onProgress?.(`청크 ${i + 1}/${numChunks} 생성 중...`);
-    
+
     // 청크 AudioBuffer 생성
     const startSample = Math.floor(startTime * audioBuffer.sampleRate);
     const endSample = Math.floor(endTime * audioBuffer.sampleRate);
     const chunkLength = endSample - startSample;
-    
+
     const chunkBuffer = audioContext.createBuffer(
       1, // 모노
       chunkLength,
       audioBuffer.sampleRate
     );
-    
+
     const sourceData = audioBuffer.getChannelData(0);
     const destData = chunkBuffer.getChannelData(0);
-    
+
     for (let j = 0; j < chunkLength; j++) {
       destData[j] = sourceData[startSample + j] || 0;
     }
-    
+
     const wavBlob = audioBufferToWav(chunkBuffer);
     chunks.push({ blob: wavBlob, startTime });
   }
-  
+
   await audioContext.close();
   return chunks;
 }
@@ -291,7 +291,7 @@ function splitBySize(blob: Blob, maxSize: number): { blob: Blob; startTime: numb
   const chunks: { blob: Blob; startTime: number }[] = [];
   let offset = 0;
   let chunkIndex = 0;
-  
+
   while (offset < blob.size) {
     const chunkSize = Math.min(maxSize, blob.size - offset);
     const chunk = blob.slice(offset, offset + chunkSize);
@@ -299,7 +299,7 @@ function splitBySize(blob: Blob, maxSize: number): { blob: Blob; startTime: numb
     offset += chunkSize;
     chunkIndex++;
   }
-  
+
   return chunks;
 }
 
@@ -315,7 +315,7 @@ export async function transcribeWithWhisper(
   options: STTOptions
 ): Promise<WhisperResponse> {
   const formData = new FormData();
-  
+
   // 파일 추가
   if (audioFile instanceof File) {
     formData.append('file', audioFile);
@@ -323,18 +323,33 @@ export async function transcribeWithWhisper(
     formData.append('file', audioFile, 'audio.wav');
   }
 
+  // Calculate approximate duration to send to backend for quota tracking
+  // A chunk is typically up to CHUNK_DURATION_SECONDS
+  formData.append('duration', CHUNK_DURATION_SECONDS.toString());
+
   // 서버 API Route 호출 (API 키는 서버에서 관리)
-  const response = await fetch('/api/stt', {
+  const response = await fetch('/api/ai/stt', {
     method: 'POST',
     body: formData,
   });
 
   if (!response.ok) {
+    if (response.status === 402) {
+      throw new Error('PAYMENT_REQUIRED');
+    }
     const error = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(`음성 인식 오류: ${error.error || response.statusText}`);
   }
 
-  return response.json();
+  const data = await response.json();
+  if (data.error) {
+    if (response.status === 402 || data.error.includes('Payment Required')) {
+      throw new Error('PAYMENT_REQUIRED');
+    }
+    throw new Error(data.error);
+  }
+
+  return data;
 }
 
 // ============================================
@@ -360,14 +375,14 @@ export function convertWhisperToSTTResult(
         confidence: 1,
       });
     }
-  } 
+  }
   // 세그먼트만 있는 경우
   else if (whisperResponse.segments && whisperResponse.segments.length > 0) {
     for (const segment of whisperResponse.segments) {
       const segmentWords = segment.text.trim().split(/\s+/).filter(w => w.length > 0);
       const segmentDuration = segment.end - segment.start;
       const wordDuration = segmentDuration / segmentWords.length;
-      
+
       segmentWords.forEach((word, index) => {
         words.push({
           word,
@@ -382,7 +397,7 @@ export function convertWhisperToSTTResult(
   else {
     const allWords = whisperResponse.text.trim().split(/\s+/).filter(w => w.length > 0);
     const wordDuration = whisperResponse.duration / allWords.length;
-    
+
     allWords.forEach((word, index) => {
       words.push({
         word,
@@ -408,18 +423,18 @@ export function mergeSTTResults(results: STTResult[]): STTResult {
   if (results.length === 0) {
     return { fullText: '', words: [], duration: 0 };
   }
-  
+
   if (results.length === 1) {
     return results[0];
   }
-  
+
   const merged: STTResult = {
     fullText: results.map(r => r.fullText).join(' '),
     words: results.flatMap(r => r.words),
     duration: results.reduce((sum, r) => sum + r.duration, 0),
     language: results[0].language,
   };
-  
+
   return merged;
 }
 
@@ -441,52 +456,52 @@ export async function transcribeVideo(
     if (!sizeCheck.valid) {
       throw new Error(sizeCheck.message);
     }
-    
+
     // 2. 오디오 추출
     onProgress?.('🎵 오디오 추출 중...');
     let audioBlob: Blob;
-    
+
     try {
       audioBlob = await extractAudioFromVideo(videoFile, onProgress);
     } catch {
       // 오디오 추출 실패 시 원본 파일 사용
       audioBlob = videoFile;
     }
-    
+
     // 3. 청크 분할 (대용량 파일)
     onProgress?.('📦 파일 처리 중...');
     const chunks = await splitAudioIntoChunks(audioBlob, CHUNK_DURATION_SECONDS, onProgress);
-    
+
     // 4. 각 청크에 대해 Whisper API 호출
     const results: STTResult[] = [];
-    
+
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       onProgress?.(`🎤 음성 인식 중... (${i + 1}/${chunks.length})`);
-      
+
       const whisperResponse = await transcribeWithWhisper(chunk.blob, {
         apiKey,
         language: 'ko',
         responseFormat: 'verbose_json',
         timestampGranularities: ['word', 'segment'],
       });
-      
+
       const result = convertWhisperToSTTResult(whisperResponse, chunk.startTime);
       results.push(result);
-      
+
       // API 레이트 리밋 방지
       if (i < chunks.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
-    
+
     // 5. 결과 병합
     onProgress?.('🔗 결과 병합 중...');
     const mergedResult = mergeSTTResults(results);
-    
+
     onProgress?.('✅ 음성 인식 완료!');
     return mergedResult;
-    
+
   } catch (error) {
     console.error('STT 오류:', error);
     throw error;
@@ -515,7 +530,7 @@ export function checkFileSize(file: File): { valid: boolean; message?: string } 
  */
 export function estimateProcessingTime(fileSize: number): string {
   const sizeMB = fileSize / (1024 * 1024);
-  
+
   if (sizeMB < 25) {
     return '약 30초 ~ 1분';
   } else if (sizeMB < 100) {
