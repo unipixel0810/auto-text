@@ -231,9 +231,8 @@
   background: #555;
 }
 
-body {
-  overflow: hidden; /* Prevent body scroll, let panels scroll */
-}
+/* Editor page uses fixed inset-0 which handles its own overflow.
+   Do NOT set overflow:hidden on body — it blocks scrolling on admin/other pages. */
 
 ::selection {
   background: hsl(185 100% 50% / 0.3);

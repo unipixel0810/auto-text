@@ -7,7 +7,13 @@ export interface GeminiSubtitleResult {
   start_time: number;
   end_time: number;
   text: string;
-  style_type: '요약자막' | '예능자막' | '설명자막';
+  style_type: '요약자막' | '예능자막' | '설명자막' | '상황자막';
+}
+
+export interface TranscriptDataForAI {
+  startTime: number;
+  endTime: number;
+  text: string;
 }
 
 /**
@@ -127,6 +133,8 @@ export async function generateSubtitlesFromAudio(
   videoFile: File,
   _apiKey: string, // No longer used directly here
   onProgress?: (percent: number, message: string) => void,
+  signal?: AbortSignal,
+  options?: { mode?: 'default' | 'creative'; transcriptData?: TranscriptDataForAI[] },
 ): Promise<GeminiSubtitleResult[]> {
   onProgress?.(5, '오디오 추출 중...');
 
@@ -143,8 +151,11 @@ export async function generateSubtitlesFromAudio(
     body: JSON.stringify({
       base64Audio: base64,
       mimeType,
-      duration
+      duration,
+      mode: options?.mode || 'default',
+      transcriptData: options?.transcriptData,
     }),
+    signal,
   });
 
   onProgress?.(70, '응답 처리 중...');

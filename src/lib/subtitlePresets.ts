@@ -14,6 +14,57 @@ export interface SubtitlePreset {
   borderColor?: string;
   borderWidth?: number;
   fontWeight?: number;
+  fontFamily?: string;
+  fontStyle?: 'normal' | 'italic';
+  textDecoration?: 'none' | 'underline';
+  isCustom?: boolean; // user-created preset
+}
+
+// Available font families
+export const FONT_FAMILIES = [
+  { value: 'sans-serif', label: '고딕 (Sans-serif)' },
+  { value: 'serif', label: '명조 (Serif)' },
+  { value: '"Noto Sans KR", sans-serif', label: 'Noto Sans KR' },
+  { value: '"Nanum Gothic", sans-serif', label: '나눔고딕' },
+  { value: '"Nanum Myeongjo", serif', label: '나눔명조' },
+  { value: '"Black Han Sans", sans-serif', label: '검은한삼' },
+  { value: '"Jua", sans-serif', label: '주아' },
+  { value: '"Do Hyeon", sans-serif', label: '도현' },
+  { value: '"Gothic A1", sans-serif', label: 'Gothic A1' },
+  { value: 'monospace', label: '모노스페이스' },
+  { value: '"Comic Sans MS", cursive', label: 'Comic Sans' },
+  { value: 'Impact, sans-serif', label: 'Impact' },
+];
+
+// Custom preset localStorage key
+const CUSTOM_PRESETS_KEY = 'autotext_custom_presets';
+
+export function loadCustomPresets(): SubtitlePreset[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const data = localStorage.getItem(CUSTOM_PRESETS_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch { return []; }
+}
+
+export function saveCustomPresets(presets: SubtitlePreset[]): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(CUSTOM_PRESETS_KEY, JSON.stringify(presets));
+}
+
+export function deleteCustomPreset(id: number): SubtitlePreset[] {
+  const presets = loadCustomPresets().filter(p => p.id !== id);
+  saveCustomPresets(presets);
+  return presets;
+}
+
+export function addCustomPreset(preset: Omit<SubtitlePreset, 'id' | 'isCustom'>): SubtitlePreset[] {
+  const existing = loadCustomPresets();
+  const newId = Date.now();
+  const newPreset: SubtitlePreset = { ...preset, id: newId, isCustom: true };
+  const updated = [...existing, newPreset];
+  saveCustomPresets(updated);
+  return updated;
 }
 
 export const SUBTITLE_PRESETS: SubtitlePreset[] = [

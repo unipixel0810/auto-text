@@ -1,14 +1,16 @@
 'use client';
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import type { VideoClip } from '@/types/video';
+import type { VideoClip, LibraryItem } from '@/types/video';
 
 interface LeftSidebarProps {
   onVideoAdd?: (file: File) => void;
   onSubtitleImport?: (file: File) => void;
   clips?: VideoClip[];
-  selectedClipId?: string | null;
-  onClipSelect?: (clipId: string | null) => void;
+  libraryItems?: LibraryItem[];
+  selectedLibraryIds?: string[];
+  onLibrarySelect?: (ids: string[]) => void;
+  onLibraryDelete?: (ids: string[]) => void;
 }
 
 function isSubtitleFile(file: File): boolean {
@@ -17,10 +19,10 @@ function isSubtitleFile(file: File): boolean {
 }
 
 // Generate a thumbnail from a video URL
-function useVideoThumbnail(url: string): string | null {
+function useVideoThumbnail(url: string, type: string): string | null {
   const [thumb, setThumb] = useState<string | null>(null);
   useEffect(() => {
-    if (!url) return;
+    if (!url || type !== 'video') return;
     const video = document.createElement('video');
     video.preload = 'metadata';
     video.muted = true;
@@ -46,15 +48,15 @@ function useVideoThumbnail(url: string): string | null {
     return () => {
       video.src = '';
     };
-  }, [url]);
+  }, [url, type]);
   return thumb;
 }
 
-function ThumbnailItem({ clip, isSelected, onSelect }: { clip: VideoClip; isSelected: boolean; onSelect: () => void }) {
-  const thumbnail = useVideoThumbnail(clip.url);
-  const isVideo = clip.trackIndex === 1;
-  const isAudio = clip.trackIndex === 2;
-  const isSubtitle = clip.trackIndex === 0;
+function ThumbnailItem({ item, isSelected, onSelect }: { item: LibraryItem; isSelected: boolean; onSelect: () => void }) {
+  const thumbnail = useVideoThumbnail(item.url, item.type);
+  const isVideo = item.type === 'video';
+  const isAudio = item.type === 'audio';
+  const isImage = item.type === 'image';
 
   const formatDuration = (sec: number) => {
     const m = Math.floor(sec / 60);
@@ -62,64 +64,76 @@ function ThumbnailItem({ clip, isSelected, onSelect }: { clip: VideoClip; isSele
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
+  const handleDragStart = (e: React.DragEvent) => {
+    e.dataTransfer.setData('application/library-item', JSON.stringify({
+      id: item.id,
+      name: item.name,
+      type: item.type,
+      duration: item.duration,
+      url: item.url
+    }));
+    e.dataTransfer.effectAllowed = 'copy';
+  };
+
   return (
     <button
       onClick={onSelect}
-      className={`relative group rounded-lg overflow-hidden border transition-all duration-150 hover:scale-[1.03] active:scale-95 ${isSelected ? 'border-primary ring-1 ring-primary' : 'border-transparent hover:border-gray-600'
+      draggable
+      onDragStart={handleDragStart}
+      className={`relative group rounded-lg overflow-hidden border transition-all duration-150 hover:scale-[1.03] active:scale-95 cursor-grab active:cursor-grabbing ${isSelected ? 'border-primary ring-1 ring-primary' : 'border-transparent hover:border-gray-600'
         }`}
-      title={clip.name}
+      title={item.name}
     >
       {/* Thumbnail area */}
       <div className="aspect-video bg-gray-800 flex items-center justify-center">
         {isVideo && thumbnail ? (
-          <img src={thumbnail} alt={clip.name} className="w-full h-full object-cover" />
-        ) : (clip.trackIndex === 1 && (clip.url.match(/\.(jpg|jpeg|png|gif|webp|svg)/i) || clip.name.match(/\.(jpg|jpeg|png|gif|webp|svg)/i))) ? (
-          <img src={clip.url} alt={clip.name} className="w-full h-full object-cover" />
+          <img src={thumbnail} alt={item.name} className="w-full h-full object-cover" />
+        ) : isImage ? (
+          <img src={item.url} alt={item.name} className="w-full h-full object-cover" />
         ) : isVideo ? (
           <span className="material-icons text-gray-500 text-3xl">movie</span>
         ) : isAudio ? (
           <div className="w-full h-full bg-gradient-to-br from-purple-900/50 to-gray-800 flex items-center justify-center">
             <span className="material-icons text-purple-400 text-3xl">music_note</span>
           </div>
-        ) : isSubtitle ? (
-          <div className="w-full h-full bg-gradient-to-br from-yellow-900/30 to-gray-800 flex items-center justify-center">
-            <span className="material-icons text-yellow-400 text-2xl">subtitles</span>
-          </div>
         ) : (
           <span className="material-icons text-gray-500 text-3xl">insert_drive_file</span>
         )}
 
         {/* Duration badge */}
-        {clip.duration > 0 && (
+        {item.duration > 0 && !isImage && (
           <span className="absolute bottom-1 right-1 bg-black/80 text-[9px] text-white px-1 rounded">
-            {formatDuration(clip.duration)}
+            {formatDuration(item.duration)}
           </span>
         )}
       </div>
 
       {/* File name */}
       <div className="px-1.5 py-1 bg-panel-bg">
-        <p className="text-[10px] text-gray-300 truncate">{clip.name}</p>
+        <p className="text-[10px] text-gray-300 truncate">{item.name}</p>
       </div>
     </button>
   );
 }
 
-export default function LeftSidebar({ onVideoAdd, onSubtitleImport, clips = [], selectedClipId, onClipSelect }: LeftSidebarProps) {
+export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems = [], selectedLibraryIds = [], onLibrarySelect, onLibraryDelete }: LeftSidebarProps) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Deduplicate clips by url (same file can appear multiple times on timeline)
-  const uniqueClips = clips.reduce<VideoClip[]>((acc, clip) => {
-    if (clip.url && !acc.find(c => c.url === clip.url)) {
-      acc.push(clip);
-    }
-    // For subtitle clips (no url), deduplicate by name
-    if (!clip.url && !acc.find(c => c.name === clip.name && c.trackIndex === clip.trackIndex)) {
-      acc.push(clip);
-    }
-    return acc;
-  }, []);
+  // Handle Delete key for selected library items
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (selectedLibraryIds.length === 0) return;
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        onLibraryDelete?.(selectedLibraryIds);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedLibraryIds, onLibraryDelete]);
 
   const routeFile = useCallback((file: File) => {
     if (isSubtitleFile(file)) {
@@ -209,14 +223,14 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, clips = [], 
         </button>
 
         {/* Imported files thumbnail grid */}
-        {uniqueClips.length > 0 ? (
+        {libraryItems.length > 0 ? (
           <div className="grid grid-cols-2 gap-2">
-            {uniqueClips.map((clip) => (
+            {libraryItems.map((item) => (
               <ThumbnailItem
-                key={clip.id}
-                clip={clip}
-                isSelected={selectedClipId === clip.id}
-                onSelect={() => onClipSelect?.(clip.id)}
+                key={item.id}
+                item={item}
+                isSelected={selectedLibraryIds.includes(item.id)}
+                onSelect={() => onLibrarySelect?.([item.id])}
               />
             ))}
           </div>

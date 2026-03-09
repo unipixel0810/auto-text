@@ -36,8 +36,11 @@ export default function Header({
   onUndo, onRedo, onSplit, onDelete, onCopy, onPaste, onDuplicate, onSelectAll,
   onExport, onImport, onFitToScreen, onToggleSnap, onOpenShortcuts,
 }: HeaderProps) {
-  const { user, isAuthenticated, isAdmin, signIn, signOut } = useAuth();
+  const { user, isAuthenticated, isAdmin: rawIsAdmin, signIn, signOut } = useAuth();
   const router = useRouter();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  const isAdmin = mounted && rawIsAdmin;
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState('');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -289,7 +292,7 @@ export default function Header({
 
         {/* Profile / Auth */}
         <div className="relative" ref={profileRef}>
-          {isAuthenticated && user ? (
+          {mounted && isAuthenticated && user ? (
             <>
               <button
                 onClick={() => setShowProfileMenu(!showProfileMenu)}

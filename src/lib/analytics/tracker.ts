@@ -1,4 +1,4 @@
-import type { AnalyticsEvent, AnalyticsEventType, PageView } from './types';
+import type { AnalyticsEvent, AnalyticsEventType, DemographicData, PageView } from './types';
 import { getSessionId } from './session';
 import { UAParser } from 'ua-parser-js';
 
@@ -15,6 +15,9 @@ let pageEntryTime = 0;
 let reachedScrollDepths = new Set<number>();
 let clickHistory: { x: number; y: number; time: number }[] = [];
 let isInitialized = false;
+let demographicData: Partial<DemographicData> | null = null;
+let previousErrorHandler: OnErrorEventHandler = null;
+let previousUnhandledRejectionHandler: ((ev: PromiseRejectionEvent) => void) | null = null;
 
 function getUtmParams() {
   if (typeof window === 'undefined') return {};
@@ -29,9 +32,9 @@ function getUtmParams() {
 function getDeviceInfo() {
   const parser = new UAParser();
   const result = parser.getResult();
-  const deviceType = result.device.type === 'mobile' ? 'mobile' : 
+  const deviceType = result.device.type === 'mobile' ? 'mobile' :
                      result.device.type === 'tablet' ? 'tablet' : 'desktop';
-  
+
   return {
     device_type: deviceType as 'mobile' | 'tablet' | 'desktop',
     browser: result.browser.name || 'Unknown',
@@ -192,6 +195,265 @@ function throttledScroll() {
   }, 200);
 }
 
+// --- New: Demographic data collection ---
+
+function collectDemographics(): Partial<DemographicData> {
+  try {
+    const nav = navigator as any;
+    const connection = nav.connection || nav.mozConnection || nav.webkitConnection;
+
+    return {
+      language: navigator.language || 'unknown',
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown',
+      country: 'unknown',
+      region: 'unknown',
+      city: 'unknown',
+      connectionType: connection?.effectiveType || connection?.type || 'unknown',
+      screenResolution: `${screen.width}x${screen.height}`,
+      colorDepth: screen.colorDepth || 0,
+      touchSupport: 'ontouchstart' in window || navigator.maxTouchPoints > 0,
+      cookiesEnabled: navigator.cookieEnabled,
+      doNotTrack: navigator.doNotTrack === '1' || (nav as any).globalPrivacyControl === true,
+      estimatedAgeGroup: 'unknown',
+      estimatedGender: 'unknown',
+    };
+  } catch (e) {
+    console.warn('[Analytics] Failed to collect demographics:', e);
+    return {
+      language: 'unknown',
+      timezone: 'unknown',
+      country: 'unknown',
+      region: 'unknown',
+      city: 'unknown',
+      connectionType: 'unknown',
+      screenResolution: 'unknown',
+      colorDepth: 0,
+      touchSupport: false,
+      cookiesEnabled: false,
+      doNotTrack: false,
+      estimatedAgeGroup: 'unknown',
+      estimatedGender: 'unknown',
+    };
+  }
+}
+
+// --- New: Error tracking ---
+
+function initErrorTracking() {
+  try {
+    previousErrorHandler = window.onerror;
+    window.onerror = (message, source, lineno, colno, error) => {
+      try {
+        enqueue(buildEvent('error', {
+          element_text: String(message).slice(0, 200),
+          element_tag: 'js_error',
+          element_id: source ? String(source).slice(0, 200) : undefined,
+          x_pos: lineno || undefined,
+          y_pos: colno || undefined,
+          element_class: error?.stack?.slice(0, 500) || undefined,
+        } as any));
+      } catch {
+        // Silently fail to avoid infinite error loops
+      }
+
+      // Call previous handler if it exists
+      if (typeof previousErrorHandler === 'function') {
+        return previousErrorHandler(message, source, lineno, colno, error);
+      }
+      return false;
+    };
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      try {
+        const reason = event.reason;
+        const message = reason instanceof Error
+          ? reason.message
+          : String(reason);
+        const stack = reason instanceof Error
+          ? reason.stack?.slice(0, 500)
+          : undefined;
+
+        enqueue(buildEvent('error', {
+          element_text: message.slice(0, 200),
+          element_tag: 'unhandled_rejection',
+          element_class: stack || undefined,
+        } as any));
+      } catch {
+        // Silently fail
+      }
+    };
+
+    previousUnhandledRejectionHandler = handleUnhandledRejection;
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+  } catch (e) {
+    console.warn('[Analytics] Failed to initialize error tracking:', e);
+  }
+}
+
+function destroyErrorTracking() {
+  try {
+    window.onerror = previousErrorHandler;
+    previousErrorHandler = null;
+
+    if (previousUnhandledRejectionHandler) {
+      window.removeEventListener('unhandledrejection', previousUnhandledRejectionHandler);
+      previousUnhandledRejectionHandler = null;
+    }
+  } catch {
+    // Silently fail
+  }
+}
+
+// --- New: Performance / Web Vitals tracking ---
+
+function initPerformanceTracking() {
+  try {
+    if (typeof PerformanceObserver === 'undefined') return;
+
+    const vitals: Record<string, number> = {};
+
+    // LCP - Largest Contentful Paint
+    try {
+      const lcpObserver = new PerformanceObserver((list) => {
+        const entries = list.getEntries();
+        const lastEntry = entries[entries.length - 1];
+        if (lastEntry) {
+          vitals.lcp = Math.round(lastEntry.startTime);
+        }
+      });
+      lcpObserver.observe({ type: 'largest-contentful-paint', buffered: true });
+    } catch {
+      // LCP not supported
+    }
+
+    // FCP - First Contentful Paint
+    try {
+      const fcpObserver = new PerformanceObserver((list) => {
+        const entries = list.getEntries();
+        const fcpEntry = entries.find((e) => e.name === 'first-contentful-paint');
+        if (fcpEntry) {
+          vitals.fcp = Math.round(fcpEntry.startTime);
+        }
+      });
+      fcpObserver.observe({ type: 'paint', buffered: true });
+    } catch {
+      // FCP not supported
+    }
+
+    // CLS - Cumulative Layout Shift
+    try {
+      let clsValue = 0;
+      const clsObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (!(entry as any).hadRecentInput) {
+            clsValue += (entry as any).value || 0;
+          }
+        }
+        vitals.cls = Math.round(clsValue * 1000) / 1000;
+      });
+      clsObserver.observe({ type: 'layout-shift', buffered: true });
+    } catch {
+      // CLS not supported
+    }
+
+    // TTFB - Time to First Byte
+    try {
+      const navEntries = performance.getEntriesByType('navigation');
+      if (navEntries.length > 0) {
+        const navEntry = navEntries[0] as PerformanceNavigationTiming;
+        vitals.ttfb = Math.round(navEntry.responseStart - navEntry.requestStart);
+      }
+    } catch {
+      // TTFB not supported
+    }
+
+    // Send performance event after a delay to collect all metrics
+    setTimeout(() => {
+      try {
+        if (Object.keys(vitals).length > 0) {
+          const parser = new UAParser();
+          const result = parser.getResult();
+          const deviceType = result.device.type === 'mobile' ? 'mobile' :
+                             result.device.type === 'tablet' ? 'tablet' : 'desktop';
+          const nav = navigator as any;
+          const connection = nav.connection || nav.mozConnection || nav.webkitConnection;
+
+          enqueue(buildEvent('performance', {
+            element_text: JSON.stringify(vitals).slice(0, 500),
+            element_tag: deviceType,
+            element_class: connection?.effectiveType || 'unknown',
+          } as any));
+        }
+      } catch {
+        // Silently fail
+      }
+    }, 5000);
+  } catch (e) {
+    console.warn('[Analytics] Failed to initialize performance tracking:', e);
+  }
+}
+
+// --- New: Form interaction tracking ---
+
+function handleFormFocus(e: FocusEvent) {
+  try {
+    const target = e.target as HTMLElement;
+    if (!target) return;
+    const tag = target.tagName?.toLowerCase();
+    if (!['input', 'textarea', 'select'].includes(tag)) return;
+
+    const info = getElementInfo(target);
+    enqueue(buildEvent('form_interaction', {
+      ...info,
+      element_text: `focus:${info.element_tag}`,
+    } as any));
+  } catch {
+    // Silently fail
+  }
+}
+
+function handleFormBlur(e: FocusEvent) {
+  try {
+    const target = e.target as HTMLElement;
+    if (!target) return;
+    const tag = target.tagName?.toLowerCase();
+    if (!['input', 'textarea', 'select'].includes(tag)) return;
+
+    const info = getElementInfo(target);
+    enqueue(buildEvent('form_interaction', {
+      ...info,
+      element_text: `blur:${info.element_tag}`,
+    } as any));
+  } catch {
+    // Silently fail
+  }
+}
+
+function handleFormSubmit(e: Event) {
+  try {
+    const target = e.target as HTMLFormElement;
+    if (!target || target.tagName?.toLowerCase() !== 'form') return;
+
+    const info = getElementInfo(target);
+    enqueue(buildEvent('form_interaction', {
+      ...info,
+      element_text: `submit:${info.element_id || info.element_class || 'form'}`,
+    } as any));
+  } catch {
+    // Silently fail
+  }
+}
+
+// --- New: Visibility change tracking ---
+
+function handleVisibilityChange() {
+  if (document.visibilityState === 'hidden') {
+    handlePageLeave();
+  }
+}
+
+// --- Main init / destroy ---
+
 export function initTracker() {
   if (typeof window === 'undefined' || isInitialized) return;
   isInitialized = true;
@@ -200,14 +462,30 @@ export function initTracker() {
   reachedScrollDepths = new Set();
   clickHistory = [];
 
-  enqueue(buildEvent('page_view'));
+  // Collect demographics and include with first page_view
+  demographicData = collectDemographics();
+  const pageViewEvent = buildEvent('page_view');
+  if (demographicData) {
+    (pageViewEvent as any).demographics = demographicData;
+  }
+  enqueue(pageViewEvent);
 
+  // Core tracking
   document.addEventListener('click', handleClick, { passive: true });
   window.addEventListener('scroll', throttledScroll, { passive: true });
   window.addEventListener('beforeunload', handlePageLeave);
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') handlePageLeave();
-  });
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+
+  // Error tracking
+  initErrorTracking();
+
+  // Performance / Web Vitals tracking
+  initPerformanceTracking();
+
+  // Form interaction tracking
+  document.addEventListener('focusin', handleFormFocus, { passive: true });
+  document.addEventListener('focusout', handleFormBlur, { passive: true });
+  document.addEventListener('submit', handleFormSubmit, { passive: true });
 
   flushTimer = setInterval(flush, BATCH_INTERVAL);
 }
@@ -219,6 +497,15 @@ export function destroyTracker() {
   document.removeEventListener('click', handleClick);
   window.removeEventListener('scroll', throttledScroll);
   window.removeEventListener('beforeunload', handlePageLeave);
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
+
+  // Cleanup error tracking
+  destroyErrorTracking();
+
+  // Cleanup form interaction tracking
+  document.removeEventListener('focusin', handleFormFocus);
+  document.removeEventListener('focusout', handleFormBlur);
+  document.removeEventListener('submit', handleFormSubmit);
 
   if (flushTimer) {
     clearInterval(flushTimer);

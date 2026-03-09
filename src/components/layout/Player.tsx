@@ -5,17 +5,547 @@ import ContextMenu from '@/components/ui/ContextMenu';
 import type { VideoClip } from '@/types/video';
 import type { SubtitlePreset } from '@/lib/subtitlePresets';
 
+// --- Sub-components for Performance Optimization ---
+
+const VisualLayer = React.memo(({
+  activeVisualClips,
+  activeVideoClipId,
+  selectedClipIds,
+  videoRef,
+  handleVideoTimeUpdate,
+  handleVideoClick,
+  handleClipContextMenu,
+  onPlayingChange,
+  onClipSelect,
+  onClipUpdate,
+  canvasAspectRatio = '16:9',
+  containerRef,
+  onInteractionStart,
+  onInteractionEnd,
+}: {
+  activeVisualClips: VideoClip[],
+  activeVideoClipId?: string,
+  selectedClipIds: string[],
+  videoRef: React.RefObject<HTMLVideoElement>,
+  handleVideoTimeUpdate: (e: React.SyntheticEvent<HTMLVideoElement>, clipId: string) => void,
+  handleVideoClick: (e: React.MouseEvent, clipId?: string) => void,
+  handleClipContextMenu: (e: React.MouseEvent, clipId: string) => void,
+  onPlayingChange?: (playing: boolean) => void,
+  onClipSelect?: (ids: string[]) => void,
+  onClipUpdate?: (clipId: string, updates: Partial<VideoClip>) => void,
+  canvasAspectRatio?: '16:9' | '9:16' | '1:1' | '3:4',
+  containerRef?: React.RefObject<HTMLDivElement>,
+  onInteractionStart?: () => void,
+  onInteractionEnd?: () => void,
+}) => {
+  const DRAG_THRESHOLD = 5;
+  const dragRef = useRef<{
+    type: 'move' | 'resize' | 'rotate';
+    clipId: string;
+    startX: number; startY: number;
+    origX: number; origY: number;
+    origScale: number; origRotation: number;
+    centerX: number; centerY: number;
+    dragging: boolean;
+  } | null>(null);
+  const onClipUpdateRef = useRef(onClipUpdate);
+  onClipUpdateRef.current = onClipUpdate;
+  const onInteractionStartRef = useRef(onInteractionStart);
+  onInteractionStartRef.current = onInteractionStart;
+  const onInteractionEndRef = useRef(onInteractionEnd);
+  onInteractionEndRef.current = onInteractionEnd;
+
+  // Compute the fitted content area for object-contain within the container
+  const getContentBounds = useCallback((clip: VideoClip) => {
+    const container = containerRef?.current;
+    if (!container) return null;
+    const containerW = container.clientWidth;
+    const containerH = container.clientHeight;
+    const mediaW = clip.mediaWidth || 1920;
+    const mediaH = clip.mediaHeight || 1080;
+    const mediaAR = mediaW / mediaH;
+    const containerAR = containerW / containerH;
+    let fitW: number, fitH: number;
+    if (mediaAR > containerAR) {
+      fitW = containerW;
+      fitH = containerW / mediaAR;
+    } else {
+      fitH = containerH;
+      fitW = containerH * mediaAR;
+    }
+    return {
+      width: fitW,
+      height: fitH,
+      offsetX: (containerW - fitW) / 2,
+      offsetY: (containerH - fitH) / 2,
+    };
+  }, [containerRef]);
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d || !onClipUpdateRef.current) return;
+      if (!d.dragging) {
+        if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD) return;
+        d.dragging = true;
+        onInteractionStartRef.current?.(); // suppress history during drag
+      }
+      if (d.type === 'move') {
+        onClipUpdateRef.current(d.clipId, {
+          positionX: d.origX + (e.clientX - d.startX),
+          positionY: d.origY + (e.clientY - d.startY),
+        });
+      } else if (d.type === 'resize') {
+        const startDist = Math.hypot(d.startX - d.centerX, d.startY - d.centerY);
+        const curDist = Math.hypot(e.clientX - d.centerX, e.clientY - d.centerY);
+        const ratio = startDist > 0 ? curDist / startDist : 1;
+        onClipUpdateRef.current(d.clipId, { scale: Math.max(10, Math.round(d.origScale * ratio)) });
+      } else if (d.type === 'rotate') {
+        const startAngle = Math.atan2(d.startY - d.centerY, d.startX - d.centerX);
+        const curAngle = Math.atan2(e.clientY - d.centerY, e.clientX - d.centerX);
+        const deg = (curAngle - startAngle) * (180 / Math.PI);
+        onClipUpdateRef.current(d.clipId, { rotation: Math.round(d.origRotation + deg) });
+      }
+    };
+    const onUp = () => {
+      if (dragRef.current?.dragging) onInteractionEndRef.current?.(); // push single history entry
+      dragRef.current = null;
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, []);
+
+  const startDrag = useCallback((e: React.PointerEvent, clip: VideoClip, type: 'move' | 'resize' | 'rotate') => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (type === 'move') onClipSelect?.([clip.id]);
+    const box = (e.currentTarget as HTMLElement).closest('[data-visual-box]') as HTMLElement;
+    const rect = box?.getBoundingClientRect();
+    dragRef.current = {
+      type,
+      clipId: clip.id,
+      startX: e.clientX, startY: e.clientY,
+      origX: clip.positionX ?? 0, origY: clip.positionY ?? 0,
+      origScale: clip.scale ?? 100, origRotation: clip.rotation ?? 0,
+      centerX: rect ? rect.left + rect.width / 2 : e.clientX,
+      centerY: rect ? rect.top + rect.height / 2 : e.clientY,
+      dragging: false,
+    };
+  }, [onClipSelect]);
+
+  return (
+    <>
+      {activeVisualClips.map((clip) => {
+        // Safety: skip audio-only clips that may have been moved to a visual track
+        const isAudioFile = /\.(mp3|wav|ogg|aac|flac|m4a|wma)$/i.test(clip.url || clip.name);
+        if (isAudioFile || clip.trackIndex >= 20) return null;
+
+        const isImage = (clip.url.match(/\.(jpg|jpeg|png|gif|webp|svg)/i) || clip.name.match(/\.(jpg|jpeg|png|gif|webp|svg)/i));
+        const isClipSelected = selectedClipIds.includes(clip.id);
+        const isMainTrack = clip.trackIndex === 1;
+
+        if (isMainTrack) {
+          // Main track: fills entire preview
+          return (
+            <div
+              key={clip.id}
+              data-visual-box
+              className="absolute inset-0 pointer-events-auto"
+              style={{
+                transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
+                zIndex: 1,
+              }}
+              onClick={(e) => { e.stopPropagation(); handleVideoClick(e, clip.id); }}
+              onPointerDown={(e) => startDrag(e, clip, 'move')}
+              onContextMenu={(e) => handleClipContextMenu(e, clip.id)}
+            >
+              {!isImage ? (
+                <video
+                  ref={clip.id === activeVideoClipId ? videoRef : null}
+                  src={clip.url || undefined}
+                  className="w-full h-full object-contain"
+                  preload="auto" playsInline
+                  muted={clip.id !== activeVideoClipId}
+                  onTimeUpdate={(e) => handleVideoTimeUpdate(e, clip.id)}
+                  onPlay={() => { if (clip.id === activeVideoClipId) onPlayingChange?.(true); }}
+                  onPause={() => { if (clip.id === activeVideoClipId) onPlayingChange?.(false); }}
+                  style={{ pointerEvents: 'none' }}
+                />
+              ) : (
+                <img src={clip.url || undefined} alt={clip.name} className="w-full h-full object-contain" style={{ pointerEvents: 'none' }} />
+              )}
+              {isClipSelected && (() => {
+                const bounds = getContentBounds(clip);
+                const bStyle = bounds
+                  ? { left: bounds.offsetX - 4, top: bounds.offsetY - 4, width: bounds.width + 8, height: bounds.height + 8 }
+                  : { left: -4, top: -4, right: -4, bottom: -4 };
+                return (
+                  <>
+                    <div className="absolute" style={{
+                      ...bStyle,
+                      border: '2px dashed #00D4D4', borderRadius: 4,
+                      boxShadow: '0 0 8px rgba(0,212,212,0.3)',
+                      pointerEvents: 'none',
+                    }} />
+                    {(['top-left','top-right','bottom-left','bottom-right'] as const).map(pos => {
+                      const b = bounds || { offsetX: 0, offsetY: 0, width: containerRef?.current?.clientWidth || 0, height: containerRef?.current?.clientHeight || 0 };
+                      return (
+                        <div
+                          key={pos}
+                          className="absolute w-4 h-4 bg-primary border-2 border-white rounded-sm z-[120]"
+                          style={{
+                            cursor: pos.includes('left') ? (pos.includes('top') ? 'nwse-resize' : 'nesw-resize') : (pos.includes('top') ? 'nesw-resize' : 'nwse-resize'),
+                            top: pos.includes('top') ? (bounds ? bounds.offsetY - 8 : -8) : undefined,
+                            bottom: pos.includes('bottom') ? (bounds ? (containerRef?.current?.clientHeight || 0) - bounds.offsetY - bounds.height - 8 : -8) : undefined,
+                            left: pos.includes('left') ? (bounds ? bounds.offsetX - 8 : -8) : undefined,
+                            right: pos.includes('right') ? (bounds ? (containerRef?.current?.clientWidth || 0) - bounds.offsetX - bounds.width - 8 : -8) : undefined,
+                          }}
+                          onPointerDown={(e) => startDrag(e, clip, 'resize')}
+                        />
+                      );
+                    })}
+                    <div className="absolute left-1/2 -translate-x-1/2 z-[120] flex flex-col items-center" style={{ top: bounds ? bounds.offsetY - 36 : -36 }}>
+                      <div
+                        className="w-5 h-5 rounded-full bg-green-400 border-2 border-white cursor-alias flex items-center justify-center"
+                        style={{ boxShadow: '0 0 6px rgba(74,222,128,0.5)' }}
+                        onPointerDown={(e) => startDrag(e, clip, 'rotate')}
+                      >
+                        <span className="text-[9px] text-white font-bold">↻</span>
+                      </div>
+                      <div className="w-px h-4 bg-green-400/60" />
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          );
+        }
+
+        // Overlay clips: positioned in center, sized to media aspect ratio
+        const overlayBounds = getContentBounds(clip);
+        const overlayW = overlayBounds ? `${(overlayBounds.width * 0.5)}px` : '50%';
+        const overlayH = overlayBounds ? `${(overlayBounds.height * 0.5)}px` : '50%';
+
+        return (
+          <div
+            key={clip.id}
+            data-visual-box
+            className="absolute pointer-events-auto"
+            style={{
+              top: '50%', left: '50%',
+              width: overlayW, height: overlayH,
+              transform: `translate(-50%, -50%) translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
+              zIndex: clip.trackIndex + 10,
+            }}
+            onClick={(e) => { e.stopPropagation(); handleVideoClick(e, clip.id); }}
+            onPointerDown={(e) => startDrag(e, clip, 'move')}
+            onContextMenu={(e) => handleClipContextMenu(e, clip.id)}
+          >
+            {!isImage ? (
+              <video
+                ref={clip.id === activeVideoClipId ? videoRef : null}
+                src={clip.url || undefined}
+                className="w-full h-full object-contain"
+                preload="auto" playsInline
+                muted={clip.id !== activeVideoClipId}
+                onTimeUpdate={(e) => handleVideoTimeUpdate(e, clip.id)}
+                onPlay={() => { if (clip.id === activeVideoClipId) onPlayingChange?.(true); }}
+                onPause={() => { if (clip.id === activeVideoClipId) onPlayingChange?.(false); }}
+                style={{ pointerEvents: 'none' }}
+              />
+            ) : (
+              <img src={clip.url || undefined} alt={clip.name} className="w-full h-full object-contain" style={{ pointerEvents: 'none' }} />
+            )}
+
+            {/* Selection handles */}
+            {isClipSelected && (
+              <>
+                <div className="absolute pointer-events-none" style={{
+                  inset: -4, border: '2px dashed #00D4D4', borderRadius: 4,
+                  boxShadow: '0 0 8px rgba(0,212,212,0.3)',
+                }} />
+                {(['top-left','top-right','bottom-left','bottom-right'] as const).map(pos => (
+                  <div
+                    key={pos}
+                    className="absolute w-4 h-4 bg-primary border-2 border-white rounded-sm z-[120]"
+                    style={{
+                      cursor: pos.includes('left') ? (pos.includes('top') ? 'nwse-resize' : 'nesw-resize') : (pos.includes('top') ? 'nesw-resize' : 'nwse-resize'),
+                      ...(pos.includes('top') ? { top: -8 } : { bottom: -8 }),
+                      ...(pos.includes('left') ? { left: -8 } : { right: -8 }),
+                    }}
+                    onPointerDown={(e) => startDrag(e, clip, 'resize')}
+                  />
+                ))}
+                <div className="absolute left-1/2 -translate-x-1/2 z-[120] flex flex-col items-center" style={{ top: -36 }}>
+                  <div
+                    className="w-5 h-5 rounded-full bg-green-400 border-2 border-white cursor-alias flex items-center justify-center"
+                    style={{ boxShadow: '0 0 6px rgba(74,222,128,0.5)' }}
+                    onPointerDown={(e) => startDrag(e, clip, 'rotate')}
+                  >
+                    <span className="text-[9px] text-white font-bold">↻</span>
+                  </div>
+                  <div className="w-px h-4 bg-green-400/60" />
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+});
+
+const SubtitleOverlay = React.memo(({
+  activeSubtitleClips,
+  selectedClipIds,
+  onClipSelect,
+  onClipUpdate,
+  handleClipContextMenu,
+  canvasAspectRatio = '16:9',
+  onInteractionStart,
+  onInteractionEnd,
+}: {
+  activeSubtitleClips: VideoClip[],
+  selectedClipIds: string[],
+  onClipSelect?: (ids: string[]) => void,
+  onClipUpdate?: (clipId: string, updates: Partial<VideoClip>) => void,
+  handleClipContextMenu: (e: React.MouseEvent, clipId: string) => void,
+  canvasAspectRatio?: '16:9' | '9:16' | '1:1' | '3:4',
+  onInteractionStart?: () => void,
+  onInteractionEnd?: () => void,
+}) => {
+  const aspectScaleMap: Record<string, number> = { '16:9': 1, '9:16': 0.56, '1:1': 0.75, '3:4': 0.65 };
+  const aspectScale = aspectScaleMap[canvasAspectRatio] || 1;
+  const DRAG_THRESHOLD = 5;
+
+  const [editingClipId, setEditingClipId] = useState<string | null>(null);
+  const editRef = useRef<HTMLSpanElement | null>(null);
+
+  // Clear editing when clip is deselected
+  useEffect(() => {
+    if (editingClipId && !selectedClipIds.includes(editingClipId)) {
+      setEditingClipId(null);
+    }
+  }, [selectedClipIds, editingClipId]);
+
+  const dragRef = useRef<{
+    type: 'move' | 'resize' | 'rotate';
+    clipId: string;
+    startX: number; startY: number;
+    origX: number; origY: number;
+    origScale: number; origRotation: number;
+    centerX: number; centerY: number;
+    dragging: boolean;
+  } | null>(null);
+
+  const onClipUpdateRef = useRef(onClipUpdate);
+  onClipUpdateRef.current = onClipUpdate;
+  const onInteractionStartRef = useRef(onInteractionStart);
+  onInteractionStartRef.current = onInteractionStart;
+  const onInteractionEndRef = useRef(onInteractionEnd);
+  onInteractionEndRef.current = onInteractionEnd;
+
+  // Use window-level listeners for reliable drag
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d || !onClipUpdateRef.current) return;
+      if (!d.dragging) {
+        if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD) return;
+        d.dragging = true;
+        onInteractionStartRef.current?.();
+      }
+      if (d.type === 'move') {
+        onClipUpdateRef.current(d.clipId, {
+          positionX: d.origX + (e.clientX - d.startX),
+          positionY: d.origY + (e.clientY - d.startY),
+        });
+      } else if (d.type === 'resize') {
+        const startDist = Math.hypot(d.startX - d.centerX, d.startY - d.centerY);
+        const curDist = Math.hypot(e.clientX - d.centerX, e.clientY - d.centerY);
+        const ratio = startDist > 0 ? curDist / startDist : 1;
+        onClipUpdateRef.current(d.clipId, { scale: Math.max(20, Math.round(d.origScale * ratio)) });
+      } else if (d.type === 'rotate') {
+        const startAngle = Math.atan2(d.startY - d.centerY, d.startX - d.centerX);
+        const curAngle = Math.atan2(e.clientY - d.centerY, e.clientX - d.centerX);
+        const deg = (curAngle - startAngle) * (180 / Math.PI);
+        onClipUpdateRef.current(d.clipId, { rotation: Math.round(d.origRotation + deg) });
+      }
+    };
+    const onUp = () => {
+      if (dragRef.current?.dragging) onInteractionEndRef.current?.();
+      dragRef.current = null;
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, []);
+
+  const startDrag = useCallback((e: React.PointerEvent, clip: VideoClip, type: 'move' | 'resize' | 'rotate') => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (type === 'move') onClipSelect?.([clip.id]);
+    const box = (e.currentTarget as HTMLElement).closest('[data-subtitle-box]') as HTMLElement;
+    const rect = box?.getBoundingClientRect();
+    dragRef.current = {
+      type,
+      clipId: clip.id,
+      startX: e.clientX, startY: e.clientY,
+      origX: clip.positionX ?? 0, origY: clip.positionY ?? 0,
+      origScale: clip.scale ?? 100, origRotation: clip.rotation ?? 0,
+      centerX: rect ? rect.left + rect.width / 2 : e.clientX,
+      centerY: rect ? rect.top + rect.height / 2 : e.clientY,
+      dragging: false,
+    };
+  }, [onClipSelect]);
+
+  return (
+    <>
+      {activeSubtitleClips.map(clip => {
+        const selected = selectedClipIds.includes(clip.id);
+        return (
+          <div
+            key={clip.id}
+            data-subtitle-box
+            className="absolute left-1/2 -translate-x-1/2 bottom-[12%] z-[110] max-w-[80%] text-center transition-none select-none"
+            style={{
+              transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
+              left: '50%',
+              cursor: selected ? 'grab' : 'pointer',
+            }}
+            onClick={(e) => { e.stopPropagation(); if (editingClipId !== clip.id) onClipSelect?.([clip.id]); }}
+            onPointerDown={(e) => { if (editingClipId !== clip.id) startDrag(e, clip, 'move'); }}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onClipSelect?.([clip.id]);
+              setEditingClipId(clip.id);
+              setTimeout(() => {
+                if (editRef.current) {
+                  editRef.current.focus();
+                  const sel = window.getSelection();
+                  if (sel) {
+                    const range = document.createRange();
+                    range.selectNodeContents(editRef.current);
+                    range.collapse(false);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                  }
+                }
+              }, 0);
+            }}
+            onContextMenu={(e) => handleClipContextMenu(e, clip.id)}
+          >
+            {/* Bounding box when selected */}
+            {selected && (
+              <>
+                <div className="absolute pointer-events-none" style={{
+                  inset: -6,
+                  border: '2px dashed #00D4D4',
+                  borderRadius: 4,
+                  boxShadow: '0 0 8px rgba(0,212,212,0.3)',
+                }} />
+                {/* Corner resize handles */}
+                {(['top-left','top-right','bottom-left','bottom-right'] as const).map(pos => (
+                  <div
+                    key={pos}
+                    className="absolute w-4 h-4 bg-primary border-2 border-white rounded-sm z-[120]"
+                    style={{
+                      cursor: pos.includes('left') ? (pos.includes('top') ? 'nwse-resize' : 'nesw-resize') : (pos.includes('top') ? 'nesw-resize' : 'nwse-resize'),
+                      ...(pos.includes('top') ? { top: -10 } : { bottom: -10 }),
+                      ...(pos.includes('left') ? { left: -10 } : { right: -10 }),
+                    }}
+                    onPointerDown={(e) => startDrag(e, clip, 'resize')}
+                  />
+                ))}
+                {/* Rotate handle (top center) */}
+                <div className="absolute left-1/2 -translate-x-1/2 z-[120] flex flex-col items-center" style={{ top: -36 }}>
+                  <div
+                    className="w-5 h-5 rounded-full bg-green-400 border-2 border-white cursor-alias flex items-center justify-center"
+                    style={{ boxShadow: '0 0 6px rgba(74,222,128,0.5)' }}
+                    onPointerDown={(e) => startDrag(e, clip, 'rotate')}
+                  >
+                    <span className="text-[9px] text-white font-bold">↻</span>
+                  </div>
+                  <div className="w-px h-4 bg-green-400/60" />
+                </div>
+              </>
+            )}
+            {/* Subtitle text */}
+            <div style={{
+              padding: '4px 12px',
+              borderRadius: 4,
+              backgroundColor: clip.backgroundColor || 'transparent',
+              border: clip.borderWidth ? `${clip.borderWidth}px solid ${clip.borderColor || 'transparent'}` : 'none',
+            }}>
+              <span
+                ref={editingClipId === clip.id ? editRef : undefined}
+                contentEditable={editingClipId === clip.id}
+                suppressContentEditableWarning
+                onBlur={(e) => {
+                  if (editingClipId === clip.id) {
+                    const newText = e.currentTarget.textContent || '';
+                    onClipUpdate?.(clip.id, { name: newText });
+                    setEditingClipId(null);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.currentTarget.blur();
+                  } else if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    e.currentTarget.blur();
+                  }
+                  e.stopPropagation();
+                }}
+                style={{
+                  color: clip.color || '#FFFFFF',
+                  fontFamily: clip.fontFamily || 'PaperlogyExtraBold, sans-serif',
+                  fontWeight: clip.fontWeight || 800,
+                  fontSize: `${Math.round((clip.fontSize || 47) * aspectScale)}px`,
+                  lineHeight: 1.3,
+                  whiteSpace: 'pre-wrap',
+                  textShadow: clip.glowColor
+                    ? `0 0 ${clip.shadowBlur || 0}px ${clip.glowColor}, 0 0 ${(clip.shadowBlur || 0) * 2}px ${clip.glowColor}`
+                    : (clip.shadowBlur || 0) > 0
+                      ? `${clip.shadowOffsetX || 0}px ${clip.shadowOffsetY || 0}px ${clip.shadowBlur || 0}px ${clip.shadowColor || 'transparent'}`
+                      : 'none',
+                  WebkitTextStroke: (clip.strokeWidth || 0) > 0 ? `${clip.strokeWidth}px ${clip.strokeColor || '#000000'}` : 'none',
+                  pointerEvents: editingClipId === clip.id ? 'auto' : 'none',
+                  outline: 'none',
+                  cursor: editingClipId === clip.id ? 'text' : 'inherit',
+                  caretColor: editingClipId === clip.id ? '#00D4D4' : 'transparent',
+                  minWidth: editingClipId === clip.id ? '20px' : undefined,
+                }}>
+                {!clip.url && !clip.name.match(/\.(mp4|mov|webm|m4v|jpg|jpeg|png|gif|webp|svg)/i) && clip.name}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+});
+
+
 interface PlayerProps {
   videoUrl?: string;
   currentTime?: number;
   hoverTime?: number | null;
-  selectedClipId?: string | null;
+  selectedClipIds?: string[];
   clips?: VideoClip[];
   isPlaying?: boolean;
   onPlayingChange?: (playing: boolean) => void;
   onTimeUpdate?: (time: number) => void;
   onSeek?: (time: number) => void;
-  onClipSelect?: (clipId: string | null) => void;
+  onClipSelect?: (clipIds: string[]) => void;
   onClipDelete?: (clipId: string) => void;
   onClipUpdate?: (clipId: string, updates: Partial<VideoClip>) => void;
   videoRefCallback?: (ref: HTMLVideoElement | null) => void;
@@ -24,13 +554,17 @@ interface PlayerProps {
   onViewerZoomChange?: (zoom: number) => void;
   playbackQuality?: 'auto' | 'high' | 'medium' | 'low';
   onPlaybackQualityChange?: (q: 'auto' | 'high' | 'medium' | 'low') => void;
+  canvasAspectRatio?: '16:9' | '9:16' | '1:1' | '3:4';
+  onAspectRatioChange?: (ratio: '16:9' | '9:16' | '1:1' | '3:4') => void;
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
 }
 
-export default function Player({
+const Player = React.memo(({
   videoUrl,
   currentTime: externalCurrentTime,
   hoverTime,
-  selectedClipId,
+  selectedClipIds = [],
   clips = [],
   isPlaying = false,
   onPlayingChange,
@@ -45,52 +579,187 @@ export default function Player({
   onViewerZoomChange,
   playbackQuality = 'auto',
   onPlaybackQualityChange,
-}: PlayerProps) {
+  canvasAspectRatio = '16:9',
+  onAspectRatioChange,
+  onInteractionStart,
+  onInteractionEnd,
+}: PlayerProps) => {
   const [internalCurrentTime, setInternalCurrentTime] = useState(0);
   const [totalTime, setTotalTime] = useState(0);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; clipId: string } | null>(null);
-  const [isDragging, setIsDragging] = useState<'move' | 'scale' | 'rotate' | null>(null);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; clipIds: string[] } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewerAreaRef = useRef<HTMLDivElement>(null);
+  const [viewerAreaSize, setViewerAreaSize] = useState({ w: 0, h: 0 });
   const [showQualityMenu, setShowQualityMenu] = useState(false);
+  const [showAspectMenu, setShowAspectMenu] = useState(false);
+  const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 });
+  const lastUpdateRef = useRef(0);
+  const lastSeekTimeRef = useRef(0);
 
   const currentTime = externalCurrentTime !== undefined ? externalCurrentTime : internalCurrentTime;
   const displayTime = hoverTime !== null && hoverTime !== undefined ? hoverTime : currentTime;
 
-  // Visual clips: track 1 (Main), tracks 10-14 (Overlays), track 0 (Subtitles)
-  const activeVisualClips = clips
-    .filter(c => (c.trackIndex === 1 || (c.trackIndex >= 10 && c.trackIndex <= 14) || c.trackIndex === 0) && displayTime >= c.startTime && displayTime < c.startTime + c.duration)
-    .sort((a, b) => {
-      // Define rendering order (z-index)
-      // Main Video (1) is bottom
-      // Overlays (10-14) are middle (higher index = higher layer)
-      // Subtitles (0) are top
-      if (a.trackIndex === 0) return 1;
-      if (b.trackIndex === 0) return -1;
-      if (a.trackIndex === 1) return -1;
-      if (b.trackIndex === 1) return 1;
-      return a.trackIndex - b.trackIndex;
+  // Track viewer area size with ResizeObserver for responsive canvas
+  useEffect(() => {
+    const el = viewerAreaRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setViewerAreaSize({ w: width, h: height });
     });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
-  const activeVideoClip = activeVisualClips.find(c => !((c.url.match(/\.(jpg|jpeg|png|gif|webp|svg)/i) || c.name.match(/\.(jpg|jpeg|png|gif|webp|svg)/i))));
+  // Compute canvas size to fit inside viewer area while maintaining aspect ratio
+  const canvasSize = React.useMemo(() => {
+    const pad = 16; // p-2 = 8px each side
+    const areaW = viewerAreaSize.w - pad;
+    const areaH = viewerAreaSize.h - pad;
+    if (areaW <= 0 || areaH <= 0) return { width: '100%', maxHeight: '100%', aspectRatio: '16 / 9' };
+    const arMap: Record<string, number> = { '16:9': 16/9, '9:16': 9/16, '1:1': 1, '3:4': 3/4 };
+    const ar = arMap[canvasAspectRatio] || 16/9;
+    let w: number, h: number;
+    if (areaW / areaH > ar) {
+      h = areaH;
+      w = h * ar;
+    } else {
+      w = areaW;
+      h = w / ar;
+    }
+    return { width: Math.floor(w), height: Math.floor(h) };
+  }, [viewerAreaSize, canvasAspectRatio]);
+
+  // Categorize clips to avoid full array iteration on every frame
+  const visualClips = React.useMemo(() => 
+    clips.filter(c => !c.disabled && (c.trackIndex === 1 || (c.trackIndex >= 10 && c.trackIndex <= 14))),
+    [clips]);
+
+  const subtitleClips = React.useMemo(() => 
+    clips.filter(c => !c.disabled && (c.trackIndex === 0 || c.trackIndex === 5)),
+    [clips]);
+
+  // Interval-based indexing for O(1) candidate lookup (5-second buckets)
+  const BUCKET_SIZE = 5;
+  
+  const visualIndex = React.useMemo(() => {
+    const buckets: Record<number, VideoClip[]> = {};
+    visualClips.forEach(clip => {
+      const start = Math.floor(clip.startTime / BUCKET_SIZE);
+      const end = Math.floor((clip.startTime + clip.duration) / BUCKET_SIZE);
+      for (let i = start; i <= end; i++) {
+        if (!buckets[i]) buckets[i] = [];
+        buckets[i].push(clip);
+      }
+    });
+    return buckets;
+  }, [visualClips]);
+
+  const subtitleIndex = React.useMemo(() => {
+    const buckets: Record<number, VideoClip[]> = {};
+    subtitleClips.forEach(clip => {
+      const start = Math.floor(clip.startTime / BUCKET_SIZE);
+      const end = Math.floor((clip.startTime + clip.duration) / BUCKET_SIZE);
+      for (let i = start; i <= end; i++) {
+        if (!buckets[i]) buckets[i] = [];
+        buckets[i].push(clip);
+      }
+    });
+    return buckets;
+  }, [subtitleClips]);
+
+  // Stable References to prevent layer re-render churn
+  const prevVisualClipsRef = useRef<VideoClip[]>([]);
+  const activeVisualClips = React.useMemo(() => {
+    const bucketIdx = Math.floor(displayTime / BUCKET_SIZE);
+    const candidates = visualIndex[bucketIdx] || [];
+    const current = candidates
+      .filter(c => displayTime >= c.startTime && displayTime < c.startTime + c.duration)
+      .sort((a, b) => {
+        if (a.trackIndex === 1) return -1;
+        if (b.trackIndex === 1) return 1;
+        return a.trackIndex - b.trackIndex;
+      });
+
+    // Stability Check: compare id AND mutable visual props
+    const prev = prevVisualClipsRef.current;
+    const isSameSet = current.length === prev.length &&
+      current.every((c, i) =>
+        c.id === prev[i].id &&
+        c.scale === prev[i].scale &&
+        c.positionX === prev[i].positionX &&
+        c.positionY === prev[i].positionY &&
+        c.rotation === prev[i].rotation &&
+        c.opacity === prev[i].opacity
+      );
+
+    if (!isSameSet) prevVisualClipsRef.current = current;
+    return prevVisualClipsRef.current;
+  }, [visualIndex, displayTime]);
+
+  const prevSubtitleClipsRef = useRef<VideoClip[]>([]);
+  const activeSubtitleClips = React.useMemo(() => {
+    const bucketIdx = Math.floor(displayTime / BUCKET_SIZE);
+    const candidates = subtitleIndex[bucketIdx] || [];
+    const current = candidates.filter(c => displayTime >= c.startTime && displayTime < c.startTime + c.duration);
+
+    // Stability Check — compare id AND mutable props (scale, position, rotation, style)
+    const prev = prevSubtitleClipsRef.current;
+    const isSame = current.length === prev.length &&
+      current.every((c, i) =>
+        c.id === prev[i].id &&
+        c.scale === prev[i].scale &&
+        c.positionX === prev[i].positionX &&
+        c.positionY === prev[i].positionY &&
+        c.rotation === prev[i].rotation &&
+        c.color === prev[i].color &&
+        c.backgroundColor === prev[i].backgroundColor &&
+        c.fontWeight === prev[i].fontWeight &&
+        c.strokeColor === prev[i].strokeColor &&
+        c.strokeWidth === prev[i].strokeWidth &&
+        c.shadowBlur === prev[i].shadowBlur &&
+        c.glowColor === prev[i].glowColor &&
+        c.name === prev[i].name
+      );
+
+    if (!isSame) prevSubtitleClipsRef.current = current;
+    return prevSubtitleClipsRef.current;
+  }, [subtitleIndex, displayTime]);
+
+
+  const activeVideoClip = activeVisualClips.find(c => c.url && !((c.url.match(/\.(jpg|jpeg|png|gif|webp|svg)/i) || c.name.match(/\.(jpg|jpeg|png|gif|webp|svg)/i))));
 
   const firstVideoClip = clips.find(c => c.trackIndex === 1);
-  const selectedVidClip = clips.find(c => c.id === selectedClipId);
-  const isSelected = selectedClipId != null && (activeVisualClips.some(c => c.id === selectedClipId) || firstVideoClip?.id === selectedClipId);
+  const selectedVidClip = clips.find(c => selectedClipIds.includes(c.id));
 
   // Sync video ref
   useEffect(() => {
     videoRefCallback?.(videoRef.current);
   }, [videoRef.current, videoRefCallback]);
 
-  // External play/pause
+  // External play/pause sync with state machine guard
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    if (isPlaying) { video.play().catch(() => { }); }
-    else { video.pause(); }
-  }, [isPlaying]);
+
+    const syncPlayback = async () => {
+      try {
+        if (isPlaying) {
+          if (video.paused) await video.play();
+        } else {
+          if (!video.paused) video.pause();
+        }
+      } catch (e) {
+        // Play was rejected (e.g., autoplay policy) — sync UI state back
+        if (isPlaying) {
+          onPlayingChange?.(false);
+        }
+      }
+    };
+
+    syncPlayback();
+  }, [isPlaying, activeVideoClip?.id]);
 
   // Sync playback rate
   useEffect(() => {
@@ -101,28 +770,48 @@ export default function Player({
     video.playbackRate = clipToRate?.speed ?? 1;
   }, [activeVideoClip, selectedVidClip]);
 
-  // External time sync - lowered threshold for smooth scrubbing
+  // External time sync - relaxed threshold during playback to avoid circular loops
+  // Combined dependencies to ensure stable array size and logical grouping
   useEffect(() => {
-    if (videoRef.current && externalCurrentTime !== undefined && activeVideoClip && hoverTime === null) {
-      const relativeTime = externalCurrentTime - activeVideoClip.startTime;
-      const diff = Math.abs(videoRef.current.currentTime - relativeTime);
-      if (diff > 0.05) videoRef.current.currentTime = relativeTime;
-    }
-  }, [externalCurrentTime, activeVideoClip, hoverTime]);
+    const video = videoRef.current;
+    if (!video || externalCurrentTime === undefined || !activeVideoClip || hoverTime !== null) return;
 
-  // Sync for hover preview
-  useEffect(() => {
-    if (videoRef.current && hoverTime != null && activeVideoClip) {
-      const relativeTime = hoverTime - activeVideoClip.startTime;
-      videoRef.current.currentTime = relativeTime;
+    // Small cooldown after manual seek/hover to prevent state-fighting induced stutter
+    if (Date.now() - lastSeekTimeRef.current < 500) return;
+
+    const mediaOffset = activeVideoClip.trimStart ?? 0;
+    const relativeTime = (externalCurrentTime - activeVideoClip.startTime) + mediaOffset;
+    const diff = Math.abs(video.currentTime - relativeTime);
+
+    // Increased threshold (0.8s) during playback to prevent "pull-back" stutters
+    // Tight threshold (0.15s) when scrubbing/paused for editing precision
+    const threshold = isPlaying ? 0.8 : 0.15;
+
+    if (diff > threshold) {
+      video.currentTime = relativeTime;
     }
-  }, [hoverTime, activeVideoClip]);
+  }, [externalCurrentTime, activeVideoClip, hoverTime, isPlaying]);
+
+  // Sync for hover preview (only when not playing - seeking during playback causes stutter)
+  useEffect(() => {
+    if (videoRef.current && hoverTime != null && activeVideoClip && !isPlaying) {
+      const mediaOffset = activeVideoClip.trimStart ?? 0;
+      const relativeTime = (hoverTime - activeVideoClip.startTime) + mediaOffset;
+      videoRef.current.currentTime = relativeTime;
+      lastSeekTimeRef.current = Date.now();
+    }
+  }, [hoverTime, activeVideoClip, isPlaying]);
 
   useEffect(() => {
     const video = videoRef.current;
     if (video && activeVideoClip) {
-      const h = () => setTotalTime(video.duration);
+      const h = () => {
+        setTotalTime(video.duration);
+        setVideoDimensions({ width: video.videoWidth, height: video.videoHeight });
+      };
       video.addEventListener('loadedmetadata', h);
+      // Also trigger if already loaded
+      if (video.readyState >= 1) h();
       return () => video.removeEventListener('loadedmetadata', h);
     }
   }, [activeVideoClip]);
@@ -135,29 +824,26 @@ export default function Player({
     e.stopPropagation();
     if ((e.target as HTMLElement).closest('button')) return;
     if ((e.target as HTMLElement).closest('[data-handle]')) return;
-    if (clipId) onClipSelect?.(clipId);
-    else if (activeVisualClips.length > 0) onClipSelect?.(activeVisualClips[activeVisualClips.length - 1].id);
-    else if (firstVideoClip) onClipSelect?.(firstVideoClip.id);
-    else onClipSelect?.(null);
+    
+    if (clipId) {
+      onClipSelect?.([clipId]);
+    }
+    else if (activeVisualClips.length > 0) onClipSelect?.([activeVisualClips[activeVisualClips.length - 1].id]);
+    else if (firstVideoClip) onClipSelect?.([firstVideoClip.id]);
+    else onClipSelect?.([]);
   };
 
   const handleCanvasClick = (e: React.MouseEvent) => {
-    // Click on empty canvas area → deselect
-    if (e.target === e.currentTarget) onClipSelect?.(null);
+    if (e.target === e.currentTarget) onClipSelect?.([]);
   };
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    if (selectedVidClip) setContextMenu({ x: e.clientX, y: e.clientY, clipId: selectedVidClip.id });
-    else if (activeVisualClips.length > 0) setContextMenu({ x: e.clientX, y: e.clientY, clipId: activeVisualClips[activeVisualClips.length - 1].id });
-    else if (firstVideoClip) setContextMenu({ x: e.clientX, y: e.clientY, clipId: firstVideoClip.id });
+    if (selectedVidClip) setContextMenu({ x: e.clientX, y: e.clientY, clipIds: [selectedVidClip.id] });
+    else if (activeVisualClips.length > 0) setContextMenu({ x: e.clientX, y: e.clientY, clipIds: [activeVisualClips[activeVisualClips.length - 1].id] });
+    else if (firstVideoClip) setContextMenu({ x: e.clientX, y: e.clientY, clipIds: [firstVideoClip.id] });
   };
 
-  const handleDoubleClick = (_e: React.MouseEvent) => {
-    // placeholder for future double-click actions
-  };
-
-  // Handle preset swatch drop on canvas
   const [isPresetDragOver, setIsPresetDragOver] = useState(false);
   const handleCanvasDragOver = useCallback((e: React.DragEvent) => {
     if (e.dataTransfer.types.includes('application/subtitle-preset')) {
@@ -185,109 +871,70 @@ export default function Player({
     }
   }, [onPresetDrop]);
 
-  // ===== Transform handles drag =====
-  const handleTransformStart = useCallback((e: React.MouseEvent, type: 'move' | 'scale' | 'rotate') => {
+  const handleClipContextMenu = useCallback((e: React.MouseEvent, clipId: string) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(type);
-    setDragStart({ x: e.clientX, y: e.clientY });
+    setContextMenu({ x: e.clientX, y: e.clientY, clipIds: [clipId] });
   }, []);
 
-  useEffect(() => {
-    if (!isDragging || !selectedVidClip || !onClipUpdate) return;
-    const handleMouseMove = (e: MouseEvent) => {
-      const dx = e.clientX - dragStart.x;
-      const dy = e.clientY - dragStart.y;
-      if (isDragging === 'move') {
-        onClipUpdate(selectedVidClip.id, {
-          positionX: (selectedVidClip.positionX ?? 0) + dx,
-          positionY: (selectedVidClip.positionY ?? 0) + dy,
-        });
-      } else if (isDragging === 'scale') {
-        const delta = (dx + dy) / 2;
-        const newScale = Math.max(10, Math.min(300, (selectedVidClip.scale ?? 100) + delta));
-        onClipUpdate(selectedVidClip.id, { scale: Math.round(newScale) });
-      } else if (isDragging === 'rotate') {
-        const newRot = Math.max(-180, Math.min(180, (selectedVidClip.rotation ?? 0) + dx));
-        onClipUpdate(selectedVidClip.id, { rotation: Math.round(newRot) });
+  const handleVideoTimeUpdate = (e: React.SyntheticEvent<HTMLVideoElement>, clipId: string) => {
+    if (clipId === activeVideoClip?.id && hoverTime === null) {
+      const mediaOffset = activeVideoClip.trimStart ?? 0;
+      const time = activeVideoClip.startTime + (e.currentTarget.currentTime - mediaOffset);
+      // Throttle updates: 33ms (30fps) for smooth playhead movement
+      const now = Date.now();
+      const throttleLimit = 33;
+      
+      if (now - lastUpdateRef.current > throttleLimit) {
+        setInternalCurrentTime(time);
+        onTimeUpdate?.(time);
+        lastUpdateRef.current = now;
       }
-      setDragStart({ x: e.clientX, y: e.clientY });
-    };
-    const handleMouseUp = () => setIsDragging(null);
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDragging, dragStart, selectedVidClip, onClipUpdate]);
+    }
+  };
 
   return (
-    <main className="flex-1 flex flex-col bg-black relative">
-      <div className="flex-1 flex items-center justify-center p-8 bg-editor-bg overflow-hidden" onClick={handleCanvasClick}>
+    <main className="flex-1 flex flex-col bg-black relative min-h-0 min-w-0 h-full w-full">
+      <div className="flex-1 flex items-center justify-center p-2 bg-editor-bg overflow-hidden min-h-0 min-w-0" ref={viewerAreaRef} onClick={handleCanvasClick}>
         <div
           ref={containerRef}
-          className={`aspect-video w-full max-w-3xl bg-black shadow-2xl relative group overflow-visible border-2 transition-all duration-200 ${isPresetDragOver ? 'border-[#00D4D4] border-dashed shadow-lg shadow-[#00D4D4]/30'
-            : isSelected ? 'border-primary shadow-lg shadow-primary/30' : 'border-border-color hover:border-gray-500'
+          className={`bg-black shadow-2xl relative group overflow-visible transition-all duration-200 ${isPresetDragOver ? 'border-2 border-[#00D4D4] border-dashed shadow-lg shadow-[#00D4D4]/30'
+            : 'border border-border-color/30'
             }`}
           onClick={(e) => handleVideoClick(e)}
           onContextMenu={handleContextMenu}
-          onDoubleClick={handleDoubleClick}
           onDragOver={handleCanvasDragOver}
           onDragLeave={handleCanvasDragLeave}
           onDrop={handleCanvasDrop}
           style={{
             transformOrigin: 'center center',
+            ...canvasSize,
+            backgroundColor: '#000',
+            position: 'relative',
           }}
         >
-          <div className="w-full h-full relative overflow-hidden" style={{ transform: `scale(${viewerZoom / 100})` }}>
+          <div className="absolute inset-0 overflow-hidden" style={{ transform: `scale(${viewerZoom / 100})` }}>
             {activeVisualClips.length > 0 ? (
-              activeVisualClips.map((clip) => {
-                const isImage = (clip.url.match(/\.(jpg|jpeg|png|gif|webp|svg)/i) || clip.name.match(/\.(jpg|jpeg|png|gif|webp|svg)/i));
-                const isClipSelected = selectedClipId === clip.id;
-
-                return (
-                  <div
-                    key={clip.id}
-                    className={`absolute inset-0 pointer-events-auto ${isClipSelected ? 'z-50' : ''}`}
-                    style={{
-                      transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
-                      zIndex: clip.trackIndex === 0 ? 100 : (clip.trackIndex >= 10 ? clip.trackIndex : 1)
-                    }}
-                    onClick={(e) => handleVideoClick(e, clip.id)}
-                  >
-                    {!isImage ? (
-                      <video
-                        ref={clip.id === activeVideoClip?.id ? videoRef : null}
-                        src={clip.url}
-                        className="w-full h-full object-contain"
-                        preload="auto"
-                        playsInline
-                        muted={clip.id !== activeVideoClip?.id} // Only one audio source
-                        onTimeUpdate={(e) => {
-                          if (clip.id === activeVideoClip?.id && hoverTime === null) {
-                            const time = clip.startTime + e.currentTarget.currentTime;
-                            setInternalCurrentTime(time);
-                            onTimeUpdate?.(time);
-                          }
-                        }}
-                        onPlay={() => { if (clip.id === activeVideoClip?.id) onPlayingChange?.(true); }}
-                        onPause={() => { if (clip.id === activeVideoClip?.id) onPlayingChange?.(false); }}
-                      />
-                    ) : (
-                      <img
-                        src={clip.url}
-                        alt={clip.name}
-                        className="w-full h-full object-contain pointer-events-none"
-                      />
-                    )}
-                  </div>
-                );
-              })
+              <VisualLayer
+                activeVisualClips={activeVisualClips}
+                activeVideoClipId={activeVideoClip?.id}
+                selectedClipIds={selectedClipIds}
+                videoRef={videoRef}
+                handleVideoTimeUpdate={handleVideoTimeUpdate}
+                handleVideoClick={handleVideoClick}
+                handleClipContextMenu={handleClipContextMenu}
+                onPlayingChange={onPlayingChange}
+                onClipSelect={onClipSelect}
+                onClipUpdate={onClipUpdate}
+                canvasAspectRatio={canvasAspectRatio}
+                containerRef={containerRef}
+                onInteractionStart={onInteractionStart}
+                onInteractionEnd={onInteractionEnd}
+              />
             ) : (
               <div
                 className="w-full h-full flex flex-col items-center justify-center bg-gray-900 gap-3 cursor-pointer hover:bg-gray-800 transition-colors"
-                onDoubleClick={handleDoubleClick}
+                onDoubleClick={() => {}}
               >
                 <span className="material-icons text-gray-600 text-6xl">play_circle_outline</span>
                 <span className="text-gray-500 text-sm font-medium">더블클릭 또는 파일을 드래그하여 추가</span>
@@ -296,23 +943,18 @@ export default function Player({
             )}
           </div>
 
-          {/* Text clip overlays on canvas */}
-          {clips.filter(c => c.trackIndex === 0 && displayTime >= c.startTime && displayTime < c.startTime + c.duration).map(clip => (
-            <div
-              key={clip.id}
-              className={`absolute left-1/2 -translate-x-1/2 bottom-[12%] px-3 py-1.5 rounded cursor-pointer z-10 max-w-[80%] text-center transition-all ${selectedClipId === clip.id ? 'ring-2 ring-primary' : ''
-                }`}
-              style={{
-                transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%)`,
-                left: '50%',
-              }}
-              onClick={(e) => { e.stopPropagation(); onClipSelect?.(clip.id); }}
-            >
-              <span className="text-lg font-bold text-white drop-shadow-lg">{clip.name}</span>
-            </div>
-          ))}
+          <SubtitleOverlay
+            activeSubtitleClips={activeSubtitleClips}
+            selectedClipIds={selectedClipIds}
+            onClipSelect={onClipSelect}
+            onClipUpdate={onClipUpdate}
+            handleClipContextMenu={handleClipContextMenu}
+            canvasAspectRatio={canvasAspectRatio}
+            onInteractionStart={onInteractionStart}
+            onInteractionEnd={onInteractionEnd}
+          />
 
-          {/* Preset drag hint overlay */}
+
           {isPresetDragOver && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none z-30">
               <span className="text-white text-sm font-medium bg-[#00D4D4]/20 px-4 py-2 rounded-lg border border-[#00D4D4]/50">
@@ -321,7 +963,6 @@ export default function Player({
             </div>
           )}
 
-          {/* Hover play overlay */}
           <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/20 pointer-events-none">
             <button
               onClick={(e) => { e.stopPropagation(); handlePlayPause(); }}
@@ -333,85 +974,71 @@ export default function Player({
             </button>
           </div>
 
-          {/* ===== BOUNDING BOX WITH 8 HANDLES ===== */}
-          {isSelected && (
-            <>
-              {/* Border */}
-              <div className="absolute -inset-px border-2 border-primary pointer-events-none z-10" />
-
-              {/* Move handle (center) */}
-              <div
-                data-handle="move"
-                className="absolute inset-0 cursor-move z-10"
-                onMouseDown={(e) => handleTransformStart(e, 'move')}
-              />
-
-              {/* Corner handles (scale) */}
-              {[
-                { pos: '-top-1.5 -left-1.5', cursor: 'nwse-resize' },
-                { pos: '-top-1.5 -right-1.5', cursor: 'nesw-resize' },
-                { pos: '-bottom-1.5 -left-1.5', cursor: 'nesw-resize' },
-                { pos: '-bottom-1.5 -right-1.5', cursor: 'nwse-resize' },
-              ].map((h, i) => (
-                <div
-                  key={i}
-                  data-handle="scale"
-                  className={`absolute ${h.pos} w-3 h-3 bg-white border-2 border-primary rounded-sm z-20`}
-                  style={{ cursor: h.cursor }}
-                  onMouseDown={(e) => handleTransformStart(e, 'scale')}
-                />
-              ))}
-
-              {/* Edge handles (scale) */}
-              {[
-                { pos: '-top-1.5 left-1/2 -translate-x-1/2', cursor: 'ns-resize' },
-                { pos: '-bottom-1.5 left-1/2 -translate-x-1/2', cursor: 'ns-resize' },
-                { pos: 'top-1/2 -left-1.5 -translate-y-1/2', cursor: 'ew-resize' },
-                { pos: 'top-1/2 -right-1.5 -translate-y-1/2', cursor: 'ew-resize' },
-              ].map((h, i) => (
-                <div
-                  key={i + 4}
-                  data-handle="scale"
-                  className={`absolute ${h.pos} w-2.5 h-2.5 bg-white border-2 border-primary rounded-sm z-20`}
-                  style={{ cursor: h.cursor }}
-                  onMouseDown={(e) => handleTransformStart(e, 'scale')}
-                />
-              ))}
-
-              {/* Rotate handle (top center, above) */}
-              <div className="absolute -top-8 left-1/2 -translate-x-1/2 flex flex-col items-center z-20">
-                <div
-                  data-handle="rotate"
-                  className="w-4 h-4 rounded-full bg-primary border-2 border-white cursor-grab active:cursor-grabbing shadow-lg"
-                  onMouseDown={(e) => handleTransformStart(e, 'rotate')}
-                />
-                <div className="w-px h-4 bg-primary" />
-              </div>
-
-              {/* Label */}
-              <div className="absolute -top-6 left-0 bg-primary text-white text-[9px] px-1.5 py-0.5 rounded pointer-events-none z-20">
-                {selectedVidClip?.name || '선택됨'}
-              </div>
-            </>
-          )}
         </div>
       </div>
 
-      {/* Context Menu */}
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
-          onDelete={() => { if (contextMenu.clipId) onClipDelete?.(contextMenu.clipId); setContextMenu(null); }}
+          onDelete={() => {
+            if (contextMenu?.clipIds?.[0] && onClipDelete) {
+              onClipDelete(contextMenu.clipIds[0]);
+              setContextMenu(null);
+              onClipSelect?.([]);
+            }
+          }}
         />
       )}
 
-      {/* Player Controls Bar */}
+      {/* Info Overlay inside Canvas - Premium Glassmorphism Look */}
+      {activeVideoClip && (
+        <div className="absolute top-4 left-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-md border border-white/10 shadow-2xl pointer-events-none z-50 group/info transition-all hover:bg-black/60">
+          <div className="flex items-center gap-1.5">
+            <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+            <span className="text-[10px] font-bold tracking-tight text-white/90 font-mono">
+              {videoDimensions.width > 0 ? `${videoDimensions.width}x${videoDimensions.height}` : '...'}
+            </span>
+          </div>
+          <div className="w-px h-2.5 bg-white/20" />
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] text-white/60 font-medium">30.00</span>
+            <span className="text-[9px] text-white/30 font-bold">FPS</span>
+          </div>
+        </div>
+      )}
+
       <div className="h-10 bg-editor-bg border-t border-border-color flex items-center justify-between px-4 shrink-0">
-        <div className="flex items-center space-x-2 w-1/3">
-          <span className="text-xs font-mono text-primary">{formatTime(currentTime)}</span>
-          <span className="text-xs font-mono text-text-secondary">/ {formatTime(totalTime)}</span>
+        <div className="flex items-center space-x-3 w-1/3">
+          <div className="relative">
+            <button
+              onClick={() => setShowAspectMenu(prev => !prev)}
+              className="flex items-center gap-1 text-gray-400 hover:text-white transition-all bg-gray-800/50 px-1.5 py-0.5 rounded border border-gray-700 hover:border-primary/50"
+              title="화면 비율"
+            >
+              <span className="material-icons text-sm text-primary">aspect_ratio</span>
+              <span className="text-[10px] font-bold font-mono">{canvasAspectRatio}</span>
+            </button>
+            {showAspectMenu && (
+              <div className="absolute bottom-full left-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 py-1 w-24">
+                {(['16:9', '9:16', '1:1', '3:4'] as const).map(ratio => (
+                  <button
+                    key={ratio}
+                    className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[#00D4D4]/10 flex items-center justify-between ${canvasAspectRatio === ratio ? 'text-[#00D4D4]' : 'text-white'}`}
+                    onClick={() => { onAspectRatioChange?.(ratio); setShowAspectMenu(false); }}
+                  >
+                    <span className="font-mono">{ratio}</span>
+                    {canvasAspectRatio === ratio && <span className="material-icons text-xs">check</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className="text-xs font-mono text-primary">{formatTime(currentTime)}</span>
+            <span className="text-xs font-mono text-text-secondary">/ {formatTime(totalTime)}</span>
+          </div>
         </div>
         <div className="flex items-center space-x-4 w-1/3 justify-center">
           <button onClick={() => onSeek?.(Math.max(0, currentTime - 5))} className="text-white hover:text-primary transition-all active:scale-90" title="5초 뒤로">
@@ -427,7 +1054,6 @@ export default function Player({
           </button>
         </div>
         <div className="flex items-center justify-end space-x-3 w-1/3">
-          {/* Viewer Zoom */}
           <div className="flex items-center gap-1">
             <button onClick={() => onViewerZoomChange?.(Math.max(25, viewerZoom - 25))} className="text-gray-400 hover:text-white transition-all active:scale-90" title="뷰어 축소">
               <span className="material-icons text-xs">remove</span>
@@ -441,7 +1067,6 @@ export default function Player({
             </button>
           </div>
           <div className="w-px h-3 bg-gray-700" />
-          {/* Quality Selector */}
           <div className="relative">
             <button
               onClick={() => setShowQualityMenu(prev => !prev)}
@@ -481,9 +1106,12 @@ export default function Player({
       </div>
     </main>
   );
-}
+});
+
+export default Player;
 
 function formatTime(seconds: number): string {
+  if (isNaN(seconds) || seconds < 0) return "00:00:00:00";
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);

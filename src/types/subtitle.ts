@@ -71,9 +71,9 @@ export interface SubtitleStyle {
 export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   x: 50,
   y: 85,
-  fontFamily: 'Pretendard, sans-serif',
+  fontFamily: 'PaperlogyExtraBold, sans-serif',
   fontSize: 48,
-  fontWeight: 700,
+  fontWeight: 800,
   color: '#FFFFFF',
   backgroundColor: 'transparent',
   strokeColor: '#000000',
@@ -144,6 +144,10 @@ export interface TranscriptItem {
   editedText: string;
   /** 수정 여부 */
   isEdited: boolean;
+  /** 자막 색상 */
+  color?: string;
+  /** 자막 테두리 색상 */
+  strokeColor?: string;
 }
 
 // ============================================

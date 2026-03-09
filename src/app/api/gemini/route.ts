@@ -74,7 +74,7 @@ async function processChunk(
     for (const model of GEMINI_MODELS) {
       try {
         const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
+          `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${geminiKey}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -168,7 +168,7 @@ export async function POST(request: NextRequest) {
         for (const model of GEMINI_MODELS) {
           try {
             const response = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
+              `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${geminiKey}`,
               {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

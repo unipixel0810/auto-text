@@ -1,7 +1,7 @@
 -- Analytics Events Table
 CREATE TABLE IF NOT EXISTS analytics_events (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  event_type TEXT NOT NULL CHECK (event_type IN ('click', 'scroll', 'cta_click', 'rage_click', 'dead_click', 'page_view', 'page_leave')),
+  event_type TEXT NOT NULL CHECK (event_type IN ('click', 'scroll', 'cta_click', 'rage_click', 'dead_click', 'page_view', 'page_leave', 'error', 'performance', 'form_interaction')),
   page_url TEXT NOT NULL,
   page_title TEXT,
   element_tag TEXT,

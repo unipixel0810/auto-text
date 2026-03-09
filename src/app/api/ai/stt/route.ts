@@ -94,7 +94,13 @@ export async function POST(req: Request) {
 
         if (!response.ok) {
             const errText = await response.text();
-            throw new Error(`OpenAI STT error: ${errText}`);
+            console.error("OpenAI STT Full Error Response:", errText);
+            try {
+                const parsedErr = JSON.parse(errText);
+                throw new Error(`OpenAI STT error: ${parsedErr.error?.message || errText}`);
+            } catch {
+                throw new Error(`OpenAI STT error: ${errText}`);
+            }
         }
 
         const data = await response.json();

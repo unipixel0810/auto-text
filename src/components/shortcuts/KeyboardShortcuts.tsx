@@ -38,12 +38,18 @@ const DEFAULT_SHORTCUTS: ShortcutAction[] = [
     { id: 'duplicate', label: '복제', category: '편집', keys: ['⌘', 'D'], description: '선택한 클립을 복제합니다' },
     { id: 'trimLeft', label: '왼쪽 트림', category: '편집', keys: ['Q'], description: '재생헤드 기준 왼쪽을 트림합니다' },
     { id: 'trimRight', label: '오른쪽 트림', category: '편집', keys: ['W'], description: '재생헤드 기준 오른쪽을 트림합니다' },
+    { id: 'toggleEnable', label: '활성화/비활성화', category: '편집', keys: ['V'], description: '선택한 클립을 켜거나 끕니다' },
 
     // Timeline
     { id: 'zoomIn', label: '타임라인 확대', category: '타임라인', keys: ['⌘', '='], description: '타임라인을 확대합니다' },
     { id: 'zoomOut', label: '타임라인 축소', category: '타임라인', keys: ['⌘', '-'], description: '타임라인을 축소합니다' },
     { id: 'fitToScreen', label: '화면에 맞추기', category: '타임라인', keys: ['⌘', '⇧', 'F'], description: '타임라인을 화면에 맞춥니다' },
     { id: 'snapToggle', label: '스냅 토글', category: '타임라인', keys: ['N'], description: '자석 기능을 켜거나 끕니다' },
+
+    // Viewer
+    { id: 'viewerFit', label: '뷰어 화면 맞추기', category: '뷰어', keys: ['⇧', 'Z'], description: '뷰어를 원래 크기(100%)로 맞춥니다' },
+    { id: 'viewerZoomIn', label: '뷰어 확대', category: '뷰어', keys: ['⌥', '='], description: '뷰어를 확대합니다' },
+    { id: 'viewerZoomOut', label: '뷰어 축소', category: '뷰어', keys: ['⌥', '-'], description: '뷰어를 축소합니다' },
 
     // Position
     { id: 'nudgeLeft', label: '왼쪽으로 이동', category: '위치', keys: ['←'], description: '선택한 클립을 왼쪽으로 이동합니다' },

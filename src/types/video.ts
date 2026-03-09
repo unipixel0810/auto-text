@@ -3,6 +3,11 @@ export interface VideoClip {
   name: string;
   url: string;
   thumbnail?: string;
+  thumbnails?: string[]; // array of thumbnail data URLs for timeline filmstrip
+  waveform?: number[]; // normalized audio waveform data (0-1)
+  volume?: number; // audio volume 0-100
+  mediaWidth?: number; // original media width (e.g. 1920)
+  mediaHeight?: number; // original media height (e.g. 1080)
   startTime: number;
   duration: number;
   originalDuration?: number; // preserved original duration before speed changes
@@ -19,6 +24,33 @@ export interface VideoClip {
   animationEffect?: string;
   speed?: number; // playback speed 0.1x ~ 10x
   linked?: boolean; // audio+video linked
+  // Subtitle/Text Styling
+  fontFamily?: string;
+  fontSize?: number;
+  color?: string;
+  backgroundColor?: string;
+  strokeColor?: string;
+  strokeWidth?: number;
+  shadowColor?: string;
+  shadowBlur?: number;
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
+  glowColor?: string;
+  borderColor?: string;
+  borderWidth?: number;
+  fontWeight?: number;
+  fontStyle?: 'normal' | 'italic';
+  textDecoration?: 'none' | 'underline';
+  disabled?: boolean;
+}
+
+export interface LibraryItem {
+  id: string;
+  name: string;
+  url: string;
+  type: 'video' | 'audio' | 'image';
+  duration: number;
+  file: File;
 }
 
 export interface TimelineState {
@@ -30,7 +62,7 @@ export interface TimelineState {
 
 export interface HistoryEntry {
   clips: VideoClip[];
-  selectedClipId: string | null;
+  selectedClipIds: string[];
 }
 
 export interface ClipboardData {

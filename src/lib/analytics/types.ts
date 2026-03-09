@@ -5,7 +5,10 @@ export type AnalyticsEventType =
   | 'rage_click'
   | 'dead_click'
   | 'page_view'
-  | 'page_leave';
+  | 'page_leave'
+  | 'error'
+  | 'performance'
+  | 'form_interaction';
 
 export interface AnalyticsEvent {
   id?: string;
@@ -106,3 +109,52 @@ export const DATE_FILTERS: DateFilter[] = [
   { label: '7일', value: '7d', days: 7 },
   { label: '30일', value: '30d', days: 30 },
 ];
+
+export interface DemographicData {
+  estimatedAgeGroup: '13-17' | '18-24' | '25-34' | '35-44' | '45-54' | '55-64' | '65+' | 'unknown';
+  estimatedGender: 'male' | 'female' | 'unknown';
+  language: string;
+  timezone: string;
+  country: string;
+  region: string;
+  city: string;
+  connectionType: string;
+  screenResolution: string;
+  colorDepth: number;
+  touchSupport: boolean;
+  cookiesEnabled: boolean;
+  doNotTrack: boolean;
+}
+
+export interface WebVitals {
+  lcp?: number;  // Largest Contentful Paint
+  fid?: number;  // First Input Delay
+  cls?: number;  // Cumulative Layout Shift
+  fcp?: number;  // First Contentful Paint
+  ttfb?: number; // Time to First Byte
+  inp?: number;  // Interaction to Next Paint
+}
+
+export interface FunnelStep {
+  id: string;
+  name: string;
+  url_pattern: string;
+  order: number;
+}
+
+export interface FunnelData {
+  id: string;
+  name: string;
+  steps: FunnelStep[];
+  created_at: string;
+}
+
+export interface ServiceHealth {
+  uptime: number;
+  avgResponseTime: number;
+  errorRate: number;
+  activeUsers: number;
+  apiLatency: Record<string, number>;
+  jsErrors: { message: string; count: number; lastSeen: string }[];
+  webVitals: WebVitals;
+}

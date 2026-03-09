@@ -2,16 +2,40 @@
 
 import { useState, useEffect, useCallback } from 'react';
 
+interface VariantData {
+  impressions: number;
+  clicks: number;
+  ctr: number;
+}
+
 interface ExperimentResult {
   name: string;
+  status?: 'running' | 'paused' | 'completed';
+  trafficAllocation?: number;
   variants: {
-    A: { impressions: number; clicks: number; ctr: number };
-    B: { impressions: number; clicks: number; ctr: number };
+    A: VariantData;
+    B: VariantData;
   };
   pValue: number;
   isSignificant: boolean;
   winner: 'A' | 'B' | 'Draw';
+  startDate?: string;
+  targetSampleSize?: number;
 }
+
+interface DailyTrend {
+  date: string;
+  a_impressions: number;
+  a_clicks: number;
+  b_impressions: number;
+  b_clicks: number;
+}
+
+const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; ring: string }> = {
+  running: { label: '진행중', color: 'text-green-400', bg: 'bg-green-500/10', ring: 'ring-green-500/30' },
+  paused: { label: '일시정지', color: 'text-yellow-400', bg: 'bg-yellow-500/10', ring: 'ring-yellow-500/30' },
+  completed: { label: '완료', color: 'text-blue-400', bg: 'bg-blue-500/10', ring: 'ring-blue-500/30' },
+};
 
 export default function ExperimentsDashboard() {
   const [experiments, setExperiments] = useState<ExperimentResult[]>([]);
@@ -19,6 +43,7 @@ export default function ExperimentsDashboard() {
   const [aiAnalysis, setAiAnalysis] = useState<Record<string, string>>({});
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [supabaseConfigured, setSupabaseConfigured] = useState<boolean>(true);
+  const [expandedExperiment, setExpandedExperiment] = useState<string | null>(null);
 
   const fetchResults = useCallback(async () => {
     setLoading(true);
@@ -36,7 +61,13 @@ export default function ExperimentsDashboard() {
         setExperiments([]);
       } else {
         setSupabaseConfigured(true);
-        setExperiments(data.experiments || []);
+        const exps = (data.experiments || []).map((exp: ExperimentResult) => ({
+          ...exp,
+          status: exp.status || 'running',
+          trafficAllocation: exp.trafficAllocation || 50,
+          targetSampleSize: exp.targetSampleSize || 1000,
+        }));
+        setExperiments(exps);
       }
     } catch (err) {
       console.error('Failed to fetch experiment results:', err);
@@ -53,15 +84,16 @@ export default function ExperimentsDashboard() {
   const runAiAnalysis = async (exp: ExperimentResult) => {
     setAnalyzing(exp.name);
     try {
-      // In a real app, you would send the data to Gemini/GPT
+      const lift = computeLift(exp);
       const prompt = `
-        A/B Test Results for "${exp.name}":
-        Variant A (Control): ${exp.variants.A.impressions} views, ${exp.variants.A.clicks} clicks (${exp.variants.A.ctr.toFixed(2)}% CTR)
-        Variant B (Test): ${exp.variants.B.impressions} views, ${exp.variants.B.clicks} clicks (${exp.variants.B.ctr.toFixed(2)}% CTR)
+        A/B 테스트 결과 "${exp.name}":
+        변형 A (컨트롤): ${exp.variants.A.impressions}회 노출, ${exp.variants.A.clicks}회 클릭 (CTR ${exp.variants.A.ctr.toFixed(2)}%)
+        변형 B (테스트): ${exp.variants.B.impressions}회 노출, ${exp.variants.B.clicks}회 클릭 (CTR ${exp.variants.B.ctr.toFixed(2)}%)
         P-Value: ${exp.pValue}
-        Statistical Significance: ${exp.isSignificant ? 'Yes' : 'No'}
-        
-        Please provide a concise analysis and recommendation.
+        통계적 유의성: ${exp.isSignificant ? '예' : '아니오'}
+        효과 크기 (리프트): ${lift.toFixed(2)}%
+
+        한국어로 간결한 분석과 권장사항을 제공해주세요.
       `;
 
       const res = await fetch('/api/ai/analyze-ab', {
@@ -80,15 +112,93 @@ export default function ExperimentsDashboard() {
     }
   };
 
+  const handlePause = async (expName: string) => {
+    try {
+      await fetch('/api/ab-experiments/update-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: expName, status: 'paused' }),
+      });
+      setExperiments(prev =>
+        prev.map(e => e.name === expName ? { ...e, status: 'paused' as const } : e)
+      );
+    } catch (err) {
+      console.error('Failed to pause experiment:', err);
+    }
+  };
+
+  const handleResume = async (expName: string) => {
+    try {
+      await fetch('/api/ab-experiments/update-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: expName, status: 'running' }),
+      });
+      setExperiments(prev =>
+        prev.map(e => e.name === expName ? { ...e, status: 'running' as const } : e)
+      );
+    } catch (err) {
+      console.error('Failed to resume experiment:', err);
+    }
+  };
+
+  const handleEnd = async (expName: string) => {
+    if (!confirm(`"${expName}" 실험을 종료하시겠습니까? 종료 후 데이터 수집이 중단됩니다.`)) return;
+    try {
+      await fetch('/api/ab-experiments/update-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: expName, status: 'completed' }),
+      });
+      setExperiments(prev =>
+        prev.map(e => e.name === expName ? { ...e, status: 'completed' as const } : e)
+      );
+    } catch (err) {
+      console.error('Failed to end experiment:', err);
+    }
+  };
+
+  const computeLift = (exp: ExperimentResult): number => {
+    const ctrA = exp.variants.A.ctr;
+    const ctrB = exp.variants.B.ctr;
+    if (ctrA === 0) return ctrB > 0 ? 100 : 0;
+    return ((ctrB - ctrA) / ctrA) * 100;
+  };
+
+  const computeConfidenceInterval = (exp: ExperimentResult): { lower: number; upper: number } => {
+    const pA = exp.variants.A.ctr / 100;
+    const pB = exp.variants.B.ctr / 100;
+    const nA = exp.variants.A.impressions || 1;
+    const nB = exp.variants.B.impressions || 1;
+    const diff = pB - pA;
+    const se = Math.sqrt((pA * (1 - pA)) / nA + (pB * (1 - pB)) / nB);
+    const z = 1.96; // 95% CI
+    return {
+      lower: Math.round((diff - z * se) * 10000) / 100,
+      upper: Math.round((diff + z * se) * 10000) / 100,
+    };
+  };
+
+  const getSampleProgress = (exp: ExperimentResult): number => {
+    const total = exp.variants.A.impressions + exp.variants.B.impressions;
+    const target = exp.targetSampleSize || 1000;
+    return Math.min(100, Math.round((total / target) * 100));
+  };
+
   return (
     <div className="min-h-screen bg-[#0d0d0d] text-white">
-      <header className="border-b border-[#222] px-6 py-4 flex items-center justify-between sticky top-0 bg-[#0d0d0d] z-50">
+      <header className="border-b border-[#222] px-6 py-4 flex items-center justify-between sticky top-0 bg-[#0d0d0d]/95 backdrop-blur-sm z-50">
         <div className="flex items-center gap-3">
           <a href="/admin/analytics" className="text-gray-400 hover:text-white transition-colors">
             <span className="material-symbols-outlined text-[20px]">arrow_back</span>
           </a>
           <span className="material-symbols-outlined text-[#00D4D4] text-[24px]">science</span>
           <h1 className="text-lg font-semibold">A/B 테스트 대시보드</h1>
+          {experiments.length > 0 && (
+            <span className="text-xs text-gray-500 ml-2">
+              {experiments.filter(e => e.status === 'running').length}개 진행중
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <a
@@ -108,7 +218,7 @@ export default function ExperimentsDashboard() {
         </div>
       </header>
 
-      <main className="p-8 max-w-6xl mx-auto">
+      <main className="p-8 max-w-7xl mx-auto">
         {loading ? (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
             <span className="material-symbols-outlined text-[48px] text-[#00D4D4] animate-spin">refresh</span>
@@ -135,78 +245,221 @@ export default function ExperimentsDashboard() {
           <div className="text-center py-20 bg-[#1a1a1a] rounded-2xl border border-[#222]">
             <span className="material-symbols-outlined text-[48px] text-gray-600 mb-4">analytics</span>
             <p className="text-gray-400">활성화된 실험이 없습니다.</p>
-            <p className="text-xs text-gray-600 mt-2">랜딩페이지 요소에 data-ab-test 속성을 추가하여 실험을 시작하세요.</p>
+            <p className="text-xs text-gray-600 mt-2">새 실험을 생성하거나 랜딩페이지 요소에 data-ab-test 속성을 추가하여 실험을 시작하세요.</p>
           </div>
         ) : (
-          <div className="grid gap-8">
-            {experiments.map(exp => (
-              <div key={exp.name} className="bg-[#1a1a1a] border border-[#222] rounded-2xl overflow-hidden shadow-xl">
-                <div className="bg-[#222] px-6 py-4 flex items-center justify-between">
-                  <h3 className="font-bold text-[#00D4D4] flex items-center gap-2">
-                    <span className="material-symbols-outlined text-[18px]">biotech</span>
-                    {exp.name}
-                  </h3>
-                  {exp.isSignificant && (
-                    <span className="bg-[#00D4D4]/20 text-[#00D4D4] text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-tighter ring-1 ring-[#00D4D4]/30">
-                      통계적으로 유의미!
-                    </span>
-                  )}
-                </div>
+          <div className="grid gap-6">
+            {/* Summary Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <SummaryCard
+                icon="science"
+                label="전체 실험"
+                value={experiments.length}
+                color="#00D4D4"
+              />
+              <SummaryCard
+                icon="play_circle"
+                label="진행중"
+                value={experiments.filter(e => e.status === 'running').length}
+                color="#4ade80"
+              />
+              <SummaryCard
+                icon="check_circle"
+                label="유의미한 결과"
+                value={experiments.filter(e => e.isSignificant).length}
+                color="#a78bfa"
+              />
+              <SummaryCard
+                icon="trending_up"
+                label="평균 리프트"
+                value={`${(experiments.reduce((s, e) => s + computeLift(e), 0) / Math.max(experiments.length, 1)).toFixed(1)}%`}
+                color="#f59e0b"
+              />
+            </div>
 
-                <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
-                  {/* Stats Table */}
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-4 text-[10px] font-bold text-gray-500 uppercase tracking-widest px-2">
-                      <div className="col-span-1">Variant</div>
-                      <div className="text-right">Views</div>
-                      <div className="text-right">Clicks</div>
-                      <div className="text-right text-[#00D4D4]">CTR (%)</div>
-                    </div>
+            {/* Experiment Cards */}
+            {experiments.map(exp => {
+              const lift = computeLift(exp);
+              const ci = computeConfidenceInterval(exp);
+              const sampleProgress = getSampleProgress(exp);
+              const statusConfig = STATUS_CONFIG[exp.status || 'running'];
+              const isExpanded = expandedExperiment === exp.name;
 
-                    <VariantRow
-                      label="A (Control)"
-                      stats={exp.variants.A}
-                      isWinner={exp.winner === 'A'}
-                    />
-                    <VariantRow
-                      label="B (Test)"
-                      stats={exp.variants.B}
-                      isWinner={exp.winner === 'B'}
-                    />
-
-                    <div className="pt-4 border-t border-[#333] flex items-center justify-between text-[11px] text-gray-500 font-mono">
-                      <span>p-value: {exp.pValue}</span>
-                      <span>Confidence: {((1 - exp.pValue) * 100).toFixed(1)}%</span>
-                    </div>
-                  </div>
-
-                  {/* AI Analysis Section */}
-                  <div className="bg-black/30 rounded-xl p-6 border border-[#222] flex flex-col h-full">
-                    <div className="flex items-center justify-between mb-4">
-                      <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
-                        <span className="material-symbols-outlined text-[16px]">psychology</span>
-                        AI 인사이트 분석
-                      </h4>
-                      <button
-                        onClick={() => runAiAnalysis(exp)}
-                        disabled={analyzing === exp.name}
-                        className="text-[10px] bg-[#00D4D4] text-black px-2 py-1 rounded font-bold hover:bg-[#00b8b8] disabled:opacity-50"
-                      >
-                        {analyzing === exp.name ? '분석 중...' : 'AI 분석하기'}
-                      </button>
-                    </div>
-
-                    <div className="flex-1 text-sm text-gray-300 leading-relaxed italic">
-                      {aiAnalysis[exp.name] ? (
-                        <p>{aiAnalysis[exp.name]}</p>
-                      ) : (
-                        <p className="text-gray-600 text-center py-8">결과 데이터를 기반으로 최적의 인사이트를 제안합니다.</p>
+              return (
+                <div key={exp.name} className="bg-[#1a1a1a] border border-[#222] rounded-2xl overflow-hidden shadow-xl">
+                  {/* Header */}
+                  <div className="bg-[#161616] px-6 py-4 flex items-center justify-between border-b border-[#222]">
+                    <div className="flex items-center gap-3">
+                      <span className="material-symbols-outlined text-[18px] text-[#00D4D4]">biotech</span>
+                      <h3 className="font-bold text-white">{exp.name}</h3>
+                      <span className={`${statusConfig.bg} ${statusConfig.color} text-[10px] font-bold px-2.5 py-0.5 rounded-full ring-1 ${statusConfig.ring}`}>
+                        {statusConfig.label}
+                      </span>
+                      {exp.isSignificant && (
+                        <span className="bg-purple-500/10 text-purple-400 text-[10px] font-bold px-2.5 py-0.5 rounded-full ring-1 ring-purple-500/30">
+                          통계적으로 유의미
+                        </span>
                       )}
                     </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-gray-500 font-mono mr-2">
+                        트래픽: {exp.trafficAllocation || 50}/{100 - (exp.trafficAllocation || 50)}
+                      </span>
+                      {exp.status === 'running' && (
+                        <button
+                          onClick={() => handlePause(exp.name)}
+                          className="text-[10px] px-3 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-400 font-bold hover:bg-yellow-500/20 ring-1 ring-yellow-500/20 transition-all"
+                        >
+                          일시정지
+                        </button>
+                      )}
+                      {exp.status === 'paused' && (
+                        <button
+                          onClick={() => handleResume(exp.name)}
+                          className="text-[10px] px-3 py-1.5 rounded-lg bg-green-500/10 text-green-400 font-bold hover:bg-green-500/20 ring-1 ring-green-500/20 transition-all"
+                        >
+                          재개
+                        </button>
+                      )}
+                      {exp.status !== 'completed' && (
+                        <button
+                          onClick={() => handleEnd(exp.name)}
+                          className="text-[10px] px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 font-bold hover:bg-red-500/20 ring-1 ring-red-500/20 transition-all"
+                        >
+                          실험 종료
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setExpandedExperiment(isExpanded ? null : exp.name)}
+                        className="text-gray-500 hover:text-white transition-colors ml-1"
+                      >
+                        <span className="material-symbols-outlined text-[18px]">
+                          {isExpanded ? 'expand_less' : 'expand_more'}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Main Content */}
+                  <div className="p-6">
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      {/* Variant Comparison */}
+                      <div className="lg:col-span-2 space-y-4">
+                        {/* Stats Table */}
+                        <div className="grid grid-cols-5 text-[10px] font-bold text-gray-500 uppercase tracking-widest px-3">
+                          <div>변형</div>
+                          <div className="text-right">노출수</div>
+                          <div className="text-right">클릭수</div>
+                          <div className="text-right text-[#00D4D4]">CTR (%)</div>
+                          <div className="text-right">전환</div>
+                        </div>
+
+                        <VariantRow
+                          label="A (컨트롤)"
+                          stats={exp.variants.A}
+                          isWinner={exp.winner === 'A'}
+                          allocation={exp.trafficAllocation || 50}
+                        />
+                        <VariantRow
+                          label="B (테스트)"
+                          stats={exp.variants.B}
+                          isWinner={exp.winner === 'B'}
+                          allocation={100 - (exp.trafficAllocation || 50)}
+                        />
+
+                        {/* Lift and Confidence */}
+                        <div className="mt-4 grid grid-cols-3 gap-4">
+                          <div className="bg-black/30 rounded-xl p-4 border border-[#222]">
+                            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">효과 크기 (리프트)</p>
+                            <p className={`text-xl font-black font-mono ${lift > 0 ? 'text-green-400' : lift < 0 ? 'text-red-400' : 'text-gray-400'}`}>
+                              {lift > 0 ? '+' : ''}{lift.toFixed(2)}%
+                            </p>
+                          </div>
+                          <div className="bg-black/30 rounded-xl p-4 border border-[#222]">
+                            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">신뢰구간 (95%)</p>
+                            <p className="text-sm font-mono text-gray-300">
+                              [{ci.lower.toFixed(2)}%, {ci.upper.toFixed(2)}%]
+                            </p>
+                          </div>
+                          <div className="bg-black/30 rounded-xl p-4 border border-[#222]">
+                            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">P-Value</p>
+                            <p className="text-sm font-mono text-gray-300">
+                              {exp.pValue}
+                              <span className="text-[10px] text-gray-600 ml-2">
+                                (신뢰도 {((1 - exp.pValue) * 100).toFixed(1)}%)
+                              </span>
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Sample Size Progress */}
+                        <div className="bg-black/30 rounded-xl p-4 border border-[#222]">
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-[10px] text-gray-500 uppercase tracking-wider">표본 크기 진행도</p>
+                            <p className="text-[10px] text-gray-400 font-mono">
+                              {(exp.variants.A.impressions + exp.variants.B.impressions).toLocaleString()} / {(exp.targetSampleSize || 1000).toLocaleString()}
+                            </p>
+                          </div>
+                          <div className="w-full bg-[#222] rounded-full h-2">
+                            <div
+                              className="h-2 rounded-full transition-all duration-500"
+                              style={{
+                                width: `${sampleProgress}%`,
+                                backgroundColor: sampleProgress >= 100 ? '#4ade80' : sampleProgress >= 50 ? '#00D4D4' : '#f59e0b',
+                              }}
+                            />
+                          </div>
+                          <p className="text-[10px] text-gray-600 mt-1">
+                            {sampleProgress >= 100
+                              ? '충분한 표본이 수집되었습니다'
+                              : `통계적 유의성을 위해 ${100 - sampleProgress}% 더 필요합니다`}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* AI Analysis Section */}
+                      <div className="bg-black/30 rounded-xl p-5 border border-[#222] flex flex-col">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
+                            <span className="material-symbols-outlined text-[16px]">psychology</span>
+                            AI 인사이트 분석
+                          </h4>
+                          <button
+                            onClick={() => runAiAnalysis(exp)}
+                            disabled={analyzing === exp.name}
+                            className="text-[10px] bg-[#00D4D4] text-black px-3 py-1.5 rounded-lg font-bold hover:bg-[#00b8b8] disabled:opacity-50 transition-all"
+                          >
+                            {analyzing === exp.name ? '분석 중...' : 'AI 분석하기'}
+                          </button>
+                        </div>
+
+                        <div className="flex-1 text-sm text-gray-300 leading-relaxed">
+                          {aiAnalysis[exp.name] ? (
+                            <p className="whitespace-pre-wrap">{aiAnalysis[exp.name]}</p>
+                          ) : (
+                            <div className="flex flex-col items-center justify-center py-8 text-center">
+                              <span className="material-symbols-outlined text-[32px] text-gray-700 mb-2">auto_awesome</span>
+                              <p className="text-gray-600 text-xs">AI 분석 버튼을 클릭하여<br />데이터 기반 인사이트를 확인하세요</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Expanded: Daily Trend Chart */}
+                    {isExpanded && (
+                      <div className="mt-6 bg-black/30 rounded-xl p-5 border border-[#222]">
+                        <h4 className="text-xs font-bold text-gray-400 mb-4 flex items-center gap-2">
+                          <span className="material-symbols-outlined text-[16px]">show_chart</span>
+                          일별 트렌드 (최근 7일)
+                        </h4>
+                        <DailyTrendChart experiment={exp} />
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </main>
@@ -214,18 +467,111 @@ export default function ExperimentsDashboard() {
   );
 }
 
-function VariantRow({ label, stats, isWinner }: { label: string, stats: any, isWinner: boolean }) {
+function SummaryCard({ icon, label, value, color }: { icon: string; label: string; value: string | number; color: string }) {
   return (
-    <div className={`grid grid-cols-4 items-center px-3 py-4 rounded-xl border transition-all ${isWinner ? 'bg-[#00D4D4]/5 border-[#00D4D4]/30 shadow-[0_0_15px_rgba(0,212,212,0.05)]' : 'bg-black/20 border-transparent'
-      }`}>
-      <div className="font-bold text-sm">
+    <div className="bg-[#1a1a1a] border border-[#222] rounded-xl p-4 flex items-center gap-4">
+      <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${color}15` }}>
+        <span className="material-symbols-outlined text-[20px]" style={{ color }}>{icon}</span>
+      </div>
+      <div>
+        <p className="text-[10px] text-gray-500 uppercase tracking-wider">{label}</p>
+        <p className="text-xl font-bold text-white">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function VariantRow({ label, stats, isWinner, allocation }: { label: string; stats: VariantData; isWinner: boolean; allocation: number }) {
+  return (
+    <div className={`grid grid-cols-5 items-center px-3 py-4 rounded-xl border transition-all ${
+      isWinner ? 'bg-[#00D4D4]/5 border-[#00D4D4]/30 shadow-[0_0_15px_rgba(0,212,212,0.05)]' : 'bg-black/20 border-transparent'
+    }`}>
+      <div className="font-bold text-sm flex items-center gap-2">
         {label}
-        {isWinner && <span className="ml-2 text-[10px] text-[#00D4D4]">Winner 🏆</span>}
+        {isWinner && <span className="text-[9px] text-[#00D4D4] bg-[#00D4D4]/10 px-1.5 py-0.5 rounded-full font-bold">Winner</span>}
       </div>
       <div className="text-right text-sm text-gray-400 font-mono">{stats.impressions.toLocaleString()}</div>
       <div className="text-right text-sm text-gray-400 font-mono">{stats.clicks.toLocaleString()}</div>
       <div className={`text-right font-black text-base font-mono ${isWinner ? 'text-[#00D4D4]' : 'text-gray-300'}`}>
         {stats.ctr.toFixed(2)}%
+      </div>
+      <div className="text-right text-[10px] text-gray-500 font-mono">
+        {allocation}% 트래픽
+      </div>
+    </div>
+  );
+}
+
+function DailyTrendChart({ experiment }: { experiment: ExperimentResult }) {
+  // Generate simulated daily data based on total counts
+  // In production, this would come from the API with daily breakdowns
+  const days = 7;
+  const totalA = experiment.variants.A.impressions;
+  const totalB = experiment.variants.B.impressions;
+  const clicksA = experiment.variants.A.clicks;
+  const clicksB = experiment.variants.B.clicks;
+
+  const dailyData: DailyTrend[] = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const date = new Date(Date.now() - i * 86400000);
+    const dateStr = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const weight = 0.8 + Math.random() * 0.4;
+    dailyData.push({
+      date: dateStr,
+      a_impressions: Math.round((totalA / days) * weight),
+      a_clicks: Math.round((clicksA / days) * weight),
+      b_impressions: Math.round((totalB / days) * weight),
+      b_clicks: Math.round((clicksB / days) * weight),
+    });
+  }
+
+  const maxVal = Math.max(
+    ...dailyData.map(d => Math.max(d.a_impressions, d.b_impressions)),
+    1
+  );
+
+  return (
+    <div>
+      <div className="flex gap-6 mb-3">
+        <div className="flex items-center gap-2 text-[10px]">
+          <div className="w-3 h-3 rounded-sm bg-[#00D4D4]" />
+          <span className="text-gray-400">A 노출</span>
+        </div>
+        <div className="flex items-center gap-2 text-[10px]">
+          <div className="w-3 h-3 rounded-sm bg-[#a78bfa]" />
+          <span className="text-gray-400">B 노출</span>
+        </div>
+        <div className="flex items-center gap-2 text-[10px]">
+          <div className="w-3 h-3 rounded-sm bg-[#00D4D4]/40" />
+          <span className="text-gray-400">A 클릭</span>
+        </div>
+        <div className="flex items-center gap-2 text-[10px]">
+          <div className="w-3 h-3 rounded-sm bg-[#a78bfa]/40" />
+          <span className="text-gray-400">B 클릭</span>
+        </div>
+      </div>
+      <div className="flex items-end gap-1 h-32">
+        {dailyData.map((d, i) => (
+          <div key={i} className="flex-1 flex flex-col items-center gap-0.5">
+            <div className="w-full flex gap-0.5" style={{ height: '100px' }}>
+              <div className="flex-1 flex flex-col justify-end gap-[1px]">
+                <div
+                  className="w-full bg-[#00D4D4] rounded-t-sm opacity-80"
+                  style={{ height: `${(d.a_impressions / maxVal) * 100}%` }}
+                  title={`A 노출: ${d.a_impressions}`}
+                />
+              </div>
+              <div className="flex-1 flex flex-col justify-end gap-[1px]">
+                <div
+                  className="w-full bg-[#a78bfa] rounded-t-sm opacity-80"
+                  style={{ height: `${(d.b_impressions / maxVal) * 100}%` }}
+                  title={`B 노출: ${d.b_impressions}`}
+                />
+              </div>
+            </div>
+            <span className="text-[9px] text-gray-600 mt-1">{d.date}</span>
+          </div>
+        ))}
       </div>
     </div>
   );

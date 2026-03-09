@@ -3,32 +3,96 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { transcribeVideo } from '@/lib/sttService';
 import { parseSubtitleFile } from '@/lib/subtitleParser';
-import { generateSubtitlesFromAudio } from '@/lib/geminiAudioService';
+import { generateSubtitlesFromAudio, type TranscriptDataForAI } from '@/lib/geminiAudioService';
 import type { TranscriptItem, SubtitleItem } from '@/types/subtitle';
 import type { VideoClip } from '@/types/video';
-import { SUBTITLE_PRESETS, type SubtitlePreset } from '@/lib/subtitlePresets';
-import TossPaymentModal from '@/components/payment/TossPaymentModal';
+import { SUBTITLE_PRESETS, FONT_FAMILIES, type SubtitlePreset, loadCustomPresets, addCustomPreset, deleteCustomPreset } from '@/lib/subtitlePresets';
+import UpgradeModal from '@/components/payment/UpgradeModal';
 
 interface RightSidebarProps {
   transcripts?: TranscriptItem[];
   subtitles?: SubtitleItem[];
   currentTime?: number;
   selectedClip?: VideoClip | null;
+  selectedClipIds?: string[];
   videoFile?: File | null;
   clips?: VideoClip[];
   onTranscriptsUpdate?: (transcripts: TranscriptItem[]) => void;
   onSubtitlesUpdate?: (subtitles: SubtitleItem[]) => void;
   onSeek?: (time: number) => void;
   onClipUpdate?: (clipId: string, updates: Partial<VideoClip>) => void;
-  onAddSubtitleClips?: (items: TranscriptItem[]) => void;
+  onClipsBatchUpdate?: (clipIds: string[], updates: Partial<VideoClip>) => void;
+  onAddSubtitleClips?: (items: TranscriptItem[], trackIndex?: number, replaceTrack?: boolean) => void;
   onAddTextClip?: (preset: SubtitlePreset) => void;
   onExport?: () => void;
 }
 
-export default function RightSidebar({
-  transcripts = [], subtitles = [], currentTime = 0, selectedClip = null, videoFile = null, clips = [],
-  onTranscriptsUpdate, onSubtitlesUpdate, onSeek, onClipUpdate, onAddSubtitleClips, onAddTextClip, onExport,
-}: RightSidebarProps) {
+const TranscriptItem = React.memo(({ t, isActive, isSelected, onSelect, onEdit, onDragStart, onMergeWithPrevious, onSplitAtCursor }: {
+  t: TranscriptItem,
+  isActive: boolean,
+  isSelected: boolean,
+  onSelect: (id: string, startTime: number) => void,
+  onEdit: (id: string, text: string) => void,
+  onDragStart: (e: React.DragEvent, text: string) => void,
+  onMergeWithPrevious?: (id: string) => void,
+  onSplitAtCursor?: (id: string, cursorPos: number) => void,
+}) => {
+  const text = t.editedText || t.originalText;
+  return (
+    <div
+      draggable
+      onDragStart={(e) => onDragStart(e, text)}
+      onClick={() => onSelect(t.id, t.startTime)}
+      className={`group p-3 rounded-xl border transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] ${isActive
+        ? 'bg-primary/10 border-primary/50 shadow-lg shadow-primary/10'
+        : 'bg-white/5 border-white/5 hover:bg-white/10 hover:border-white/10'
+        }`}
+    >
+      <div className="flex items-start gap-3">
+        <div className={`mt-1 h-2 w-2 rounded-full shrink-0 transition-all ${isActive ? 'bg-primary shadow-[0_0_8px_rgba(0,212,212,0.6)] animate-pulse' : 'bg-gray-700'}`} />
+        <div className="flex-1 min-w-0">
+          {isSelected ? (
+            <textarea
+              rows={2}
+              value={text}
+              onChange={(e) => onEdit(t.id, e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === 'Backspace' && onMergeWithPrevious) {
+                  const ta = e.currentTarget;
+                  if (ta.selectionStart === 0 && ta.selectionEnd === 0) {
+                    e.preventDefault();
+                    onMergeWithPrevious(t.id);
+                  }
+                }
+                if (e.key === 'Enter' && !e.shiftKey && onSplitAtCursor) {
+                  e.preventDefault();
+                  const pos = e.currentTarget.selectionStart ?? text.length;
+                  if (pos > 0 && pos < text.length) {
+                    onSplitAtCursor(t.id, pos);
+                  }
+                }
+              }}
+              className="w-full bg-black/40 border border-primary/30 rounded-md text-xs text-white px-2 py-1.5 focus:outline-none focus:border-primary transition-all resize-none"
+            />
+          ) : (
+            <p className={`text-[13px] leading-relaxed ${isActive ? 'text-white font-medium' : 'text-gray-300'}`}>{text}</p>
+          )}
+          <div className={`mt-1 flex items-center gap-1.5 transition-opacity ${isSelected || isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+            <span className="text-[9px] text-gray-500 font-mono tracking-tighter">
+              {fmtTimestamp(t.startTime)}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const RightSidebar = React.memo(({
+  transcripts = [], subtitles = [], currentTime = 0, selectedClip = null, selectedClipIds = [], videoFile = null, clips = [],
+  onTranscriptsUpdate, onSubtitlesUpdate, onSeek, onClipUpdate, onClipsBatchUpdate, onAddSubtitleClips, onAddTextClip, onExport,
+}: RightSidebarProps) => {
   const [activeTab, setActiveTab] = useState<'details' | 'export' | 'caption'>('details');
   const [scale, setScale] = useState(selectedClip?.scale ?? 100);
   const [positionX, setPositionX] = useState(selectedClip?.positionX ?? 0);
@@ -45,6 +109,9 @@ export default function RightSidebar({
   const [isGeminiGenerating, setIsGeminiGenerating] = useState(false);
   const [geminiProgress, setGeminiProgress] = useState(0);
   const [geminiStatus, setGeminiStatus] = useState('');
+  const [isIntegratedGenerating, setIsIntegratedGenerating] = useState(false);
+  const [integratedProgress, setIntegratedProgress] = useState(0);
+  const [integratedStatus, setIntegratedStatus] = useState('');
 
   useEffect(() => {
     if (selectedClip) {
@@ -58,12 +125,25 @@ export default function RightSidebar({
   }, [selectedClip]);
 
   const updateProp = useCallback((prop: keyof VideoClip, value: any) => {
-    if (selectedClip && onClipUpdate) onClipUpdate(selectedClip.id, { [prop]: value });
-  }, [selectedClip, onClipUpdate]);
+    if (selectedClipIds.length > 0 && onClipUpdate) {
+      selectedClipIds.forEach(id => {
+        onClipUpdate(id, { [prop]: value });
+      });
+    } else if (selectedClip && onClipUpdate) {
+      // Fallback in case selectedClipIds is not passed
+      onClipUpdate(selectedClip.id, { [prop]: value });
+    }
+  }, [selectedClip, selectedClipIds, onClipUpdate]);
 
   // Caption states
   const [captionTab, setCaptionTab] = useState<'caption' | 'text' | 'animation' | 'tracking' | 'tts'>('caption');
   const [searchQuery, setSearchQuery] = useState('');
+  const [replaceQuery, setReplaceQuery] = useState('');
+  const [showReplace, setShowReplace] = useState(false);
+  const [applyToAllOnTrack, setApplyToAllOnTrack] = useState(true);
+  const [customPresets, setCustomPresets] = useState<SubtitlePreset[]>(() => loadCustomPresets());
+  const [showSavePreset, setShowSavePreset] = useState(false);
+  const [newPresetName, setNewPresetName] = useState('');
   const [selectedTranscriptId, setSelectedTranscriptId] = useState<string | null>(null);
   const [userScript, setUserScript] = useState('');
   const [aiScript, setAiScript] = useState('');
@@ -71,6 +151,7 @@ export default function RightSidebar({
   const [transcriptionProgress, setTranscriptionProgress] = useState(0);
   const [transcriptionStatus, setTranscriptionStatus] = useState('');
   const transcriptionAbortController = useRef<AbortController | null>(null);
+  const geminiAbortController = useRef<AbortController | null>(null);
   const scriptTextareaRef = useRef<HTMLTextAreaElement>(null);
   const subtitleFileRef = useRef<HTMLInputElement>(null);
 
@@ -81,11 +162,47 @@ export default function RightSidebar({
   const [pipelineStatus, setPipelineStatus] = useState('');
   const processedFileRef = useRef<string | null>(null);
 
-  const filteredTranscripts = transcripts.filter((t) =>
-    (t.editedText || t.originalText).toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // === 트림된 클립 범위에 맞게 분석 결과 필터링/리매핑 ===
+  // 미디어 시간(원본 영상 기준) → 타임라인 시간으로 변환
+  const filterResultsToClipRanges = useCallback(<T extends { startTime: number; endTime: number }>(
+    items: T[],
+  ): T[] => {
+    // 메인 트랙(1) 영상 클립만 가져오기
+    const mainClips = (clips || []).filter(c => c.trackIndex === 1).sort((a, b) => a.startTime - b.startTime);
+    if (mainClips.length === 0) return items;
+
+    const filtered: T[] = [];
+    for (const item of items) {
+      for (const clip of mainClips) {
+        const mediaStart = clip.trimStart ?? 0;
+        const mediaEnd = mediaStart + clip.duration;
+
+        // 아이템이 이 클립의 미디어 범위 안에 있는지 확인
+        if (item.startTime >= mediaStart && item.startTime < mediaEnd) {
+          // 미디어 시간 → 타임라인 시간으로 변환
+          const timelineStart = clip.startTime + (item.startTime - mediaStart);
+          const timelineEnd = Math.min(
+            clip.startTime + clip.duration,
+            clip.startTime + (item.endTime - mediaStart),
+          );
+          if (timelineEnd > timelineStart) {
+            filtered.push({ ...item, startTime: timelineStart, endTime: timelineEnd });
+          }
+          break;
+        }
+      }
+    }
+    return filtered;
+  }, [clips]);
+
 
   // Handle SRT/ASS file import
+  // Stabilized callbacks for TranscriptItem performance
+  const handleTranscriptSelect = useCallback((id: string, start: number) => {
+    setSelectedTranscriptId(id);
+    onSeek?.(start);
+  }, [onSeek]);
+
   const handleSubtitleFileImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     for (const file of files) {
@@ -103,6 +220,56 @@ export default function RightSidebar({
   const handleTranscriptEdit = useCallback((id: string, newText: string) => {
     const updated = transcripts.map(t => t.id === id ? { ...t, editedText: newText, isEdited: true } : t);
     onTranscriptsUpdate?.(updated);
+  }, [transcripts, onTranscriptsUpdate]);
+
+  const handleMergeWithPrevious = useCallback((id: string) => {
+    const idx = transcripts.findIndex(t => t.id === id);
+    if (idx <= 0) return;
+    const prev = transcripts[idx - 1];
+    const cur = transcripts[idx];
+    const mergedText = (prev.editedText || prev.originalText) + ' ' + (cur.editedText || cur.originalText);
+    const merged: TranscriptItem = {
+      ...prev,
+      editedText: mergedText,
+      isEdited: true,
+      endTime: Math.max(prev.endTime, cur.endTime),
+    };
+    const updated = transcripts.filter((_, i) => i !== idx).map(t => t.id === prev.id ? merged : t);
+    onTranscriptsUpdate?.(updated);
+    setSelectedTranscriptId(prev.id);
+  }, [transcripts, onTranscriptsUpdate]);
+
+  const handleSplitAtCursor = useCallback((id: string, cursorPos: number) => {
+    const idx = transcripts.findIndex(t => t.id === id);
+    if (idx < 0) return;
+    const cur = transcripts[idx];
+    const text = cur.editedText || cur.originalText;
+    const textBefore = text.slice(0, cursorPos).trim();
+    const textAfter = text.slice(cursorPos).trim();
+    if (!textBefore || !textAfter) return;
+
+    // Split time proportionally by text length
+    const ratio = textBefore.length / text.length;
+    const midTime = cur.startTime + (cur.endTime - cur.startTime) * ratio;
+
+    const first: TranscriptItem = {
+      ...cur,
+      editedText: textBefore,
+      isEdited: true,
+      endTime: midTime,
+    };
+    const second: TranscriptItem = {
+      ...cur,
+      id: `${cur.id}_split_${Date.now()}`,
+      editedText: textAfter,
+      originalText: textAfter,
+      isEdited: true,
+      startTime: midTime,
+    };
+    const updated = [...transcripts];
+    updated.splice(idx, 1, first, second);
+    onTranscriptsUpdate?.(updated);
+    setSelectedTranscriptId(second.id);
   }, [transcripts, onTranscriptsUpdate]);
 
   const handleAutoTranscribe = useCallback(async () => {
@@ -131,7 +298,17 @@ export default function RightSidebar({
         } else seg.words.push(word);
       }
       if (seg) newT.push({ id: `t_${Date.now()}_${newT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
-      onTranscriptsUpdate?.([...transcripts, ...newT]);
+
+      // 트림된 클립 범위에 맞게 필터링 (잘라낸 부분 제외)
+      const mappedT = filterResultsToClipRanges(newT);
+      const finalT = mappedT.length > 0 ? mappedT : newT; // 클립이 없으면 원본 사용
+      onTranscriptsUpdate?.([...transcripts, ...finalT]);
+
+      // Auto-add to timeline (Dialogue -> Track 0)
+      if (onAddSubtitleClips && finalT.length > 0) {
+        onAddSubtitleClips(finalT, 0);
+      }
+
       setTranscriptionStatus('완료!');
       setTimeout(() => { setIsTranscribing(false); setTranscriptionProgress(0); setTranscriptionStatus(''); }, 2000);
     } catch (error: any) {
@@ -142,35 +319,89 @@ export default function RightSidebar({
       }
       setIsTranscribing(false); setTranscriptionProgress(0); setTranscriptionStatus('');
     }
-  }, [videoFile, transcripts, onTranscriptsUpdate]);
+  }, [videoFile, transcripts, onTranscriptsUpdate, filterResultsToClipRanges]);
 
   const handleCancelTranscription = useCallback(() => {
     transcriptionAbortController.current?.abort();
     setIsTranscribing(false); setTranscriptionProgress(0); setTranscriptionStatus('');
   }, []);
 
-  // Gemini Audio-based subtitle generation
+  const handleCancelGemini = useCallback(() => {
+    geminiAbortController.current?.abort();
+    setIsGeminiGenerating(false); setGeminiProgress(0); setGeminiStatus('');
+  }, []);
+
+  // Gemini Audio-based subtitle generation (creative mode if transcripts exist)
   const handleGeminiAudioGenerate = useCallback(async () => {
     if (!videoFile) { alert('비디오 파일이 필요합니다.'); return; }
 
+    geminiAbortController.current = new AbortController();
     setIsGeminiGenerating(true); setGeminiProgress(0); setGeminiStatus('시작...');
+
+    // If transcripts exist, use creative mode (don't clear them)
+    const hasTranscripts = transcripts.length > 0;
+    if (!hasTranscripts) {
+      onTranscriptsUpdate?.([]);
+    }
+    onSubtitlesUpdate?.([]);
+
     try {
-      // The API key is now handled backend-side. Just pass an empty string or dummy.
-      const results = await generateSubtitlesFromAudio(videoFile, 'backend-proxy', (pct, msg) => {
+      const options = hasTranscripts
+        ? {
+            mode: 'creative' as const,
+            transcriptData: transcripts.map(t => ({
+              startTime: t.startTime,
+              endTime: t.endTime,
+              text: t.editedText || t.originalText,
+            })),
+          }
+        : undefined;
+
+      const rawResults = await generateSubtitlesFromAudio(videoFile, 'backend-proxy', (pct, msg) => {
         setGeminiProgress(pct);
         setGeminiStatus(msg);
+      }, geminiAbortController.current.signal, options);
+
+      // 트림된 클립 범위에 맞게 필터링 (잘라낸 구간 제외)
+      const mappedResults = filterResultsToClipRanges(
+        rawResults.map(r => ({ ...r, startTime: r.start_time, endTime: r.end_time }))
+      );
+      const results = mappedResults.length > 0
+        ? mappedResults.map(r => ({ ...r, start_time: r.startTime, end_time: r.endTime }))
+        : rawResults;
+
+      // Separate by type with colors
+      const entertainmentItems: TranscriptItem[] = [];
+      const situationItems: TranscriptItem[] = [];
+      const explanationItems: TranscriptItem[] = [];
+
+      results.forEach((r, i) => {
+        const base: TranscriptItem = {
+          id: `gem_${Date.now()}_${i}`,
+          startTime: r.start_time,
+          endTime: r.end_time,
+          originalText: r.text,
+          editedText: r.text,
+          isEdited: false,
+          color: '#FFFFFF',
+          strokeColor: '#000000',
+        };
+        if (r.style_type === '예능자막') {
+          entertainmentItems.push({ ...base, color: '#FFD700' });
+        } else if (r.style_type === '상황자막') {
+          situationItems.push({ ...base, color: '#A8E6CF' });
+        } else if (r.style_type === '설명자막') {
+          explanationItems.push({ ...base, color: '#00BFFF' });
+        } else {
+          situationItems.push({ ...base, color: '#A8E6CF' });
+        }
       });
-      // Convert to transcripts with style info
-      const newT: TranscriptItem[] = results.map((r, i) => ({
-        id: `gem_${Date.now()}_${i}`,
-        startTime: r.start_time,
-        endTime: r.end_time,
-        originalText: r.text,
-        editedText: r.text,
-        isEdited: false,
-      }));
-      onTranscriptsUpdate?.([...transcripts, ...newT]);
-      // Also create subtitle items with style
+
+      const allNewT = [...entertainmentItems, ...situationItems, ...explanationItems];
+      // Remove transcript segments that overlap with AI subtitles
+      const filteredTranscripts = hasTranscripts ? removeOverlappingTranscripts(transcripts, allNewT) : [];
+      onTranscriptsUpdate?.([...filteredTranscripts, ...allNewT]);
+
       const newSubs: SubtitleItem[] = results.map((r, i) => ({
         id: `gemsub_${Date.now()}_${i}`,
         startTime: r.start_time,
@@ -179,127 +410,224 @@ export default function RightSidebar({
         type: r.style_type === '예능자막' ? 'ENTERTAINMENT' as const : r.style_type === '설명자막' ? 'EXPLANATION' as const : 'SITUATION' as const,
         confidence: 0.9,
       }));
-      onSubtitlesUpdate?.([...subtitles, ...newSubs]);
+      onSubtitlesUpdate?.(newSubs);
       setAiScript(results.map(r => `[${r.style_type}] ${r.text}`).join('\n'));
+
+      // Add to timeline — each type on its own track (replace existing)
+      if (onAddSubtitleClips) {
+        // Replace dialogue track (0) with filtered transcripts (non-overlapping with AI)
+        if (hasTranscripts && filteredTranscripts.length > 0) {
+          onAddSubtitleClips(filteredTranscripts, 0, true);
+        }
+        if (entertainmentItems.length > 0) onAddSubtitleClips(entertainmentItems, 5, true);
+        if (situationItems.length > 0) onAddSubtitleClips(situationItems, 6, true);
+        if (explanationItems.length > 0) onAddSubtitleClips(explanationItems, 7, true);
+      }
+
       setGeminiStatus('완료!');
       setTimeout(() => { setIsGeminiGenerating(false); setGeminiProgress(0); setGeminiStatus(''); }, 2000);
     } catch (err: any) {
-      if (err.message === 'PAYMENT_REQUIRED') {
+      if (err.name === 'AbortError') {
+        // Ignored
+      } else if (err.message === 'PAYMENT_REQUIRED') {
         setShowPaymentModal(true);
       } else {
-        alert(err.message || '자막 생성에 실패했습니다.');
+        const is503 = err.message.includes('503') || err.message.toLowerCase().includes('high demand') || err.message.toLowerCase().includes('service unavailable');
+        if (is503) {
+          alert('현재 Gemini AI 서버에 사용자가 많아 잠시 서비스가 지연되고 있습니다. 잠시 후 다시 시도해 주세요.');
+        } else {
+          alert(err.message || '자막 생성에 실패했습니다.');
+        }
       }
       setIsGeminiGenerating(false); setGeminiProgress(0); setGeminiStatus('');
     }
-  }, [videoFile, transcripts, subtitles, onTranscriptsUpdate, onSubtitlesUpdate]);
+  }, [videoFile, transcripts, subtitles, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges]);
 
-  // === AUTO PIPELINE: Triggers when videoFile changes ===
-  useEffect(() => {
-    if (!videoFile) return;
-    // Prevent re-running for the same file
-    const fileKey = `${videoFile.name}_${videoFile.size}_${videoFile.lastModified}`;
-    if (processedFileRef.current === fileKey) return;
-    processedFileRef.current = fileKey;
+  const filteredTranscripts = React.useMemo(() => {
+    if (!searchQuery) return transcripts;
+    return transcripts.filter(t => 
+      (t.editedText || t.originalText).toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [transcripts, searchQuery]);
 
-    const runPipeline = async () => {
-      setPipelineActive(true);
-      setPipelineStep('stt');
-      setPipelineProgress(0);
-      setPipelineStatus('🎤 음성 인식 준비 중...');
+  const activeTranscriptIndex = React.useMemo(() => {
+    return transcripts.findIndex((t, i) => 
+      currentTime >= t.startTime && currentTime < (transcripts[i + 1]?.startTime || Infinity)
+    );
+  }, [transcripts, currentTime]);
 
-      // Step 1: STT (Whisper)
-      try {
-        // Backend key approach, but we need dummy for signature
-        const result = await transcribeVideo(videoFile, 'backend-proxy', (status) => {
-          setPipelineStatus(`🎤 ${status}`);
-          if (status.includes('오디오 추출')) setPipelineProgress(10);
-          else if (status.includes('파일 처리')) setPipelineProgress(20);
-          else if (status.includes('음성 인식')) {
-            const m = status.match(/(\d+)\/(\d+)/);
-            if (m) setPipelineProgress(20 + (parseInt(m[1]) / parseInt(m[2])) * 25);
-          }
-          else if (status.includes('완료')) setPipelineProgress(45);
-        });
+  // Integrated Generation (STT + Gemini)
+  const handleIntegratedGenerate = useCallback(async () => {
+    if (!videoFile) { alert('비디오 파일이 필요합니다.'); return; }
 
-        const newT: TranscriptItem[] = [];
-        let seg: { words: typeof result.words; startTime: number } | null = null;
-        for (const word of result.words) {
-          if (!seg || word.startTime - seg.startTime >= 3) {
-            if (seg) {
-              newT.push({ id: `t_${Date.now()}_${newT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
-            }
-            seg = { words: [word], startTime: word.startTime };
-          } else seg.words.push(word);
+    setIsIntegratedGenerating(true);
+    setIntegratedProgress(0);
+    setIntegratedStatus('통합 분석 시작...');
+
+    // Clear existing
+    onTranscriptsUpdate?.([]);
+    onSubtitlesUpdate?.([]);
+
+    try {
+      // Step 1: Execute STT (Dialogue)
+      setIntegratedStatus('음성 분석 중...');
+      const sttResult = await transcribeVideo(videoFile, 'backend-proxy', (status) => {
+        setIntegratedStatus(`대본 생성 중: ${status}`);
+        // Approximate STT to be 0-50% of the total progress
+        if (status.includes('음성 인식')) {
+          const m = status.match(/(\d+)\/(\d+)/);
+          if (m) setIntegratedProgress(10 + (parseInt(m[1]) / parseInt(m[2])) * 30);
         }
-        if (seg) newT.push({ id: `t_${Date.now()}_${newT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
-        onTranscriptsUpdate?.(newT);
-      } catch (err: any) {
-        if (err.message === 'PAYMENT_REQUIRED') setShowPaymentModal(true);
-        console.warn('[Auto Pipeline] STT 단계 건너뜀:', err);
+      });
+
+      const sttT: TranscriptItem[] = [];
+      let seg: { words: typeof sttResult.words; startTime: number } | null = null;
+      for (const word of sttResult.words) {
+        if (!seg || word.startTime - seg.startTime >= 3) {
+          if (seg) {
+            sttT.push({ id: `stt_${Date.now()}_${sttT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
+          }
+          seg = { words: [word], startTime: word.startTime };
+        } else seg.words.push(word);
       }
+      if (seg) sttT.push({ id: `stt_${Date.now()}_${sttT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
 
-      // Step 2: AI Subtitle Generation (Gemini)
-      setPipelineStep('ai');
-      setPipelineProgress(50);
-      setPipelineStatus('🤖 AI 자막 생성 중...');
+      // 트림된 클립 범위에 맞게 STT 결과 필터링
+      const mappedSttT = filterResultsToClipRanges(sttT);
+      const filteredSttT_pre = mappedSttT.length > 0 ? mappedSttT : sttT;
 
-      try {
-        const results = await generateSubtitlesFromAudio(videoFile, 'backend-proxy', (pct, msg) => {
-          setPipelineProgress(50 + (pct / 2));
-          setPipelineStatus(`🤖 ${msg}`);
-        });
+      setIntegratedProgress(50);
+      setIntegratedStatus('AI 연출 자막 생성 중...');
 
-        const newT: TranscriptItem[] = results.map((r, i) => ({
-          id: `gem_${Date.now()}_${i}`,
+      // Step 2: Execute Gemini in "creative" mode — pass transcript so it won't duplicate
+      const transcriptForAI: TranscriptDataForAI[] = filteredSttT_pre.map(t => ({
+        startTime: t.startTime,
+        endTime: t.endTime,
+        text: t.editedText || t.originalText,
+      }));
+
+      const rawGeminiResults = await generateSubtitlesFromAudio(videoFile, 'backend-proxy', (pct, msg) => {
+        setIntegratedStatus(`AI 연출 중: ${msg}`);
+        setIntegratedProgress(50 + (pct * 0.5));
+      }, undefined, { mode: 'creative', transcriptData: transcriptForAI });
+
+      // 트림된 클립 범위에 맞게 Gemini 결과 필터링
+      const mappedGemini = filterResultsToClipRanges(
+        rawGeminiResults.map(r => ({ ...r, startTime: r.start_time, endTime: r.end_time }))
+      );
+      const geminiResults = mappedGemini.length > 0
+        ? mappedGemini.map(r => ({ ...r, start_time: r.startTime, end_time: r.endTime }))
+        : rawGeminiResults;
+
+      // Separate by style_type and assign colors + tracks
+      const entertainmentItems: TranscriptItem[] = [];
+      const situationItems: TranscriptItem[] = [];
+      const explanationItems: TranscriptItem[] = [];
+
+      geminiResults.forEach((r, i) => {
+        const base: TranscriptItem = {
+          id: `intgem_${Date.now()}_${i}`,
           startTime: r.start_time,
           endTime: r.end_time,
           originalText: r.text,
           editedText: r.text,
           isEdited: false,
-        }));
-        // Merge with existing transcripts from STT step
-        onTranscriptsUpdate?.(newT);
-
-        const newSubs: SubtitleItem[] = results.map((r, i) => ({
-          id: `gemsub_${Date.now()}_${i}`,
-          startTime: r.start_time,
-          endTime: r.end_time,
-          text: r.text,
-          type: r.style_type === '예능자막' ? 'ENTERTAINMENT' as const : r.style_type === '설명자막' ? 'EXPLANATION' as const : 'SITUATION' as const,
-          confidence: 0.9,
-        }));
-        onSubtitlesUpdate?.([...subtitles, ...newSubs]);
-        setAiScript(results.map(r => `[${r.style_type}] ${r.text}`).join('\n'));
-
-        // Auto-add to timeline
-        if (onAddSubtitleClips && newT.length > 0) {
-          onAddSubtitleClips(newT);
+          color: '#FFFFFF',
+          strokeColor: '#000000',
+        };
+        if (r.style_type === '예능자막') {
+          entertainmentItems.push({ ...base, color: '#FFD700' });
+        } else if (r.style_type === '상황자막') {
+          situationItems.push({ ...base, color: '#A8E6CF' });
+        } else if (r.style_type === '설명자막') {
+          explanationItems.push({ ...base, color: '#00BFFF' });
+        } else {
+          situationItems.push({ ...base, color: '#A8E6CF' });
         }
-      } catch (err: any) {
-        if (err.message === 'PAYMENT_REQUIRED') setShowPaymentModal(true);
-        console.warn('[Auto Pipeline] AI 자막 단계 건너뜀:', err);
+      });
+
+      const allGeminiT = [...entertainmentItems, ...situationItems, ...explanationItems];
+
+      // Remove transcript segments that overlap with AI subtitles
+      const filteredSttT = removeOverlappingTranscripts(filteredSttT_pre, allGeminiT);
+
+      const geminiSubs: SubtitleItem[] = geminiResults.map((r, i) => ({
+        id: `intsub_${Date.now()}_${i}`,
+        startTime: r.start_time,
+        endTime: r.end_time,
+        text: r.text,
+        type: r.style_type === '예능자막' ? 'ENTERTAINMENT' as const : r.style_type === '설명자막' ? 'EXPLANATION' as const : 'SITUATION' as const,
+        confidence: 0.9,
+      }));
+
+      // Combine and update
+      onTranscriptsUpdate?.([...filteredSttT, ...allGeminiT]);
+      onSubtitlesUpdate?.(geminiSubs);
+
+      // Add to timeline — each type on its own track (replace existing)
+      if (onAddSubtitleClips) {
+        onAddSubtitleClips(filteredSttT, 0, true);                                     // Track 0: 대본 (replace)
+        if (entertainmentItems.length > 0) onAddSubtitleClips(entertainmentItems, 5, true);
+        if (situationItems.length > 0) onAddSubtitleClips(situationItems, 6, true);
+        if (explanationItems.length > 0) onAddSubtitleClips(explanationItems, 7, true);
       }
 
-      setPipelineStep('done');
-      setPipelineProgress(100);
-      setPipelineStatus('✅ 자동 자막 생성 완료!');
+      setIntegratedStatus('모든 자막 생성 완료!');
+      setIntegratedProgress(100);
       setTimeout(() => {
-        setPipelineActive(false);
-        setPipelineStep('idle');
-        setPipelineProgress(0);
-        setPipelineStatus('');
-      }, 3000);
-    };
+        setIsIntegratedGenerating(false);
+        setIntegratedProgress(0);
+        setIntegratedStatus('');
+      }, 2000);
 
-    runPipeline();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoFile]);
+    } catch (err: any) {
+      if (err.message === 'PAYMENT_REQUIRED') setShowPaymentModal(true);
+      else alert(err.message || '통합 자막 생성 실패');
+      setIsIntegratedGenerating(false);
+      setIntegratedProgress(0);
+      setIntegratedStatus('');
+    }
+  }, [videoFile, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges]);
 
-  // Preset click handler — creates text clip at center of canvas
+  // Auto Pipeline feature removed so STT does not run automatically on video load
+
+  // Preset click handler — applies style to clips
   const handlePresetClick = (preset: SubtitlePreset) => {
     setSelectedPresetId(preset.id);
-    if (preset.id !== 0 && onAddTextClip) {
-      onAddTextClip(preset);
+
+    const styleUpdate: Partial<VideoClip> = {
+      color: preset.color,
+      backgroundColor: preset.backgroundColor,
+      strokeColor: preset.strokeColor,
+      strokeWidth: preset.strokeWidth,
+      shadowColor: preset.shadowColor,
+      shadowBlur: preset.shadowBlur,
+      shadowOffsetX: preset.shadowOffsetX,
+      shadowOffsetY: preset.shadowOffsetY,
+      glowColor: preset.glowColor,
+      borderColor: preset.borderColor,
+      borderWidth: preset.borderWidth,
+      fontWeight: preset.fontWeight,
+      fontFamily: preset.fontFamily,
+      fontStyle: preset.fontStyle,
+      textDecoration: preset.textDecoration,
+    };
+
+    const selectedSubtitleClips = clips.filter(c => selectedClipIds.includes(c.id));
+
+    if (selectedSubtitleClips.length > 0 && onClipsBatchUpdate) {
+      if (applyToAllOnTrack) {
+        const trackIndices = new Set(selectedSubtitleClips.map(c => c.trackIndex));
+        const targetIds = clips.filter(c => trackIndices.has(c.trackIndex)).map(c => c.id);
+        onClipsBatchUpdate(targetIds, styleUpdate);
+      } else {
+        onClipsBatchUpdate(selectedSubtitleClips.map(c => c.id), styleUpdate);
+      }
+    } else if (selectedSubtitleClips.length > 0 && onClipUpdate) {
+      // Fallback to individual updates
+      selectedSubtitleClips.forEach(clip => {
+        onClipUpdate(clip.id, styleUpdate);
+      });
     }
   };
 
@@ -309,43 +637,14 @@ export default function RightSidebar({
     e.dataTransfer.effectAllowed = 'copy';
   };
 
+  const handleTranscriptDragStart = (e: React.DragEvent, text: string) => {
+    e.dataTransfer.setData('application/subtitle-item', JSON.stringify({ text }));
+    e.dataTransfer.effectAllowed = 'copy';
+  };
+
   return (
     <aside className="w-full h-full bg-panel-bg border-l border-border-color flex flex-col overflow-hidden">
-      {/* Auto Pipeline Progress Overlay */}
-      {pipelineActive && (
-        <div className="bg-gradient-to-r from-blue-900/80 to-cyan-900/80 border-b border-cyan-500/30 px-3 py-2.5 animate-pulse-subtle">
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[10px] font-semibold text-white flex items-center gap-1">
-              <span className="material-icons text-sm text-cyan-400 animate-spin">autorenew</span>
-              자동 자막 파이프라인
-            </span>
-            <span className="text-[10px] text-cyan-300 font-mono">{Math.round(pipelineProgress)}%</span>
-          </div>
-          <div className="w-full h-2 bg-black/30 rounded-full overflow-hidden mb-1">
-            <div
-              className="h-full rounded-full transition-all duration-500 ease-out"
-              style={{
-                width: `${pipelineProgress}%`,
-                background: pipelineStep === 'stt'
-                  ? 'linear-gradient(90deg, #3B82F6, #2563EB)'
-                  : pipelineStep === 'ai'
-                    ? 'linear-gradient(90deg, #06B6D4, #0891B2)'
-                    : 'linear-gradient(90deg, #10B981, #059669)',
-              }}
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-[9px] text-gray-300">{pipelineStatus}</span>
-            <div className="flex gap-1">
-              {['stt', 'ai', 'done'].map((step, i) => (
-                <div key={step} className={`w-1.5 h-1.5 rounded-full transition-all ${pipelineStep === step ? 'bg-cyan-400 scale-125' :
-                  ['stt', 'ai', 'done'].indexOf(pipelineStep) > i ? 'bg-green-400' : 'bg-gray-600'
-                  }`} />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+
 
       {/* Tabs */}
       <div className="flex border-b border-border-color">
@@ -385,128 +684,373 @@ export default function RightSidebar({
             {captionTab === 'caption' && (
               <div className="flex flex-col flex-1 overflow-hidden">
                 <div className="p-2 border-b border-border-color space-y-2">
-                  <div className="relative">
-                    <span className="material-icons absolute left-2 top-1/2 -translate-y-1/2 text-text-secondary text-xs">search</span>
-                    <input type="text" placeholder="검색" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full pl-7 pr-2 py-1.5 bg-black/30 border border-border-color rounded text-xs text-white placeholder-text-secondary focus:outline-none focus:border-primary" />
+                  <div className="flex items-center gap-1">
+                    <div className="relative flex-1">
+                      <span className="material-icons absolute left-2 top-1/2 -translate-y-1/2 text-text-secondary text-xs">search</span>
+                      <input type="text" placeholder="검색" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full pl-7 pr-2 py-1.5 bg-black/30 border border-border-color rounded text-xs text-white placeholder-text-secondary focus:outline-none focus:border-primary" />
+                    </div>
+                    <button onClick={() => setShowReplace(!showReplace)} title="찾기 및 바꾸기"
+                      className={`p-1.5 rounded text-xs ${showReplace ? 'bg-primary text-white' : 'bg-black/30 text-text-secondary hover:text-white'}`}>
+                      <span className="material-icons text-xs">find_replace</span>
+                    </button>
                   </div>
+                  {showReplace && searchQuery && (
+                    <div className="flex items-center gap-1">
+                      <input type="text" placeholder="변환할 텍스트" value={replaceQuery} onChange={(e) => setReplaceQuery(e.target.value)}
+                        className="flex-1 px-2 py-1.5 bg-black/30 border border-border-color rounded text-xs text-white placeholder-text-secondary focus:outline-none focus:border-primary" />
+                      <button onClick={() => {
+                        if (!searchQuery || !replaceQuery) return;
+                        const updated = transcripts.map(t => {
+                          const text = t.editedText || t.originalText;
+                          if (!text.includes(searchQuery)) return t;
+                          return { ...t, editedText: text.replaceAll(searchQuery, replaceQuery), originalText: t.originalText };
+                        });
+                        onTranscriptsUpdate?.(updated);
+                        // Also update matching clips
+                        if (clips && onClipUpdate) {
+                          clips.forEach(c => {
+                            if (c.name.includes(searchQuery)) {
+                              onClipUpdate(c.id, { name: c.name.replaceAll(searchQuery, replaceQuery) });
+                            }
+                          });
+                        }
+                      }} className="px-2 py-1.5 bg-primary hover:bg-primary/80 text-white rounded text-xs whitespace-nowrap">
+                        전체 변환
+                      </button>
+                    </div>
+                  )}
                   {/* SRT/ASS Import (hidden, triggered from LeftSidebar import button) */}
                   <input ref={subtitleFileRef} type="file" accept=".srt,.ass,.ssa" className="hidden" onChange={handleSubtitleFileImport} />
                 </div>
-                <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                  {filteredTranscripts.map((t, i) => {
-                    const isActive = currentTime >= t.startTime && currentTime < t.endTime;
-                    return (
-                      <div key={t.id} onClick={() => { setSelectedTranscriptId(t.id); onSeek?.(t.startTime); }}
-                        className={`flex items-start gap-2 p-1.5 rounded cursor-pointer text-xs ${isActive ? 'bg-primary/20 border border-primary' : selectedTranscriptId === t.id ? 'bg-white/10 border border-white/20' : 'hover:bg-white/5 border border-transparent'} active:scale-[0.98]`}>
-                        <span className="text-[10px] text-text-secondary font-mono min-w-[30px]">{i + 1}</span>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-[9px] text-gray-500 font-mono mb-0.5">
-                            {fmtTimestamp(t.startTime)} → {fmtTimestamp(t.endTime)}
+                <div className="flex-1 flex flex-col min-h-0 relative">
+                {!videoFile ? (
+                  <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-4 pt-12">
+                    <div className="w-16 h-16 rounded-full bg-gray-800/50 flex items-center justify-center">
+                      <span className="material-icons text-3xl text-gray-600">movie_filter</span>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-gray-400">영상을 먼저 추가해주세요</p>
+                      <p className="text-[11px] text-gray-500">대본을 생성하거나 분석하려면<br />편집할 영상 파일이 필요합니다.</p>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3 custom-scrollbar">
+                      {filteredTranscripts.map((t, i) => (
+                        <TranscriptItem
+                          key={t.id}
+                          t={t}
+                          isActive={activeTranscriptIndex === i}
+                          isSelected={selectedTranscriptId === t.id}
+                          onSelect={handleTranscriptSelect}
+                          onEdit={handleTranscriptEdit}
+                          onDragStart={handleTranscriptDragStart}
+                          onMergeWithPrevious={handleMergeWithPrevious}
+                          onSplitAtCursor={handleSplitAtCursor}
+                        />
+                      ))}
+                      {filteredTranscripts.length === 0 && <div className="text-center py-12 text-text-secondary text-xs opacity-50">{searchQuery ? '검색 결과 없음' : '대본을 생성하거나 불러와주세요'}</div>}
+                    </div>
+                    <div className="border-t border-border-color flex flex-col" style={{ height: '40%' }}>
+                      <div className="p-2 border-b border-border-color bg-panel-bg space-y-2">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-xs font-semibold">대본 Settings</h3>
+                        </div>
+
+                        {/* Master Integrated AI Button */}
+                        <button onClick={handleIntegratedGenerate} disabled={isIntegratedGenerating || isTranscribing || isGeminiGenerating || !videoFile}
+                          className={`w-full flex flex-col items-center justify-center p-3 rounded-xl text-xs font-bold transition-all active:scale-95 shadow-lg relative overflow-hidden group ${isIntegratedGenerating || !videoFile
+                            ? 'bg-gray-800 text-gray-600 cursor-not-allowed'
+                            : 'bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 text-white hover:shadow-purple-500/40 hover:brightness-110'
+                            }`}>
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className={`material-icons text-base ${isIntegratedGenerating ? 'animate-spin' : 'animate-pulse'}`}>auto_awesome</span>
+                            <span>통합 AI 자막 마스터</span>
                           </div>
-                          {selectedTranscriptId === t.id ? (
-                            <input
-                              type="text"
-                              value={t.editedText || t.originalText}
-                              onChange={(e) => handleTranscriptEdit(t.id, e.target.value)}
-                              onClick={(e) => e.stopPropagation()}
-                              className="w-full bg-black/30 border border-border-color rounded text-xs text-white px-1 py-0.5 focus:outline-none focus:border-primary"
-                            />
+                          <span className="text-[9px] font-normal opacity-80">대본 + AI 연출 자막을 한번에 생성</span>
+                        </button>
+
+                        {isIntegratedGenerating && (
+                          <div className="space-y-1.5 px-1 py-1">
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-primary font-medium">{integratedStatus}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-white font-mono">{Math.round(integratedProgress)}%</span>
+                                <button onClick={() => { handleCancelTranscription(); handleCancelGemini(); setIsIntegratedGenerating(false); setIntegratedProgress(0); setIntegratedStatus(''); }}
+                                  className="px-1.5 py-0.5 bg-red-500/20 border border-red-500/40 text-red-400 rounded text-[9px] font-semibold hover:bg-red-500/30 active:scale-95">
+                                  취소
+                                </button>
+                              </div>
+                            </div>
+                            <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden border border-white/5">
+                              <div className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 transition-all duration-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]" style={{ width: `${integratedProgress}%` }} />
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex gap-2">
+                          {/* Button 1: 자막대본 자동생성 */}
+                          {isTranscribing ? (
+                            <div className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-[11px] bg-gray-700 shadow-none">
+                              <span className="material-icons text-[12px] animate-spin text-blue-400">refresh</span>
+                              <span className="text-white font-mono">{Math.round(transcriptionProgress)}%</span>
+                              <button onClick={handleCancelTranscription} className="ml-1 px-1.5 py-0.5 bg-red-500/20 border border-red-500/40 text-red-400 rounded text-[9px] font-semibold hover:bg-red-500/30 active:scale-95">취소</button>
+                            </div>
                           ) : (
-                            <span className="text-xs text-white truncate block">{t.editedText || t.originalText}</span>
+                            <button onClick={handleAutoTranscribe} disabled={isIntegratedGenerating || !videoFile}
+                              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-[11px] font-semibold transition-all active:scale-95 shadow-md ${isIntegratedGenerating || !videoFile
+                                ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none'
+                                : 'bg-white/5 border border-white/10 text-white hover:bg-white/10 hover:border-blue-500/50'
+                                }`}>
+                              <span className="text-sm">🎤</span>대본
+                            </button>
+                          )}
+
+                          {/* Button 2: Gemini AI 자막생성 */}
+                          {isGeminiGenerating ? (
+                            <div className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-[11px] bg-gray-700 shadow-none">
+                              <span className="material-icons text-[12px] animate-spin text-cyan-400">refresh</span>
+                              <span className="text-white font-mono">{Math.round(geminiProgress)}%</span>
+                              <button onClick={handleCancelGemini} className="ml-1 px-1.5 py-0.5 bg-red-500/20 border border-red-500/40 text-red-400 rounded text-[9px] font-semibold hover:bg-red-500/30 active:scale-95">취소</button>
+                            </div>
+                          ) : (
+                            <button onClick={handleGeminiAudioGenerate} disabled={isIntegratedGenerating || !videoFile}
+                              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-[11px] font-semibold transition-all active:scale-95 shadow-md ${isIntegratedGenerating || !videoFile
+                                ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none'
+                                : 'bg-white/5 border border-white/10 text-white hover:bg-white/10 hover:border-cyan-500/50'
+                                }`}>
+                              <span className="text-sm">🤖</span>AI 연출
+                            </button>
                           )}
                         </div>
                       </div>
-                    );
-                  })}
-                  {filteredTranscripts.length === 0 && <div className="text-center py-8 text-text-secondary text-xs">{searchQuery ? '검색 결과 없음' : '대본이 없습니다'}</div>}
-                </div>
-                <div className="border-t border-border-color flex flex-col" style={{ height: '40%' }}>
-                  <div className="p-2 border-b border-border-color bg-panel-bg space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-xs font-semibold">대본</h3>
-                    </div>
-                    {/* Button 1: 자막대본 자동생성 */}
-                    <button onClick={handleAutoTranscribe} disabled={isTranscribing || !videoFile}
-                      className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-all active:scale-95 shadow-md ${isTranscribing || !videoFile
-                        ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none'
-                        : 'bg-gradient-to-r from-[#3B82F6] to-[#2563EB] text-white hover:shadow-blue-500/30 hover:brightness-110'
-                        }`}>
-                      {isTranscribing ? (
-                        <><span className="material-icons text-sm animate-spin">refresh</span>{transcriptionStatus || '인식 중...'}</>
-                      ) : (
-                        <><span className="text-base">🎤</span>자막대본 자동생성</>
-                      )}
-                    </button>
-                    {isTranscribing && (
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between text-[10px]">
-                          <span className="text-text-secondary">{transcriptionStatus}</span>
-                          <span className="text-blue-400 font-mono">{Math.round(transcriptionProgress)}%</span>
-                        </div>
-                        <div className="w-full h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                          <div className="h-full bg-gradient-to-r from-[#3B82F6] to-[#2563EB] transition-all duration-300" style={{ width: `${transcriptionProgress}%` }} />
-                        </div>
-                        <button onClick={handleCancelTranscription} className="w-full py-1 text-[10px] text-red-400 hover:text-red-300 hover:bg-red-600/20 rounded transition-all">취소</button>
+                      <div className="flex-1 flex flex-col border-b border-border-color" style={{ height: '50%' }}>
+                        <div className="px-2 py-1 bg-panel-bg border-b border-border-color"><h4 className="text-[10px] font-medium text-text-secondary">내 대본</h4></div>
+                        <textarea ref={scriptTextareaRef} value={userScript} onChange={(e) => setUserScript(e.target.value)} placeholder="대본을 입력하세요..."
+                          className="flex-1 p-2 bg-transparent text-xs text-white placeholder-text-secondary resize-none focus:outline-none" />
                       </div>
-                    )}
-
-                    {/* Button 2: Gemini AI 자막생성 */}
-                    <button onClick={handleGeminiAudioGenerate} disabled={isGeminiGenerating || !videoFile}
-                      className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-all active:scale-95 shadow-md ${isGeminiGenerating || !videoFile
-                        ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none'
-                        : 'bg-gradient-to-r from-[#06B6D4] to-[#0891B2] text-white hover:shadow-cyan-500/30 hover:brightness-110'
-                        }`}>
-                      {isGeminiGenerating ? (
-                        <><span className="material-icons text-sm animate-spin">refresh</span>{geminiStatus || '생성 중...'}</>
-                      ) : (
-                        <><span className="text-base">🤖</span>Gemini AI 자막생성</>
-                      )}
-                    </button>
-                    {isGeminiGenerating && (
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between text-[10px]">
-                          <span className="text-text-secondary">{geminiStatus}</span>
-                          <span className="text-cyan-400 font-mono">{geminiProgress}%</span>
+                      <div className="flex-1 flex flex-col" style={{ height: '50%' }}>
+                        <div className="px-2 py-1 bg-panel-bg border-b border-border-color">
+                          <h4 className="text-[10px] font-medium text-text-secondary flex items-center gap-1">
+                            <span className="material-icons text-xs text-primary">auto_awesome</span>AI 생성 대본
+                          </h4>
                         </div>
-                        <div className="w-full h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                          <div className="h-full bg-gradient-to-r from-[#06B6D4] to-[#0891B2] transition-all duration-300" style={{ width: `${geminiProgress}%` }} />
+                        <div className="flex-1 p-0 flex flex-col overflow-hidden">
+                          {aiScript ? (
+                            <textarea
+                              value={aiScript}
+                              onChange={(e) => setAiScript(e.target.value)}
+                              className="flex-1 p-2 bg-transparent text-xs text-white placeholder-text-secondary resize-none focus:outline-none"
+                            />
+                          ) : (
+                            <div className="text-text-secondary text-[10px] text-center p-4">AI 자막 생성 버튼을 눌러주세요</div>
+                          )}
                         </div>
                       </div>
-                    )}
-                  </div>
-                  <div className="flex-1 flex flex-col border-b border-border-color" style={{ height: '50%' }}>
-                    <div className="px-2 py-1 bg-panel-bg border-b border-border-color"><h4 className="text-[10px] font-medium text-text-secondary">내 대본</h4></div>
-                    <textarea ref={scriptTextareaRef} value={userScript} onChange={(e) => setUserScript(e.target.value)} placeholder="대본을 입력하세요..."
-                      className="flex-1 p-2 bg-transparent text-xs text-white placeholder-text-secondary resize-none focus:outline-none" />
-                  </div>
-                  <div className="flex-1 flex flex-col" style={{ height: '50%' }}>
-                    <div className="px-2 py-1 bg-panel-bg border-b border-border-color">
-                      <h4 className="text-[10px] font-medium text-text-secondary flex items-center gap-1">
-                        <span className="material-icons text-xs text-primary">auto_awesome</span>AI 생성 대본
-                      </h4>
                     </div>
-                    <div className="flex-1 p-0 flex flex-col overflow-hidden">
-                      {aiScript ? (
-                        <textarea
-                          value={aiScript}
-                          onChange={(e) => setAiScript(e.target.value)}
-                          className="flex-1 p-2 bg-transparent text-xs text-white placeholder-text-secondary resize-none focus:outline-none"
-                        />
-                      ) : (
-                        <div className="text-text-secondary text-[10px] text-center p-4">AI 자막 생성 버튼을 눌러주세요</div>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                  </>
+                )}
               </div>
-            )}
+            </div>
+          )}
 
-            {/* ===== TEXT TAB: Font Style Presets ===== */}
+            {/* ===== TEXT TAB: Font Style Presets + Font Controls ===== */}
             {captionTab === 'text' && (
-              <div className="p-3 space-y-3">
-                <h3 className="text-xs font-semibold text-white">자막 스타일 프리셋</h3>
-                <p className="text-[10px] text-gray-500">클릭하여 추가하거나 프리뷰로 드래그하세요</p>
+              <div className="p-3 space-y-3 overflow-y-auto">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-semibold text-white">자막 스타일</h3>
+                  <label className="flex items-center gap-1 cursor-pointer">
+                    <input type="checkbox" checked={applyToAllOnTrack} onChange={(e) => setApplyToAllOnTrack(e.target.checked)}
+                      className="w-3 h-3 rounded accent-primary cursor-pointer" />
+                    <span className="text-[10px] text-gray-400">모두적용</span>
+                  </label>
+                </div>
+
+                {/* 자막 텍스트 편집 */}
+                {selectedClip && !selectedClip.url && (
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-gray-400">자막 텍스트</label>
+                    <textarea
+                      value={selectedClip.name || ''}
+                      onChange={(e) => onClipUpdate?.(selectedClip.id, { name: e.target.value })}
+                      className="w-full bg-black/50 border border-border-color rounded-md text-xs text-white px-2 py-1.5 resize-none focus:outline-none focus:border-primary"
+                      rows={2}
+                      placeholder="자막을 입력하세요..."
+                    />
+                  </div>
+                )}
+
+                {/* ── 폰트 커스터마이징 ── */}
+                <div className="space-y-2 bg-white/5 rounded-lg p-2.5">
+                  <h4 className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">폰트 설정</h4>
+
+                  {/* 서체 */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-gray-400">서체</label>
+                    <select
+                      value={selectedClip?.fontFamily || 'sans-serif'}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
+                          const ids = applyToAllOnTrack
+                            ? clips.filter(c => { const sc = clips.filter(cc => selectedClipIds.includes(cc.id)); return sc.some(s => s.trackIndex === c.trackIndex); }).map(c => c.id)
+                            : selectedClipIds;
+                          onClipsBatchUpdate(ids, { fontFamily: val });
+                        } else if (selectedClip) onClipUpdate?.(selectedClip.id, { fontFamily: val });
+                      }}
+                      className="w-full bg-black/60 border border-gray-700 rounded text-xs text-white px-2 py-1.5 focus:outline-none focus:border-primary appearance-none cursor-pointer"
+                    >
+                      {FONT_FAMILIES.map(f => (
+                        <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* 색깔 + 배경색 */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-gray-400">글자색</label>
+                      <div className="flex items-center gap-1.5">
+                        <input type="color" value={selectedClip?.color || '#FFFFFF'}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
+                              const ids = applyToAllOnTrack ? clips.filter(c => clips.filter(cc => selectedClipIds.includes(cc.id)).some(s => s.trackIndex === c.trackIndex)).map(c => c.id) : selectedClipIds;
+                              onClipsBatchUpdate(ids, { color: val });
+                            } else if (selectedClip) onClipUpdate?.(selectedClip.id, { color: val });
+                          }}
+                          className="w-7 h-7 rounded border border-gray-600 cursor-pointer bg-transparent p-0"
+                        />
+                        <span className="text-[10px] text-gray-500 font-mono">{selectedClip?.color || '#FFF'}</span>
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-gray-400">배경색</label>
+                      <div className="flex items-center gap-1.5">
+                        <input type="color" value={selectedClip?.backgroundColor && selectedClip.backgroundColor !== 'transparent' ? selectedClip.backgroundColor : '#000000'}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
+                              const ids = applyToAllOnTrack ? clips.filter(c => clips.filter(cc => selectedClipIds.includes(cc.id)).some(s => s.trackIndex === c.trackIndex)).map(c => c.id) : selectedClipIds;
+                              onClipsBatchUpdate(ids, { backgroundColor: val });
+                            } else if (selectedClip) onClipUpdate?.(selectedClip.id, { backgroundColor: val });
+                          }}
+                          className="w-7 h-7 rounded border border-gray-600 cursor-pointer bg-transparent p-0"
+                        />
+                        <button
+                          onClick={() => {
+                            if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
+                              const ids = applyToAllOnTrack ? clips.filter(c => clips.filter(cc => selectedClipIds.includes(cc.id)).some(s => s.trackIndex === c.trackIndex)).map(c => c.id) : selectedClipIds;
+                              onClipsBatchUpdate(ids, { backgroundColor: 'transparent' });
+                            } else if (selectedClip) onClipUpdate?.(selectedClip.id, { backgroundColor: 'transparent' });
+                          }}
+                          className="text-[9px] text-gray-500 hover:text-white transition-colors"
+                          title="배경 투명"
+                        >투명</button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 외곽선색 + 두께 */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-gray-400">외곽선</label>
+                      <div className="flex items-center gap-1.5">
+                        <input type="color" value={selectedClip?.strokeColor && selectedClip.strokeColor !== 'transparent' ? selectedClip.strokeColor : '#000000'}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
+                              const ids = applyToAllOnTrack ? clips.filter(c => clips.filter(cc => selectedClipIds.includes(cc.id)).some(s => s.trackIndex === c.trackIndex)).map(c => c.id) : selectedClipIds;
+                              onClipsBatchUpdate(ids, { strokeColor: val, strokeWidth: Math.max(selectedClip?.strokeWidth || 0, 1) });
+                            } else if (selectedClip) onClipUpdate?.(selectedClip.id, { strokeColor: val, strokeWidth: Math.max(selectedClip.strokeWidth || 0, 1) });
+                          }}
+                          className="w-7 h-7 rounded border border-gray-600 cursor-pointer bg-transparent p-0"
+                        />
+                        <input type="range" min="0" max="6" step="0.5" value={selectedClip?.strokeWidth || 0}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
+                              const ids = applyToAllOnTrack ? clips.filter(c => clips.filter(cc => selectedClipIds.includes(cc.id)).some(s => s.trackIndex === c.trackIndex)).map(c => c.id) : selectedClipIds;
+                              onClipsBatchUpdate(ids, { strokeWidth: val });
+                            } else if (selectedClip) onClipUpdate?.(selectedClip.id, { strokeWidth: val });
+                          }}
+                          className="flex-1 h-1 bg-gray-700 rounded appearance-none cursor-pointer accent-primary"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-gray-400">굵기</label>
+                      <select
+                        value={selectedClip?.fontWeight || 400}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
+                            const ids = applyToAllOnTrack ? clips.filter(c => clips.filter(cc => selectedClipIds.includes(cc.id)).some(s => s.trackIndex === c.trackIndex)).map(c => c.id) : selectedClipIds;
+                            onClipsBatchUpdate(ids, { fontWeight: val });
+                          } else if (selectedClip) onClipUpdate?.(selectedClip.id, { fontWeight: val });
+                        }}
+                        className="w-full bg-black/60 border border-gray-700 rounded text-xs text-white px-2 py-1.5 focus:outline-none focus:border-primary cursor-pointer"
+                      >
+                        <option value={300}>Light (300)</option>
+                        <option value={400}>Regular (400)</option>
+                        <option value={500}>Medium (500)</option>
+                        <option value={600}>SemiBold (600)</option>
+                        <option value={700}>Bold (700)</option>
+                        <option value={800}>ExtraBold (800)</option>
+                        <option value={900}>Black (900)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* 기울이기 + 밑줄 토글 */}
+                  <div className="flex gap-1.5">
+                    {(() => {
+                      const applyStyle = (updates: Partial<VideoClip>) => {
+                        if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
+                          const ids = applyToAllOnTrack ? clips.filter(c => clips.filter(cc => selectedClipIds.includes(cc.id)).some(s => s.trackIndex === c.trackIndex)).map(c => c.id) : selectedClipIds;
+                          onClipsBatchUpdate(ids, updates);
+                        } else if (selectedClip) onClipUpdate?.(selectedClip.id, updates);
+                      };
+                      const isItalic = selectedClip?.fontStyle === 'italic';
+                      const isUnderline = selectedClip?.textDecoration === 'underline';
+                      return (<>
+                        <button
+                          onClick={() => applyStyle({ fontStyle: isItalic ? 'normal' : 'italic' })}
+                          className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded border text-xs font-medium transition-all ${isItalic ? 'bg-primary/20 border-primary/50 text-primary' : 'bg-black/40 border-gray-700 text-gray-400 hover:text-white hover:border-gray-500'}`}
+                        >
+                          <span className="italic font-serif text-sm">I</span>
+                          <span className="text-[10px]">기울임</span>
+                        </button>
+                        <button
+                          onClick={() => applyStyle({ textDecoration: isUnderline ? 'none' : 'underline' })}
+                          className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded border text-xs font-medium transition-all ${isUnderline ? 'bg-primary/20 border-primary/50 text-primary' : 'bg-black/40 border-gray-700 text-gray-400 hover:text-white hover:border-gray-500'}`}
+                        >
+                          <span className="underline text-sm">U</span>
+                          <span className="text-[10px]">밑줄</span>
+                        </button>
+                      </>);
+                    })()}
+                  </div>
+
+                  {/* 크기 */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-gray-400">크기 ({selectedClip?.fontSize || 48}px)</label>
+                    <input type="range" min="12" max="120" step="1" value={selectedClip?.fontSize || 48}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
+                          const ids = applyToAllOnTrack ? clips.filter(c => clips.filter(cc => selectedClipIds.includes(cc.id)).some(s => s.trackIndex === c.trackIndex)).map(c => c.id) : selectedClipIds;
+                          onClipsBatchUpdate(ids, { fontSize: val });
+                        } else if (selectedClip) onClipUpdate?.(selectedClip.id, { fontSize: val });
+                      }}
+                      className="w-full h-1 bg-gray-700 rounded appearance-none cursor-pointer accent-primary"
+                    />
+                  </div>
+                </div>
+
+                {/* ── 프리셋 목록 ── */}
+                <h4 className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider pt-1">기본 프리셋</h4>
                 <div className="grid grid-cols-4 gap-2">
                   {SUBTITLE_PRESETS.map((preset) => (
                     <button
@@ -518,7 +1062,7 @@ export default function RightSidebar({
                       className={`relative rounded-lg border-2 flex items-center justify-center overflow-hidden transition-all active:scale-90 cursor-grab active:cursor-grabbing ${selectedPresetId === preset.id ? 'border-primary ring-2 ring-primary scale-105' : 'border-gray-700 hover:border-gray-500'
                         }`}
                       style={{
-                        minHeight: '56px',
+                        minHeight: '50px',
                         backgroundColor: preset.backgroundColor === 'transparent' ? '#1a1a2e' : preset.backgroundColor,
                         ...(preset.borderColor && selectedPresetId !== preset.id ? { borderColor: preset.borderColor } : {}),
                       }}
@@ -527,8 +1071,11 @@ export default function RightSidebar({
                         <span className="material-icons text-gray-500 text-lg">close</span>
                       ) : (
                         <span style={{
-                          fontSize: '22px',
-                          fontWeight: 700,
+                          fontSize: '20px',
+                          fontWeight: preset.fontWeight || 700,
+                          fontFamily: preset.fontFamily || 'sans-serif',
+                          fontStyle: preset.fontStyle || 'normal',
+                          textDecoration: preset.textDecoration || 'none',
                           color: preset.color,
                           textShadow: preset.glowColor
                             ? `0 0 ${preset.shadowBlur}px ${preset.glowColor}, 0 0 ${preset.shadowBlur * 2}px ${preset.glowColor}`
@@ -544,6 +1091,123 @@ export default function RightSidebar({
                     </button>
                   ))}
                 </div>
+
+                {/* ── 커스텀 프리셋 ── */}
+                <div className="flex items-center justify-between pt-1">
+                  <h4 className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">나만의 프리셋</h4>
+                  <button
+                    onClick={() => setShowSavePreset(!showSavePreset)}
+                    className="text-[10px] text-primary hover:text-primary/80 flex items-center gap-0.5 transition-colors"
+                  >
+                    <span className="material-icons text-xs">add_circle</span>
+                    저장
+                  </button>
+                </div>
+
+                {/* 프리셋 저장 UI */}
+                {showSavePreset && selectedClip && (
+                  <div className="bg-black/40 border border-primary/30 rounded-lg p-2.5 space-y-2">
+                    <p className="text-[10px] text-gray-400">현재 선택한 클립의 스타일을 프리셋으로 저장합니다</p>
+                    <input
+                      type="text" value={newPresetName} onChange={(e) => setNewPresetName(e.target.value)}
+                      placeholder="프리셋 이름"
+                      className="w-full bg-black/60 border border-gray-700 rounded text-xs text-white px-2 py-1.5 focus:outline-none focus:border-primary"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => {
+                          if (!newPresetName.trim()) return;
+                          const updated = addCustomPreset({
+                            name: newPresetName.trim(),
+                            color: selectedClip.color || '#FFFFFF',
+                            backgroundColor: selectedClip.backgroundColor || 'transparent',
+                            strokeColor: selectedClip.strokeColor || 'transparent',
+                            strokeWidth: selectedClip.strokeWidth || 0,
+                            shadowColor: selectedClip.shadowColor || 'transparent',
+                            shadowBlur: selectedClip.shadowBlur || 0,
+                            shadowOffsetX: selectedClip.shadowOffsetX || 0,
+                            shadowOffsetY: selectedClip.shadowOffsetY || 0,
+                            glowColor: selectedClip.glowColor,
+                            borderColor: selectedClip.borderColor,
+                            borderWidth: selectedClip.borderWidth,
+                            fontWeight: selectedClip.fontWeight,
+                            fontFamily: selectedClip.fontFamily,
+                            fontStyle: selectedClip.fontStyle,
+                            textDecoration: selectedClip.textDecoration,
+                          });
+                          setCustomPresets(updated);
+                          setNewPresetName('');
+                          setShowSavePreset(false);
+                        }}
+                        className="flex-1 py-1.5 rounded text-xs font-semibold bg-primary/20 text-primary hover:bg-primary/30 transition-all"
+                      >저장</button>
+                      <button onClick={() => { setShowSavePreset(false); setNewPresetName(''); }}
+                        className="flex-1 py-1.5 rounded text-xs text-gray-400 hover:text-white bg-white/5 hover:bg-white/10 transition-all"
+                      >취소</button>
+                    </div>
+                  </div>
+                )}
+
+                {customPresets.length > 0 ? (
+                  <div className="grid grid-cols-4 gap-2">
+                    {customPresets.map((preset) => (
+                      <div key={preset.id} className="relative group">
+                        <button
+                          draggable
+                          onDragStart={(e) => handlePresetDragStart(e, preset)}
+                          onClick={() => handlePresetClick(preset)}
+                          title={preset.name}
+                          className={`w-full rounded-lg border-2 flex items-center justify-center overflow-hidden transition-all active:scale-90 cursor-grab ${selectedPresetId === preset.id ? 'border-primary ring-2 ring-primary scale-105' : 'border-gray-700 hover:border-gray-500'}`}
+                          style={{
+                            minHeight: '50px',
+                            backgroundColor: preset.backgroundColor === 'transparent' ? '#1a1a2e' : preset.backgroundColor,
+                          }}
+                        >
+                          <span style={{
+                            fontSize: '20px',
+                            fontWeight: preset.fontWeight || 700,
+                            fontFamily: preset.fontFamily || 'sans-serif',
+                            fontStyle: preset.fontStyle || 'normal',
+                            textDecoration: preset.textDecoration || 'none',
+                            color: preset.color,
+                            textShadow: preset.glowColor
+                              ? `0 0 ${preset.shadowBlur}px ${preset.glowColor}, 0 0 ${preset.shadowBlur * 2}px ${preset.glowColor}`
+                              : preset.shadowBlur > 0
+                                ? `${preset.shadowOffsetX}px ${preset.shadowOffsetY}px ${preset.shadowBlur}px ${preset.shadowColor}`
+                                : 'none',
+                            WebkitTextStroke: preset.strokeWidth > 0 ? `${Math.min(preset.strokeWidth, 2)}px ${preset.strokeColor}` : 'none',
+                            lineHeight: 1,
+                          }}>
+                            Aa
+                          </span>
+                        </button>
+                        {/* 삭제 버튼 */}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setCustomPresets(deleteCustomPreset(preset.id)); }}
+                          className="absolute -top-1 -right-1 w-4 h-4 bg-red-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                          title="삭제"
+                        >
+                          <span className="material-icons text-white" style={{ fontSize: '10px' }}>close</span>
+                        </button>
+                        <p className="text-[8px] text-gray-500 text-center truncate mt-0.5">{preset.name}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-gray-600 text-center py-2">저장된 커스텀 프리셋이 없습니다</p>
+                )}
+
+                <button
+                  onClick={() => {
+                    const allPresets = [...SUBTITLE_PRESETS, ...customPresets];
+                    const preset = allPresets.find(p => p.id === (selectedPresetId || 1)) || SUBTITLE_PRESETS[1];
+                    if (preset && onAddTextClip) onAddTextClip(preset);
+                  }}
+                  className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold bg-primary/20 border border-primary/40 text-primary hover:bg-primary/30 transition-all active:scale-95"
+                >
+                  <span className="material-icons text-sm">add</span>
+                  새 자막 추가
+                </button>
               </div>
             )}
 
@@ -689,12 +1353,68 @@ export default function RightSidebar({
         )}
       </div>
 
-      <TossPaymentModal
+      <UpgradeModal
         isOpen={showPaymentModal}
         onClose={() => setShowPaymentModal(false)}
       />
     </aside>
   );
+});
+
+export default RightSidebar;
+
+/**
+ * AI 자막과 시간이 겹치는 대본 구간을 제거/트리밍
+ * - 완전히 겹치면 제거
+ * - 부분적으로 겹치면 겹치지 않는 부분만 남김
+ */
+function removeOverlappingTranscripts(
+  transcripts: TranscriptItem[],
+  aiSubtitles: TranscriptItem[],
+): TranscriptItem[] {
+  if (aiSubtitles.length === 0) return transcripts;
+
+  const result: TranscriptItem[] = [];
+
+  for (const t of transcripts) {
+    let segments: { start: number; end: number }[] = [{ start: t.startTime, end: t.endTime }];
+
+    for (const ai of aiSubtitles) {
+      const next: { start: number; end: number }[] = [];
+      for (const seg of segments) {
+        // No overlap
+        if (ai.endTime <= seg.start || ai.startTime >= seg.end) {
+          next.push(seg);
+          continue;
+        }
+        // Left remainder
+        if (ai.startTime > seg.start) {
+          next.push({ start: seg.start, end: ai.startTime });
+        }
+        // Right remainder
+        if (ai.endTime < seg.end) {
+          next.push({ start: ai.endTime, end: seg.end });
+        }
+        // Fully covered → nothing added
+      }
+      segments = next;
+    }
+
+    // Only keep segments with meaningful duration (> 0.3s)
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      if (seg.end - seg.start > 0.3) {
+        result.push({
+          ...t,
+          id: i === 0 ? t.id : `${t.id}_${i}`,
+          startTime: seg.start,
+          endTime: seg.end,
+        });
+      }
+    }
+  }
+
+  return result;
 }
 
 function fmtTimestamp(seconds: number): string {
