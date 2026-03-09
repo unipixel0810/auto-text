@@ -120,6 +120,10 @@ export default function Home() {
     setHoverTime(val);
   }, []);
 
+  // Keep ALL refs in sync — catches mutations from non-synced setters (Timeline, Player, etc.)
+  useEffect(() => { clipsRef.current = clips; }, [clips]);
+  useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
+  useEffect(() => { selectedClipIdsRef.current = selectedClipIds; }, [selectedClipIds]);
   useEffect(() => { clipboardRef.current = clipboard; }, [clipboard]);
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { isTimelineHoveredRef.current = isTimelineHovered; }, [isTimelineHovered]);
@@ -653,6 +657,11 @@ export default function Home() {
   // Uses refs to avoid stale closures — the handler never needs to be re-registered
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // DEBUG: log every keydown to verify handler is active
+      if (['KeyQ', 'KeyW', 'KeyM'].includes(e.code)) {
+        console.log('[onKey] code:', e.code, 'key:', e.key, 'tag:', document.activeElement?.tagName);
+      }
+
       const tag = document.activeElement?.tagName;
       const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
         || (document.activeElement as HTMLElement)?.isContentEditable;
@@ -730,6 +739,7 @@ export default function Home() {
       // --- SPLIT (M or Cmd+B) --- uses e.code for Korean IME compatibility
       if (e.code === 'KeyM' && !cmd) {
         e.preventDefault();
+        console.log('[M] split — cutTime:', getCutTime(), 'hover:', hoverTimeRef.current, 'playhead:', currentTimeRef.current, 'clips:', clipsRef.current.length);
         splitAtPlayhead();
         return;
       }
@@ -818,6 +828,7 @@ export default function Home() {
       // --- TRIM LEFT (Q) ---
       if (e.code === 'KeyQ') {
         e.preventDefault();
+        console.log('[Q] trimLeft — cutTime:', getCutTime(), 'hover:', hoverTimeRef.current, 'playhead:', currentTimeRef.current, 'clips:', clipsRef.current.length, 'selected:', selectedClipIdsRef.current);
         trimLeft();
         return;
       }
@@ -825,6 +836,7 @@ export default function Home() {
       // --- TRIM RIGHT (W) ---
       if (e.code === 'KeyW') {
         e.preventDefault();
+        console.log('[W] trimRight — cutTime:', getCutTime(), 'hover:', hoverTimeRef.current, 'playhead:', currentTimeRef.current, 'clips:', clipsRef.current.length, 'selected:', selectedClipIdsRef.current);
         trimRight();
         return;
       }
