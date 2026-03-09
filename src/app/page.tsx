@@ -970,14 +970,10 @@ export default function Home() {
     } else alert('구간을 선택해주세요.');
   }, [selectedClip, handleClipUpdate]);
 
-  const handleInteractionGuard = useCallback((e: React.MouseEvent | React.TouchEvent | React.PointerEvent) => {
-    if (!isAuthenticated) {
-      e.preventDefault();
-      e.stopPropagation();
-      alert('로그인이 필요한 기능입니다.');
-      signIn();
-    }
-  }, [isAuthenticated, signIn]);
+  // Auth guard disabled — allow all interactions without login
+  const handleInteractionGuard = useCallback((_e: React.MouseEvent | React.TouchEvent | React.PointerEvent) => {
+    // no-op
+  }, []);
 
   // Import trigger via file input
   const handleImportClick = useCallback(() => {
