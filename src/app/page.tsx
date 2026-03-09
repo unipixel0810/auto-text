@@ -92,14 +92,37 @@ export default function Home() {
   const historyRef = useRef(history);
   const historyIndexRef = useRef(historyIndex);
 
-  useEffect(() => { clipsRef.current = clips; }, [clips]);
-  useEffect(() => { selectedClipIdsRef.current = selectedClipIds; }, [selectedClipIds]);
-  useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
+  // Synchronous ref wrappers — refs are always up-to-date for keyboard handlers
+  const setClipsSynced: typeof setClips = useCallback((action) => {
+    setClips(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      clipsRef.current = next;
+      return next;
+    });
+  }, []);
+  const setCurrentTimeSynced = useCallback((action: number | ((prev: number) => number)) => {
+    setCurrentTime(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      currentTimeRef.current = next;
+      return next;
+    });
+  }, []);
+  const setSelectedClipIdsSynced = useCallback((action: string[] | ((prev: string[]) => string[])) => {
+    setSelectedClipIds(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      selectedClipIdsRef.current = next;
+      return next;
+    });
+  }, []);
+  const hoverTimeRef = useRef(hoverTime);
+  const setHoverTimeSynced = useCallback((val: number | null) => {
+    hoverTimeRef.current = val;
+    setHoverTime(val);
+  }, []);
+
   useEffect(() => { clipboardRef.current = clipboard; }, [clipboard]);
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { isTimelineHoveredRef.current = isTimelineHovered; }, [isTimelineHovered]);
-  const hoverTimeRef = useRef(hoverTime);
-  useEffect(() => { hoverTimeRef.current = hoverTime; }, [hoverTime]);
   useEffect(() => { rippleModeRef.current = rippleMode; }, [rippleMode]);
   useEffect(() => { historyRef.current = history; }, [history]);
   useEffect(() => { historyIndexRef.current = historyIndex; }, [historyIndex]);
@@ -648,26 +671,26 @@ export default function Home() {
         setTimelineZoom(prev => Math.max(MIN_ZOOM, prev / ZOOM_STEP));
         return;
       }
-      if (cmd && shift && (e.key === 'f' || e.key === 'F')) {
+      if (cmd && shift && e.code === 'KeyF') {
         e.preventDefault();
         handleFitToScreen();
         return;
       }
 
       // --- UNDO / REDO (always, even in inputs for consistency) ---
-      if (cmd && !shift && e.key === 'z') {
+      if (cmd && !shift && e.code === 'KeyZ') {
         e.preventDefault();
         handleUndo();
         return;
       }
-      if (cmd && shift && (e.key === 'z' || e.key === 'Z')) {
+      if (cmd && shift && e.code === 'KeyZ') {
         e.preventDefault();
         handleRedo();
         return;
       }
 
       // --- FIT TIMELINE TO SCREEN (Shift+Z, no cmd — Final Cut Pro style) ---
-      if (shift && !cmd && !e.altKey && (e.key === 'z' || e.key === 'Z')) {
+      if (shift && !cmd && !e.altKey && e.code === 'KeyZ') {
         e.preventDefault();
         handleFitToScreen();
         return;
@@ -704,13 +727,13 @@ export default function Home() {
         return;
       }
 
-      // --- SPLIT ---
-      if ((e.key === 'm' || e.key === 'M') && !cmd) {
+      // --- SPLIT (M or Cmd+B) --- uses e.code for Korean IME compatibility
+      if (e.code === 'KeyM' && !cmd) {
         e.preventDefault();
         splitAtPlayhead();
         return;
       }
-      if (cmd && (e.key === 'b' || e.key === 'B')) {
+      if (cmd && e.code === 'KeyB') {
         e.preventDefault();
         splitAtPlayhead();
         return;
@@ -721,14 +744,14 @@ export default function Home() {
         e.preventDefault();
         const selIds = selectedClipIdsRef.current;
         if (selIds.length > 0) {
-          setClips(prev => prev.filter(c => !selIds.includes(c.id)));
-          setSelectedClipIds([]);
+          setClipsSynced(prev => prev.filter(c => !selIds.includes(c.id)));
+          setSelectedClipIdsSynced([]);
         }
         return;
       }
 
       // --- COPY ---
-      if (cmd && (e.key === 'c' || e.key === 'C')) {
+      if (cmd && e.code === 'KeyC') {
         e.preventDefault();
         const selId = selectedClipIdsRef.current[0];
         const clip = clipsRef.current.find(c => c.id === selId);
@@ -737,26 +760,26 @@ export default function Home() {
       }
 
       // --- PASTE ---
-      if (cmd && (e.key === 'v' || e.key === 'V')) {
+      if (cmd && e.code === 'KeyV') {
         e.preventDefault();
         const cb = clipboardRef.current;
         if (!cb) return;
         const newId = genId();
-        setClips(prev => {
+        setClipsSynced(prev => {
           const sameTrack = prev.filter(c => c.trackIndex === cb.clip.trackIndex);
           const startTime = sameTrack.length > 0 ? Math.max(...sameTrack.map(c => c.startTime + c.duration)) : 0;
           return [...prev, { ...cb.clip, id: newId, startTime }];
         });
-        setSelectedClipIds([newId]);
+        setSelectedClipIdsSynced([newId]);
         return;
       }
 
       // --- DUPLICATE ---
-      if (cmd && (e.key === 'd' || e.key === 'D')) {
+      if (cmd && e.code === 'KeyD') {
         e.preventDefault();
         const selIds = selectedClipIdsRef.current;
         const clipsToSelect: string[] = [];
-        setClips(prev => {
+        setClipsSynced(prev => {
           let newClips = [...prev];
           selIds.forEach(selId => {
             const clip = prev.find(c => c.id === selId);
@@ -768,39 +791,39 @@ export default function Home() {
           });
           return newClips;
         });
-        if (clipsToSelect.length > 0) setSelectedClipIds(clipsToSelect);
+        if (clipsToSelect.length > 0) setSelectedClipIdsSynced(clipsToSelect);
         return;
       }
 
       // --- SELECT ALL ---
-      if (cmd && (e.key === 'a' || e.key === 'A')) {
+      if (cmd && e.code === 'KeyA') {
         e.preventDefault();
         const all = clipsRef.current;
-        if (all.length > 0) setSelectedClipIds(all.map(c => c.id));
+        if (all.length > 0) setSelectedClipIdsSynced(all.map(c => c.id));
         return;
       }
 
       // --- FRAME STEP ---
-      if (e.key === '[') {
+      if (e.code === 'BracketLeft') {
         e.preventDefault();
-        setCurrentTime(prev => Math.max(0, prev - FRAME_DURATION));
+        setCurrentTimeSynced(prev => Math.max(0, prev - FRAME_DURATION));
         return;
       }
-      if (e.key === ']') {
+      if (e.code === 'BracketRight') {
         e.preventDefault();
-        setCurrentTime(prev => prev + FRAME_DURATION);
+        setCurrentTimeSynced(prev => prev + FRAME_DURATION);
         return;
       }
 
       // --- TRIM LEFT (Q) ---
-      if (e.key === 'q' || e.key === 'Q') {
+      if (e.code === 'KeyQ') {
         e.preventDefault();
         trimLeft();
         return;
       }
 
       // --- TRIM RIGHT (W) ---
-      if (e.key === 'w' || e.key === 'W') {
+      if (e.code === 'KeyW') {
         e.preventDefault();
         trimRight();
         return;
@@ -829,7 +852,7 @@ export default function Home() {
       }
 
       // --- TOGGLE ENABLE (V) ---
-      if ((e.key === 'v' || e.key === 'V') && !cmd) {
+      if (e.code === 'KeyV' && !cmd) {
         e.preventDefault();
         handleToggleEnable();
         return;
@@ -837,60 +860,73 @@ export default function Home() {
 
       // --- ESCAPE ---
       if (e.key === 'Escape') {
-        setSelectedClipIds([]);
+        setSelectedClipIdsSynced([]);
         return;
       }
     };
 
-    // Get the authoritative cut time: use hover position only when mouse is actively over the timeline
+    // ===== STATE-BASED CUT FUNCTIONS =====
+    // Priority: hoverTimeRef (orange, when mouse is over timeline) > currentTimeRef (blue playhead)
+    // Both refs are synced synchronously — no stale closure, no pixel math.
     function getCutTime(): number {
-      if (isTimelineHoveredRef.current && hoverTimeRef.current != null) {
-        return hoverTimeRef.current;
-      }
+      // hoverTimeRef is non-null only while mouse is inside the timeline area
+      // (set synchronously by setHoverTimeSynced, cleared to null on mouseLeave)
+      if (hoverTimeRef.current != null) return hoverTimeRef.current;
       return currentTimeRef.current;
     }
 
-    // Helper functions that read from refs
     function splitAtPlayhead() {
-      const selId = selectedClipIdsRef.current[0]; // Only split the first selected clip
-      if (!selId) return;
-      const clip = clipsRef.current.find(c => c.id === selId);
-      if (!clip) return;
       const t = getCutTime();
-      if (t <= clip.startTime || t >= clip.startTime + clip.duration) return;
+      const clip = clipsRef.current.find(c =>
+        c.startTime < t && t < c.startTime + c.duration
+      );
+      if (!clip) return;
       const firstDur = t - clip.startTime;
       const secondDur = clip.duration - firstDur;
       const secondId = `clip_${Date.now()}_${clipIdCounter.current++}`;
-      setClips(prev => [
+      setClipsSynced(prev => [
         ...prev.map(c => c.id === clip.id ? { ...c, duration: firstDur } : c),
         { ...clip, id: secondId, startTime: t, duration: secondDur },
       ]);
-      setSelectedClipIds([secondId]);
+      setSelectedClipIdsSynced([secondId]);
     }
 
+    // Q: trim left — move clip startTime to cut point, discard everything before
     function trimLeft() {
-      const selId = selectedClipIdsRef.current[0];
-      const clip = clipsRef.current.find(c => c.id === selId);
-      if (!clip) return;
       const t = getCutTime();
+      const selId = selectedClipIdsRef.current[0];
+      const clip = selId
+        ? clipsRef.current.find(c => c.id === selId)
+        : clipsRef.current.find(c => c.startTime < t && t < c.startTime + c.duration);
+      if (!clip) return;
       const clipEnd = clip.startTime + clip.duration;
       if (t <= clip.startTime || t >= clipEnd) return;
-      trackEditingAction('clip_trim_left', { targetTrack: clip.trackIndex, clipDuration: clip.duration, timelinePosition: t });
-      setClips(prev => {
-        const trimmed = prev.map(c => c.id === clip.id ? { ...c, startTime: t, duration: clipEnd - t, trimStart: (c.trimStart ?? 0) + (t - clip.startTime) } : c);
+      setClipsSynced(prev => {
+        const trimmed = prev.map(c => c.id === clip.id ? {
+          ...c,
+          startTime: t,
+          duration: clipEnd - t,
+          trimStart: (c.trimStart ?? 0) + (t - clip.startTime),
+        } : c);
         return rippleModeRef.current ? rippleCloseGaps(trimmed) : trimmed;
       });
     }
 
+    // W: trim right — move clip endTime to cut point, discard everything after
     function trimRight() {
-      const selId = selectedClipIdsRef.current[0];
-      const clip = clipsRef.current.find(c => c.id === selId);
-      if (!clip) return;
       const t = getCutTime();
+      const selId = selectedClipIdsRef.current[0];
+      const clip = selId
+        ? clipsRef.current.find(c => c.id === selId)
+        : clipsRef.current.find(c => c.startTime < t && t < c.startTime + c.duration);
+      if (!clip) return;
       if (t <= clip.startTime || t >= clip.startTime + clip.duration) return;
-      trackEditingAction('clip_trim_right', { targetTrack: clip.trackIndex, clipDuration: clip.duration, timelinePosition: t });
-      setClips(prev => {
-        const trimmed = prev.map(c => c.id === clip.id ? { ...c, duration: t - clip.startTime, trimEnd: t - clip.startTime } : c);
+      setClipsSynced(prev => {
+        const trimmed = prev.map(c => c.id === clip.id ? {
+          ...c,
+          duration: t - clip.startTime,
+          trimEnd: t - clip.startTime,
+        } : c);
         return rippleModeRef.current ? rippleCloseGaps(trimmed) : trimmed;
       });
     }
@@ -898,7 +934,7 @@ export default function Home() {
     function nudge(dx: number, dy: number) {
       const selIds = selectedClipIdsRef.current;
       if (selIds.length === 0) return;
-      setClips(prev => prev.map(c => selIds.includes(c.id) ? {
+      setClipsSynced(prev => prev.map(c => selIds.includes(c.id) ? {
         ...c,
         positionX: (c.positionX ?? 0) + dx,
         positionY: (c.positionY ?? 0) + dy,
@@ -1415,7 +1451,7 @@ export default function Home() {
             snapEnabled={snapEnabled}
             onSnapToggle={() => setSnapEnabled(prev => !prev)}
             onPlayheadChange={handlePlayheadChange}
-            onHoverTimeChange={setHoverTime}
+            onHoverTimeChange={setHoverTimeSynced}
             onClipAdd={handleClipAdd}
             onClipUpdate={handleClipUpdate}
             onClipSelect={handleClipSelect}

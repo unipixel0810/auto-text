@@ -855,12 +855,11 @@ const Timeline = React.memo(({
     if (now - lastScrubRef.current < 16) return; // 60fps throttle
     lastScrubRef.current = now;
     setScrubTime(time);
-    // Always update hover time for live preview
-    onHoverTimeChange?.(time);
-    if (isScrubbingRef.current || scrubMode === 'hover') {
+    // Playhead (blue line) only moves when actively scrubbing (click+drag) — NOT on hover
+    if (isScrubbingRef.current) {
       onPlayheadChange?.(time);
     }
-  }, [onPlayheadChange, onHoverTimeChange, scrubMode]);
+  }, [onPlayheadChange]);
 
   const handleScrubMouseDown = useCallback((e: React.MouseEvent) => {
     if (scrubMode === 'click') {
@@ -874,6 +873,9 @@ const Timeline = React.memo(({
   const handleScrubMouseMove = useCallback((e: React.MouseEvent) => {
     const time = getTimeFromMouseX(e.clientX);
     hoverTimeRef.current = time;
+
+    // Always sync hover time to parent immediately (no throttle) so Q/W reads exact position
+    onHoverTimeChange?.(time);
 
     // Direct DOM update — no React state, no re-render
     const tracksX = TRACK_CONTROLS_WIDTH + time * pixelsPerSecond;
@@ -891,7 +893,7 @@ const Timeline = React.memo(({
     if (hoverTooltip2Ref.current) hoverTooltip2Ref.current.textContent = fmtTime(time);
 
     throttledScrub(time);
-  }, [getTimeFromMouseX, throttledScrub, pixelsPerSecond]);
+  }, [getTimeFromMouseX, throttledScrub, pixelsPerSecond, onHoverTimeChange]);
 
   const handleScrubMouseUp = useCallback(() => {
     if (scrubMode === 'click') {
@@ -934,15 +936,14 @@ const Timeline = React.memo(({
       if (isInput) return;
 
       // Shift + Z : fit to screen
-      if (e.key === 'Z' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      if (e.code === 'KeyZ' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         onFitToScreen?.();
         return;
       }
 
       // S : scrub mode toggle
-      if (e.key === 's' || e.key === 'S') {
-        if (e.metaKey || e.ctrlKey) return;
+      if (e.code === 'KeyS' && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         setScrubMode(prev => prev === 'click' ? 'hover' : 'click');
       }
