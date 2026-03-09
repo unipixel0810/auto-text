@@ -720,15 +720,6 @@ export default function Home() {
       // Skip remaining shortcuts when typing
       if (isTyping) return;
 
-      // Check authentication for other shortcuts
-      if (!isAuthenticatedRef.current) {
-        if (!['Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' ', 'Space'].includes(e.key)) {
-          e.preventDefault();
-          alert('로그인이 필요한 기능입니다.');
-          return;
-        }
-      }
-
       // --- PLAYBACK ---
       if (e.code === 'Space' && !cmd) {
         e.preventDefault();
