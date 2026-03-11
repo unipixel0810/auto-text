@@ -101,10 +101,10 @@ const Playhead = React.memo(({ x, onPointerDown, isDragging, time }: {
     onPointerDown={onPointerDown}
   >
     <div className={`absolute top-0 bottom-0 w-px left-1/2 -ml-[0.5px] transition-all ${isDragging ? 'w-0.5 bg-orange-400' : 'bg-[#4488FF] group-hover:w-0.5 group-hover:bg-[#5599FF]'}`} />
-    {/* 드래그 중 주황색 시간 툴팁 */}
+    {/* 드래그 중 주황색 시간 툴팁 — overflow 밖으로 나오도록 fixed 위치 대신 translate로 위에 표시 */}
     {isDragging && time !== undefined && (
-      <div className="absolute top-1 left-1/2 -translate-x-1/2 bg-orange-500 text-black text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap shadow-lg z-30">
-        {fmtTime(time)}
+      <div className="absolute left-1/2 -translate-x-1/2 bg-orange-500 text-black text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap shadow-lg z-[9999]" style={{ top: '2px' }}>
+        {formatTimecode(time)}
       </div>
     )}
   </div>
@@ -1426,9 +1426,9 @@ const Timeline = React.memo(({
       </div>
 
       {/* Ruler */}
-      <div className="h-6 bg-editor-bg border-b border-border-color relative overflow-hidden select-none flex">
+      <div className="h-6 bg-editor-bg border-b border-border-color relative select-none flex" style={{ overflow: 'visible' }}>
         <div className="w-20 shrink-0 bg-panel-bg border-r border-border-color" />
-        <div className="flex-1 relative overflow-hidden">
+        <div className="flex-1 relative" style={{ overflow: 'visible' }}>
           {/* 반응형 눈금: zoom에 따라 레이블 간격을 자동 선택 */}
           {(() => {
             // 레이블 최소 간격(px) — 겹치지 않으려면 최소 60px 필요

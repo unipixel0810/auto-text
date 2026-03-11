@@ -775,38 +775,67 @@ export default function Home() {
    * - handleVideoAdd(라이브러리+상태) + handleClipAdd(타임라인) 분리 호출로 thumbnails/waveform 포함
    */
   const handlePlayerFileDrop = useCallback(async (files: File[]) => {
-    // 현재 main 트랙 끝 시간 (1회 스냅샷)
+    // 현재 main 트랙 끝 시간 (스냅샷)
     let insertAt = clipsRef.current
       .filter(c => c.trackIndex === 1)
       .reduce((maxEnd, c) => Math.max(maxEnd, c.startTime + c.duration), 0);
 
     for (const file of files) {
+      const isAudio = file.type.startsWith('audio/') || /\.(m4a|aac|wav)$/i.test(file.name);
       const isImage = file.type.startsWith('image/');
+      const type: 'video' | 'audio' | 'image' = isImage ? 'image' : isAudio ? 'audio' : 'video';
+      const url = URL.createObjectURL(file);
 
-      // duration을 먼저 읽기 (handleVideoAdd의 비동기 onloadedmetadata 대기)
+      // duration을 먼저 읽기
       const duration = isImage ? 10 : await new Promise<number>(resolve => {
         const el = document.createElement('video');
         el.preload = 'metadata';
-        el.src = URL.createObjectURL(file);
-        el.onloadedmetadata = () => { resolve(el.duration || 10); el.src = ''; };
+        el.src = url;
+        el.onloadedmetadata = () => resolve(el.duration || 10);
         el.onerror = () => resolve(10);
       });
 
-      // 1. 라이브러리 추가 + currentVideoUrl 등 상태 세팅
-      handleVideoAdd(file);
-
-      // 2. clipsRef 기반이 아닌 직접 계산한 insertAt으로 클립 배치 (겹침 방지)
+      const libId = genId();
+      const clipId = genId();
       const capturedInsertAt = insertAt;
-      setTimeout(() => {
-        handleClipAdd(file, 1, capturedInsertAt);
-      }, 50);
+
+      // 1. 라이브러리에 추가
+      setLibraryItems(prev => [...prev, { id: libId, name: file.name, url, type, duration, file }]);
+
+      // 2. currentVideoUrl 등 첫 번째 비디오 상태 세팅
+      if (type === 'video' && !currentVideoUrl) {
+        setCurrentVideoUrl(url);
+        setCurrentVideoFile(file);
+        setActiveFileName(file.name);
+        setActiveFileDuration(duration);
+      }
+
+      // 3. 타임라인에 직접 추가 (setTimeout 없이 동기적으로)
+      setClipsSynced(prev => [...prev, {
+        id: clipId,
+        name: file.name,
+        url,
+        startTime: capturedInsertAt,
+        duration,
+        originalDuration: duration,
+        trackIndex: 1,
+        scale: 100,
+        positionX: 0,
+        positionY: 0,
+        rotation: 0,
+        opacity: 100,
+        blendMode: false,
+        speed: 1,
+        linked: true,
+        volume: 100,
+      }]);
 
       insertAt += duration;
     }
 
     setImportToast(`${files.length}개 파일 타임라인에 추가됨`);
     setTimeout(() => setImportToast(null), 3000);
-  }, [handleVideoAdd, handleClipAdd]);
+  }, [currentVideoUrl, setClipsSynced]);
 
   const handleClipUpdate = useCallback((clipId: string, updates: Partial<VideoClip>) => {
     setClips(prev => {
