@@ -2,8 +2,19 @@
 
 import React, { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { trackFunnelStep } from '@/lib/analytics/funnel';
+
 export default function LandingPage() {
     const router = useRouter();
+
+    // 퍼널 1단계: 랜딩페이지 방문
+    useEffect(() => { trackFunnelStep('landing_visit'); }, []);
+
+    // CTA 클릭 + 퍼널 2단계
+    const handleCtaClick = (path: string) => {
+        trackFunnelStep('cta_click');
+        router.push(path);
+    };
 
     // 랜딩 페이지에서 body 스크롤 강제 활성화
     useEffect(() => {
@@ -42,7 +53,7 @@ export default function LandingPage() {
                     </div>
                     <div className="flex items-center gap-3">
                         <button
-                            onClick={() => router.push('/')}
+                            onClick={() => handleCtaClick('/')}
                             className="px-5 py-2 text-sm font-semibold bg-gradient-to-r from-cyan-500 to-blue-600 text-white rounded-lg hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-cyan-500/20"
                             data-ab-test="nav-cta-test"
                             data-ab-variant-b="무료로 시작하기"
@@ -90,7 +101,7 @@ export default function LandingPage() {
                     {/* ========== CTA 버튼: 로그인 / 회원가입 ========== */}
                     <div className="flex flex-col md:flex-row items-center justify-center gap-4 mb-8">
                         <button
-                            onClick={() => router.push('/')}
+                            onClick={() => handleCtaClick('/')}
                             className="px-10 py-4 bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-bold rounded-xl shadow-lg shadow-cyan-500/30 hover:scale-105 active:scale-95 transition-all w-full md:w-auto text-lg"
                             data-ab-test="cta-button-test"
                             data-ab-variant-b="30초만에 무료 체험하기"
@@ -98,7 +109,7 @@ export default function LandingPage() {
                             지금 무료로 시작하기
                         </button>
                         <button
-                            onClick={() => router.push('/')}
+                            onClick={() => handleCtaClick('/')}
                             className="px-8 py-4 bg-white/5 border border-white/10 text-white font-semibold rounded-xl hover:bg-white/10 transition-all w-full md:w-auto"
                         >
                             에디터 둘러보기
@@ -211,7 +222,7 @@ export default function LandingPage() {
                         클릭 한 번으로 바로 편집을 시작할 수 있습니다.
                     </p>
                     <button
-                        onClick={() => router.push('/')}
+                        onClick={() => handleCtaClick('/')}
                         className="px-10 py-5 bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-extrabold text-lg rounded-2xl shadow-2xl shadow-cyan-500/40 hover:scale-105 active:scale-95 transition-all"
                     >
                         무료로 시작하기 🚀

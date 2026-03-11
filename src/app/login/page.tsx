@@ -2,12 +2,16 @@
 
 import { signIn } from 'next-auth/react';
 import { useSearchParams } from 'next/navigation';
-import { Suspense } from 'react';
+import { Suspense, useEffect } from 'react';
+import { trackFunnelStep } from '@/lib/analytics/funnel';
 
 function LoginContent() {
     const searchParams = useSearchParams();
     const error = searchParams.get('error');
     const callbackUrl = searchParams.get('callbackUrl') || '/';
+
+    // 퍼널 3단계: 가입 폼 열림
+    useEffect(() => { trackFunnelStep('signup_form_open'); }, []);
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950 flex items-center justify-center p-4">
@@ -44,7 +48,7 @@ function LoginContent() {
                     )}
 
                     <button
-                        onClick={() => signIn('google', { callbackUrl })}
+                        onClick={() => { trackFunnelStep('email_input'); signIn('google', { callbackUrl }); }}
                         className="w-full flex items-center justify-center gap-3 bg-white hover:bg-gray-100 text-gray-800 font-medium py-3.5 px-6 rounded-xl transition-all active:scale-[0.98] shadow-lg hover:shadow-xl"
                     >
                         {/* Google 로고 */}

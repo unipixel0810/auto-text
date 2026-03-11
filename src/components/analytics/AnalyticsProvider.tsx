@@ -2,17 +2,27 @@
 
 import { useEffect, useRef } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { initTracker, destroyTracker, resetPageTracking } from '@/lib/analytics/tracker';
 import { initABTests } from '@/lib/analytics/ab-test';
 import { getSessionRecorder } from '@/lib/analytics/recorder';
+import { trackFunnelStep } from '@/lib/analytics/funnel';
 
 export default function AnalyticsProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { data: session } = useSession();
   const prevPath = useRef(pathname);
   const recorderRef = useRef<ReturnType<typeof getSessionRecorder> | null>(null);
 
   const isPreview = searchParams.get('_analytics_preview') === '1';
+
+  // 퍼널 5단계: 가입 완료 (세션 존재 = 로그인 성공)
+  useEffect(() => {
+    if (session?.user) {
+      trackFunnelStep('signup_complete');
+    }
+  }, [session]);
 
   useEffect(() => {
     if (isPreview) return;
