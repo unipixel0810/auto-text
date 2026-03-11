@@ -451,16 +451,12 @@ type DeviceFilter = 'all' | 'desktop' | 'mobile' | 'tablet' | '4k';
 type VisualizationMode = 'heatmap' | 'markers';
 
 const HeatmapTab = memo(function HeatmapTab({
-  selectedPage, clickEvents, canvasRef, iframeRef, iframeLoaded, setIframeLoaded,
-  iframeUrl, heatmapOpacity, setHeatmapOpacity, days,
+  selectedPage, clickEvents, canvasRef,
+  heatmapOpacity, setHeatmapOpacity, days,
 }: {
   selectedPage: string;
   clickEvents: AnalyticsEvent[];
   canvasRef: React.RefObject<HTMLCanvasElement>;
-  iframeRef: React.RefObject<HTMLIFrameElement>;
-  iframeLoaded: boolean;
-  setIframeLoaded: (v: boolean) => void;
-  iframeUrl: string;
   heatmapOpacity: number;
   setHeatmapOpacity: (v: number) => void;
   days: number;
@@ -519,13 +515,8 @@ const HeatmapTab = memo(function HeatmapTab({
         return vw >= 1024 && vw < 3840; // desktop (일반)
       });
 
-  // 1-A + 1-E: Canvas 렌더링 (좌표 정규화 버그 수정 + 히트맵/마커 모드)
+  // 1-A + 1-E: Canvas 렌더링 (iframe 제거 → 항상 렌더링)
   useEffect(() => {
-    if (!iframeLoaded) {
-      const canvas = canvasRef.current;
-      if (canvas) { const ctx = canvas.getContext('2d'); if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height); }
-      return;
-    }
     const canvas = canvasRef.current;
     if (!canvas) return;
     const filtered = filteredClickEvents.filter(c => c.x_pos != null && c.y_pos != null);
@@ -599,7 +590,7 @@ const HeatmapTab = memo(function HeatmapTab({
     return () => cancelAnimationFrame(rafId);
   // filteredClickEvents는 참조가 매 렌더마다 바뀌므로 .length + deviceFilter + vizMode로 의존성 관리
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredClickEvents.length, iframeLoaded, heatmapOpacity, selectedPage, deviceFilter, vizMode]);
+  }, [filteredClickEvents.length, heatmapOpacity, selectedPage, deviceFilter, vizMode]);
 
   return (
     <div className="space-y-4">
@@ -703,19 +694,36 @@ const HeatmapTab = memo(function HeatmapTab({
 
               {/* 히트맵 + 오버레이 컨테이너 */}
               <div className="relative">
+                {/* 페이지 미리보기 링크 */}
+                {selectedPage && (
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="text-[11px] text-gray-500">페이지 미리보기:</span>
+                    <a
+                      href={selectedPage}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1 text-[11px] text-[#00D4D4] hover:underline font-mono"
+                    >
+                      {selectedPage}
+                      <span className="material-symbols-outlined text-[12px]">open_in_new</span>
+                    </a>
+                  </div>
+                )}
                 <div
-                  className="relative bg-[#111] border border-[#1e1e2e] rounded-xl overflow-hidden"
-                  style={{ aspectRatio: `${PREVIEW_WIDTH}/${PREVIEW_HEIGHT}` }}
+                  className="relative border border-[#1e1e2e] rounded-xl overflow-hidden"
+                  style={{
+                    aspectRatio: `${PREVIEW_WIDTH}/${PREVIEW_HEIGHT}`,
+                    background: 'linear-gradient(135deg, #0d0d1a 0%, #111122 40%, #0a0a14 100%)',
+                  }}
                 >
-                  {iframeUrl && (
-                    <iframe
-                      ref={iframeRef} src={iframeUrl}
-                      className="absolute inset-0 w-full h-full border-0 pointer-events-none opacity-90"
-                      onLoad={() => setIframeLoaded(true)}
-                      title="Page Preview"
-                      onError={() => setIframeLoaded(false)}
-                    />
-                  )}
+                  {/* 배경 그리드 패턴 */}
+                  <div
+                    className="absolute inset-0 opacity-10"
+                    style={{
+                      backgroundImage: 'linear-gradient(rgba(0,212,212,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(0,212,212,0.15) 1px, transparent 1px)',
+                      backgroundSize: '40px 40px',
+                    }}
+                  />
                   <canvas
                     ref={canvasRef} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT}
                     className="absolute inset-0 w-full h-full"
@@ -779,13 +787,12 @@ const HeatmapTab = memo(function HeatmapTab({
                       )}
                     </div>
                   )}
-                  {!iframeLoaded && iframeUrl && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-[#111]">
-                      <LoadingSpinner />
+                  {filteredClickEvents.length === 0 && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none">
+                      <span className="material-symbols-outlined text-[48px] text-gray-700">touch_app</span>
+                      <p className="text-gray-500 text-sm">이 페이지에 클릭 데이터가 없습니다.</p>
+                      <p className="text-gray-600 text-xs">실제 사용자가 방문하면 히트맵이 자동으로 표시됩니다.</p>
                     </div>
-                  )}
-                  {filteredClickEvents.length === 0 && iframeLoaded && (
-                    <EmptyState icon="touch_app" message="이 페이지에 클릭 데이터가 없습니다." />
                   )}
 
                   {/* 1-C: 컬러 범례 */}
@@ -1968,16 +1975,9 @@ export default function AnalyticsDashboard() {
   const [dataLoading, setDataLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [iframeLoaded, setIframeLoaded] = useState(false);
   const [heatmapOpacity, setHeatmapOpacity] = useState(60);
 
   useEffect(() => { setMounted(true); }, []);
-
-  // 히트맵: 페이지 변경 시 iframe 로딩 상태 초기화
-  useEffect(() => {
-    setIframeLoaded(false);
-  }, [selectedPage]);
 
   const fetchPages = useCallback(async () => {
     try {
@@ -2035,11 +2035,7 @@ export default function AnalyticsDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, activeFilter.days, selectedPage]);
 
-  // Heatmap rendering — canvas useEffect가 HeatmapTab 내부로 이동됨
   const clickEvents = events.filter(e => e.event_type === 'click' && e.x_pos != null && e.y_pos != null);
-
-  const iframeUrl = selectedPage && typeof window !== 'undefined'
-    ? `${window.location.origin}${selectedPage}?_analytics_preview=1` : '';
 
   if (!mounted) return null;
 
@@ -2135,10 +2131,6 @@ export default function AnalyticsDashboard() {
             selectedPage={selectedPage}
             clickEvents={clickEvents}
             canvasRef={canvasRef}
-            iframeRef={iframeRef}
-            iframeLoaded={iframeLoaded}
-            setIframeLoaded={setIframeLoaded}
-            iframeUrl={iframeUrl}
             heatmapOpacity={heatmapOpacity}
             setHeatmapOpacity={setHeatmapOpacity}
             days={activeFilter.days}
