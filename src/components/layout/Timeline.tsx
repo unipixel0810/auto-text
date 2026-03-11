@@ -1416,14 +1416,57 @@ const Timeline = React.memo(({
       <div className="h-6 bg-editor-bg border-b border-border-color relative overflow-hidden select-none flex">
         <div className="w-20 shrink-0 bg-panel-bg border-r border-border-color" />
         <div className="flex-1 relative overflow-hidden">
-          <div className="absolute inset-0" style={{ width: `${maxTime * pixelsPerSecond}px`, backgroundImage: 'linear-gradient(to right, #555 1px, transparent 1px)', backgroundSize: `${50 * zoom}px 100%` }} />
-          <div className="absolute inset-0 flex items-center text-[10px] text-gray-500 font-mono">
-            {Array.from({ length: Math.ceil(maxTime / 5) + 1 }, (_, i) => (
-              <span key={i * 5} className="absolute whitespace-nowrap" style={{ left: `${i * 5 * pixelsPerSecond}px` }}>
-                {fmtTime(i * 5)}
-              </span>
-            ))}
-          </div>
+          {/* 반응형 눈금: zoom에 따라 레이블 간격을 자동 선택 */}
+          {(() => {
+            // 레이블 최소 간격(px) — 겹치지 않으려면 최소 60px 필요
+            const MIN_LABEL_PX = 60;
+            // 후보 간격(초) — 사람이 읽기 좋은 단위
+            const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+            const labelStep = STEPS.find(s => s * pixelsPerSecond >= MIN_LABEL_PX) ?? 3600;
+            // 소눈금: 레이블 간격의 1/5 (단, 최소 4px 이상일 때만)
+            const subStep = labelStep / 5;
+            const showSubTicks = subStep * pixelsPerSecond >= 4;
+            const totalTicks = Math.ceil(maxTime / subStep) + 1;
+
+            // 시간 포맷: 1분 미만이면 초만, 1시간 미만이면 분:초, 그 이상 시:분:초
+            const fmtLabel = (s: number) => {
+              if (s < 60) return `${s}s`;
+              if (s < 3600) {
+                const m = Math.floor(s / 60), sec = s % 60;
+                return sec === 0 ? `${m}m` : `${m}:${String(sec).padStart(2,'0')}`;
+              }
+              const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+              return m === 0 ? `${h}h` : `${h}:${String(m).padStart(2,'0')}`;
+            };
+
+            return (
+              <>
+                {/* 소눈금 */}
+                {showSubTicks && Array.from({ length: totalTicks }, (_, i) => {
+                  const t = i * subStep;
+                  const isLabel = Math.round(t % labelStep) === 0;
+                  if (isLabel) return null; // 레이블 위치는 아래서 처리
+                  return (
+                    <div key={`sub-${i}`} className="absolute bottom-0 bg-gray-600"
+                      style={{ left: `${t * pixelsPerSecond}px`, width: '1px', height: '4px' }} />
+                  );
+                })}
+                {/* 레이블 + 대눈금 */}
+                {Array.from({ length: Math.ceil(maxTime / labelStep) + 1 }, (_, i) => {
+                  const t = i * labelStep;
+                  return (
+                    <div key={`lbl-${i}`} className="absolute bottom-0 flex flex-col items-start" style={{ left: `${t * pixelsPerSecond}px` }}>
+                      <div className="bg-gray-400" style={{ width: '1px', height: '8px' }} />
+                      <span className="text-[9px] text-gray-400 font-mono whitespace-nowrap" style={{ marginTop: '-20px', paddingLeft: '2px' }}>
+                        {fmtLabel(t)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </>
+            );
+          })()}
+          <div className="absolute inset-0" style={{ width: `${maxTime * pixelsPerSecond}px` }} />
           
           {/* High-frequency isolated components */}
           <Playhead x={playheadPosition * pixelsPerSecond} onPointerDown={handlePlayheadMouseDown} />
