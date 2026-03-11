@@ -3,6 +3,7 @@ import { Suspense } from 'react';
 import './globals.css';
 import AnalyticsProvider from '@/components/analytics/AnalyticsProvider';
 import AuthProvider from '@/components/auth/AuthProvider';
+import FeedbackWidget from '@/components/feedback/FeedbackWidget';
 
 export const metadata: Metadata = {
   title: 'AutoText | AI 자막 자동 생성',
@@ -26,6 +27,7 @@ export default function RootLayout({
           <Suspense fallback={null}>
             <AnalyticsProvider>
               {children}
+              <FeedbackWidget />
             </AnalyticsProvider>
           </Suspense>
         </AuthProvider>
