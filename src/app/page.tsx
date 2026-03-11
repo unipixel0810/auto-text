@@ -1779,18 +1779,14 @@ export default function Home() {
   }, [importFile]);
 
   const handleGlobalDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
+    // 파일 드래그일 때만 브라우저 기본 동작 막기 (오버레이 없이 처리)
     if (e.dataTransfer.types.includes('Files')) {
-      setIsDraggingFile(true);
+      e.preventDefault();
     }
   }, []);
 
   const handleGlobalDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    // relatedTarget === null means cursor left the window
-    if (!e.relatedTarget) {
-      setIsDraggingFile(false);
-    }
+    // 오버레이 없으므로 아무것도 하지 않음
   }, []);
 
   const handleGlobalDrop = useCallback((e: React.DragEvent) => {
@@ -1900,16 +1896,7 @@ export default function Home() {
           isOpen={shortcutsModalOpen}
           onClose={() => setShortcutsModalOpen(false)}
         />
-        {/* Drop overlay */}
-        {isDraggingFile && (
-          <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-sm flex items-center justify-center pointer-events-none">
-            <div className="border-4 border-dashed border-[#00D4D4] rounded-2xl p-16 flex flex-col items-center gap-4 bg-black/60">
-              <span className="text-7xl">📁</span>
-              <span className="text-3xl font-bold text-white">파일을 여기에 놓으세요</span>
-              <span className="text-lg text-gray-400">동영상, 사진, 오디오, 자막 파일 지원</span>
-            </div>
-          </div>
-        )}
+        {/* Drop overlay 제거 — 파일 드롭 시 바로 추가됨 */}
 
         {/* Toast notification */}
         {importToast && (
