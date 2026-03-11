@@ -139,7 +139,65 @@ export default function CreateExperimentPage() {
     }
   };
 
+  // 실제 data-ab-test 속성이 달린 요소만 반환 (페이지별 정적 레지스트리)
+  const getStaticAbTestRegistry = (pageUrl: string): PageElement[] => {
+    const registries: Record<string, PageElement[]> = {
+      '/landing': [
+        {
+          id: 'cta-button-test',
+          type: 'button',
+          selector: '[data-ab-test="cta-button-test"]',
+          currentText: '지금 무료로 시작하기',
+          tagName: 'button',
+        },
+        {
+          id: 'sub-headline-test',
+          type: 'text',
+          selector: '[data-ab-test="sub-headline-test"]',
+          currentText: '업로드만 하면 끝. AI가 예능·상황·설명 자막을 자동으로 생성하고, 트렌드에 맞는 스타일까지 추천합니다.',
+          tagName: 'p',
+        },
+        {
+          id: 'feature-ai-analysis',
+          type: 'text',
+          selector: '[data-ab-test="feature-ai-analysis"]',
+          currentText: 'AI 자막 분석',
+          tagName: 'div',
+        },
+        {
+          id: 'feature-algorithm-trend',
+          type: 'text',
+          selector: '[data-ab-test="feature-algorithm-trend"]',
+          currentText: '알고리즘 트렌드',
+          tagName: 'div',
+        },
+        {
+          id: 'feature-dna-styling',
+          type: 'text',
+          selector: '[data-ab-test="feature-dna-styling"]',
+          currentText: 'DNA 스타일링',
+          tagName: 'div',
+        },
+      ],
+    };
+
+    // 정확히 일치하거나 앞부분이 일치하는 레지스트리 탐색
+    const exact = registries[pageUrl];
+    if (exact) return exact;
+    for (const [key, elements] of Object.entries(registries)) {
+      if (pageUrl.startsWith(key)) return elements;
+    }
+    return [];
+  };
+
   const scanElementsClientSide = async (): Promise<PageElement[]> => {
+    // 정적 레지스트리에서 실제 data-ab-test 요소만 반환
+    const staticElements = getStaticAbTestRegistry(selectedPage);
+    if (staticElements.length > 0) {
+      return staticElements;
+    }
+
+    // 레지스트리에 없는 페이지는 iframe으로 data-ab-test 속성 요소만 스캔
     return new Promise((resolve) => {
       const iframe = document.createElement('iframe');
       iframe.style.display = 'none';
@@ -154,51 +212,25 @@ export default function CreateExperimentPage() {
           }
 
           const found: PageElement[] = [];
-          let idCounter = 0;
-
-          const buttons = iframeDoc.querySelectorAll('button, a[href], [role="button"]');
-          buttons.forEach((el) => {
+          // data-ab-test 속성이 달린 요소만 수집
+          const abElements = iframeDoc.querySelectorAll('[data-ab-test]');
+          abElements.forEach((el) => {
+            const testName = el.getAttribute('data-ab-test') || '';
             const text = el.textContent?.trim() || '';
-            if (text.length > 0 && text.length < 100) {
-              found.push({
-                id: `btn-${idCounter++}`,
-                type: 'button',
-                selector: generateSelector(el as HTMLElement),
-                currentText: text,
-                tagName: el.tagName.toLowerCase(),
-                className: el.className || undefined,
-              });
-            }
-          });
+            const tagName = el.tagName.toLowerCase();
+            let type: PageElement['type'] = 'text';
+            if (tagName === 'button' || el.getAttribute('role') === 'button') type = 'button';
+            else if (['h1','h2','h3','h4','h5','h6'].includes(tagName)) type = 'heading';
+            else if (tagName === 'a') type = 'link';
 
-          const headings = iframeDoc.querySelectorAll('h1, h2, h3, h4, h5, h6');
-          headings.forEach((el) => {
-            const text = el.textContent?.trim() || '';
-            if (text.length > 0 && text.length < 200) {
-              found.push({
-                id: `heading-${idCounter++}`,
-                type: 'heading',
-                selector: generateSelector(el as HTMLElement),
-                currentText: text,
-                tagName: el.tagName.toLowerCase(),
-                className: el.className || undefined,
-              });
-            }
-          });
-
-          const trackedElements = iframeDoc.querySelectorAll('[data-track="cta"], [data-cta], .cta, .btn-primary, .button-primary');
-          trackedElements.forEach((el) => {
-            const text = el.textContent?.trim() || '';
-            if (text.length > 0 && text.length < 100 && !found.some(e => e.currentText === text)) {
-              found.push({
-                id: `cta-${idCounter++}`,
-                type: 'button',
-                selector: generateSelector(el as HTMLElement),
-                currentText: text,
-                tagName: el.tagName.toLowerCase(),
-                className: el.className || undefined,
-              });
-            }
+            found.push({
+              id: testName,
+              type,
+              selector: `[data-ab-test="${testName}"]`,
+              currentText: text.length > 200 ? text.slice(0, 197) + '…' : text,
+              tagName,
+              className: el.className || undefined,
+            });
           });
 
           resolve(found);
@@ -499,7 +531,10 @@ export default function CreateExperimentPage() {
               </div>
             ) : (
               <>
-                <p className="text-gray-500 text-xs mb-4">{elements.length}개의 테스트 가능한 요소를 발견했습니다.</p>
+                <p className="text-gray-500 text-xs mb-4">
+                {elements.length}개의 A/B 테스트 요소를 발견했습니다.
+                <span className="ml-2 text-[#00D4D4]">(data-ab-test 속성 기반)</span>
+              </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-96 overflow-y-auto pr-1">
                   {elements.map(element => (
                     <button
@@ -513,7 +548,7 @@ export default function CreateExperimentPage() {
                     >
                       <div className="flex items-start justify-between mb-2">
                         <span className="text-[10px] font-bold text-gray-500 uppercase bg-[#222] px-2 py-0.5 rounded">
-                          {element.type === 'button' ? '버튼' : element.type === 'heading' ? '헤드라인' : '텍스트'}
+                          {element.type === 'button' ? '버튼' : element.type === 'heading' ? '헤드라인' : element.type === 'link' ? '링크' : '텍스트'}
                         </span>
                         <span className="text-[10px] text-gray-600 font-mono">{element.tagName}</span>
                       </div>
