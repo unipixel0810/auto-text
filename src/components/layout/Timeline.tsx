@@ -1274,14 +1274,6 @@ const Timeline = React.memo(({
               <span className="material-icons text-sm">near_me</span>
             </button>
           </Tooltip>
-          <Tooltip label="자르기 툴" shortcut="B">
-            <button
-              onClick={() => onToolChange?.('blade')}
-              className={`p-1 rounded transition-all active:scale-90 ${currentTool === 'blade' ? 'bg-[#00D4D4]/20 text-[#00D4D4]' : 'text-gray-400 hover:text-white hover:bg-white/10'}`}
-            >
-              <span className="material-symbols-outlined text-[18px]">content_cut</span>
-            </button>
-          </Tooltip>
           <div className="w-px h-4 bg-gray-700 mx-1" />
 
           {/* Speed — no shortcut */}
