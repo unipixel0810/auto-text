@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// 사용 가능한 Gemini 모델 목록
+// 사용 가능한 Gemini 모델 목록 (2.0-flash는 신규사용자 불가, 2.5-flash 사용)
 const GEMINI_MODELS = [
   'gemini-2.5-flash',
-  'gemini-2.0-flash',
+  'gemini-flash-latest',
 ];
 
 // OpenAI 모델

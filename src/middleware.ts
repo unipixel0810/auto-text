@@ -17,13 +17,25 @@ export default withAuth(
             }
         }
 
-        // 보안 헤더 추가
+        // 보안 헤더 강화 (개인정보 보호 + 해킹 방지)
         const response = NextResponse.next();
+
+        // 클릭재킹 방지
         response.headers.set('X-Frame-Options', 'DENY');
+        // MIME 스니핑 방지
         response.headers.set('X-Content-Type-Options', 'nosniff');
+        // 리퍼러 정보 최소화 (개인정보 보호)
         response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+        // XSS 방지
         response.headers.set('X-XSS-Protection', '1; mode=block');
-        response.headers.set('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()');
+        // 권한 정책 (불필요한 브라우저 기능 차단)
+        response.headers.set('Permissions-Policy', 'camera=(), microphone=(self), geolocation=(), payment=(), usb=(), bluetooth=()');
+        // HTTPS 강제 (HSTS) — 1년
+        response.headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+        // 다운로드 공격 방지
+        response.headers.set('X-Download-Options', 'noopen');
+        // DNS 프리페치 차단 (정보 유출 방지)
+        response.headers.set('X-DNS-Prefetch-Control', 'off');
 
         return response;
     },
