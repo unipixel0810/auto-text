@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 import { useAuth } from '@/components/auth/AuthProvider';
 
 interface HeaderProps {
@@ -36,11 +37,23 @@ export default function Header({
   onUndo, onRedo, onSplit, onDelete, onCopy, onPaste, onDuplicate, onSelectAll,
   onExport, onImport, onFitToScreen, onToggleSnap, onOpenShortcuts,
 }: HeaderProps) {
-  const { isAdmin: rawIsAdmin } = useAuth();
+  const { isAdmin: rawIsAdmin, user, isAuthenticated, signIn, signOut } = useAuth();
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
   useEffect(() => { setMounted(true); }, []);
   const isAdmin = mounted && rawIsAdmin;
+
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+        setProfileOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState('');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -285,7 +298,103 @@ export default function Header({
           <span className="text-xs font-semibold">Export</span>
         </button>
 
-        {/* Profile area - auth removed */}
+        {/* Profile / Login */}
+        {mounted && (
+          isAuthenticated && user ? (
+            <div className="relative" ref={profileRef}>
+              <button
+                onClick={() => setProfileOpen(prev => !prev)}
+                className="flex items-center gap-2 pl-2 pr-3 py-1 rounded-lg hover:bg-white/10 transition-all group"
+                title={user.name ?? '프로필'}
+              >
+                {user.image ? (
+                  <Image
+                    src={user.image}
+                    alt={user.name ?? ''}
+                    width={26}
+                    height={26}
+                    className="rounded-full ring-1 ring-white/20 group-hover:ring-[#00D4D4]/60 transition-all"
+                  />
+                ) : (
+                  <div className="w-[26px] h-[26px] rounded-full bg-[#00D4D4]/20 flex items-center justify-center ring-1 ring-[#00D4D4]/40">
+                    <span className="material-icons text-[14px] text-[#00D4D4]">person</span>
+                  </div>
+                )}
+                <span className="text-xs text-gray-300 group-hover:text-white transition-colors max-w-[90px] truncate hidden sm:block">
+                  {user.name?.split(' ')[0]}
+                </span>
+                <span className="material-icons text-[14px] text-gray-500">expand_more</span>
+              </button>
+
+              {profileOpen && (
+                <div className="absolute top-full right-0 mt-1.5 w-52 bg-[#1a1a24] border border-white/10 rounded-xl shadow-2xl py-2 z-[100] animate-in fade-in slide-in-from-top-1">
+                  {/* User info */}
+                  <div className="px-4 py-3 border-b border-white/10">
+                    <div className="flex items-center gap-3 mb-1">
+                      {user.image ? (
+                        <Image src={user.image} alt="" width={32} height={32} className="rounded-full" />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full bg-[#00D4D4]/20 flex items-center justify-center">
+                          <span className="material-icons text-[16px] text-[#00D4D4]">person</span>
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-white truncate">{user.name}</p>
+                        <p className="text-[10px] text-gray-500 truncate">{user.email}</p>
+                      </div>
+                    </div>
+                    {isAdmin && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#00D4D4] bg-[#00D4D4]/10 px-2 py-0.5 rounded-full mt-1">
+                        <span className="material-icons text-[11px]">shield</span>
+                        관리자
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Menu items */}
+                  {isAdmin && (
+                    <a
+                      href="/admin/analytics"
+                      className="flex items-center gap-2.5 px-4 py-2.5 text-xs text-gray-300 hover:text-white hover:bg-white/10 transition-colors"
+                      onClick={() => setProfileOpen(false)}
+                    >
+                      <span className="material-icons text-[16px] text-[#00D4D4]">analytics</span>
+                      관리자 대시보드
+                    </a>
+                  )}
+                  <button
+                    onClick={() => { setProfileOpen(false); router.push('/projects'); }}
+                    className="w-full flex items-center gap-2.5 px-4 py-2.5 text-xs text-gray-300 hover:text-white hover:bg-white/10 transition-colors"
+                  >
+                    <span className="material-icons text-[16px] text-gray-500">folder</span>
+                    내 프로젝트
+                  </button>
+                  <div className="h-px bg-white/10 mx-3 my-1" />
+                  <button
+                    onClick={() => { setProfileOpen(false); signOut(); }}
+                    className="w-full flex items-center gap-2.5 px-4 py-2.5 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                  >
+                    <span className="material-icons text-[16px]">logout</span>
+                    로그아웃
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => signIn()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 hover:text-white transition-all"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" className="shrink-0">
+                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+              </svg>
+              Google 로그인
+            </button>
+          )
+        )}
       </div>
     </header>
   );
