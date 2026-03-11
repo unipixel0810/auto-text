@@ -728,7 +728,7 @@ export default function Home() {
   }, [libraryItems, currentVideoUrl]);
 
   // Video add handler (now adds to Media Library)
-  const handleVideoAdd = useCallback((file: File) => {
+  const handleVideoAdd = useCallback((file: File): string => {
     const id = genId();
     const url = URL.createObjectURL(file);
     const isAudio = (file.type.startsWith('audio/') || file.name.endsWith('.m4a') || file.name.endsWith('.aac') || file.name.endsWith('.wav'));
@@ -765,26 +765,35 @@ export default function Home() {
 
     setImportToast(`${file.name} 라이브러리에 추가됨 — 타임라인에 드래그하여 배치하세요`);
     setTimeout(() => setImportToast(null), 3000);
+    return id;
   }, [currentVideoUrl]);
 
   /**
    * 프리뷰 화면 드래그앤드롭 핸들러
-   * main 트랙(trackIndex=1) 끝에 바로 배치
+   * 라이브러리 추가(currentVideoUrl 등 상태 세팅 포함) + main 트랙(trackIndex=1) 끝에 바로 배치
+   * libraryItemId를 사용해 URL 중복 생성 방지
    */
   const handlePlayerFileDrop = useCallback((files: File[]) => {
     files.forEach(file => {
-      // main 트랙 현재 끝 시간 계산
+      // 1. 라이브러리에 추가 → id 반환 (currentVideoUrl/activeFileName/currentVideoFile 세팅도 여기서 처리)
+      const libraryItemId = handleVideoAdd(file);
+
+      // 2. main 트랙 현재 끝 시간 계산
       const mainTrackEnd = clipsRef.current
         .filter(c => c.trackIndex === 1)
         .reduce((maxEnd, c) => Math.max(maxEnd, c.startTime + c.duration), 0);
 
-      // 타임라인 main 트랙에 바로 배치
-      handleClipAdd(file, 1, mainTrackEnd);
+      // 3. 라이브러리 아이템 기반으로 타임라인 main 트랙에 바로 배치 (URL 중복 없음)
+      //    duration이 아직 0일 수 있어서 onloadedmetadata 이후 setLibraryItems가 업데이트됨을 감안,
+      //    짧게 딜레이 후 호출
+      setTimeout(() => {
+        handleClipAdd(null, 1, mainTrackEnd, libraryItemId);
+      }, 100);
 
       setImportToast(`${file.name} 타임라인에 추가됨`);
       setTimeout(() => setImportToast(null), 3000);
     });
-  }, [handleClipAdd]);
+  }, [handleVideoAdd, handleClipAdd]);
 
   const handleClipUpdate = useCallback((clipId: string, updates: Partial<VideoClip>) => {
     setClips(prev => {
