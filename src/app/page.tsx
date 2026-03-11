@@ -14,7 +14,7 @@ import type { SubtitlePreset } from '@/lib/subtitlePresets';
 import { ShortcutsProvider, KeyboardShortcutsModal } from '@/components/shortcuts/KeyboardShortcuts';
 import {
   saveProject, getProject, getCurrentProjectId, setCurrentProjectId,
-  generateProjectId, type SavedProject
+  generateProjectId, type SavedProject, type EditorUIState
 } from '@/lib/projectStorage';
 import { useAuth } from '@/components/auth/AuthProvider';
 import { initEditingTracker, stopEditingTracker, trackEditingAction } from '@/lib/analytics/editingTracker';
@@ -375,6 +375,25 @@ export default function Home() {
         setActiveFileName(project.name);
         if (project.transcripts.length > 0) setTranscripts(project.transcripts);
         if (project.subtitles.length > 0) setSubtitles(project.subtitles);
+        if (project.clips && Array.isArray(project.clips) && project.clips.length > 0) {
+          setClips(project.clips as VideoClip[]);
+        }
+        // UI 상태 복원 (관리자 모드 전환 후 돌아와도 유지)
+        if (project.uiState) {
+          const ui = project.uiState;
+          setLeftPct(ui.leftPct);
+          setRightPct(ui.rightPct);
+          setTimelinePct(ui.timelinePct);
+          setViewerZoom(ui.viewerZoom);
+          setTimelineZoom(ui.timelineZoom);
+          setPlaybackQuality(ui.playbackQuality);
+          setCanvasAspectRatio(ui.canvasAspectRatio);
+          setActiveTab(ui.activeTab);
+          setCurrentTool(ui.currentTool);
+          setCurrentTime(ui.currentTime);
+          setSnapEnabled(ui.snapEnabled);
+          setRippleMode(ui.rippleMode);
+        }
       }
     } else {
       const newId = generateProjectId();
@@ -388,6 +407,13 @@ export default function Home() {
     if (!projectId) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(() => {
+      const uiState: EditorUIState = {
+        leftPct, rightPct, timelinePct,
+        viewerZoom, timelineZoom,
+        playbackQuality, canvasAspectRatio,
+        activeTab, currentTool,
+        currentTime, snapEnabled, rippleMode,
+      };
       const project: SavedProject = {
         id: projectId,
         name: activeFileName || '제목 없는 프로젝트',
@@ -398,11 +424,15 @@ export default function Home() {
         transcripts,
         subtitles,
         clips,
+        uiState,
       };
       saveProject(project);
-    }, 5000);
+    }, 3000);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-  }, [projectId, activeFileName, activeFileDuration, transcripts, subtitles, clips]);
+  }, [projectId, activeFileName, activeFileDuration, transcripts, subtitles, clips,
+      leftPct, rightPct, timelinePct, viewerZoom, timelineZoom,
+      playbackQuality, canvasAspectRatio, activeTab, currentTool,
+      currentTime, snapEnabled, rippleMode]);
 
   // ===== Resizable Panel Handler (percentage-based) =====
   useEffect(() => {

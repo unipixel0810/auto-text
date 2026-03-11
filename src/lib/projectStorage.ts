@@ -5,6 +5,22 @@
 
 import type { TranscriptItem, SubtitleItem } from '@/types/subtitle';
 
+/** 편집 UI 상태 — 관리자 모드 전환 후 복원용 */
+export interface EditorUIState {
+    leftPct: number;
+    rightPct: number;
+    timelinePct: number;
+    viewerZoom: number;
+    timelineZoom: number;
+    playbackQuality: 'auto' | 'high' | 'medium' | 'low';
+    canvasAspectRatio: '16:9' | '9:16' | '1:1' | '3:4';
+    activeTab: 'media' | 'audio' | 'stickers' | 'effects' | 'transitions';
+    currentTool: 'selection' | 'blade';
+    currentTime: number;
+    snapEnabled: boolean;
+    rippleMode: boolean;
+}
+
 export interface SavedProject {
     id: string;
     name: string;
@@ -17,6 +33,7 @@ export interface SavedProject {
     transcripts: TranscriptItem[];
     subtitles: SubtitleItem[];
     clips: unknown[];
+    uiState?: EditorUIState;
 }
 
 const STORAGE_KEY = 'autotext_projects';
