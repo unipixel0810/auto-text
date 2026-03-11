@@ -32,19 +32,12 @@ export default withAuth(
             authorized: ({ token, req }) => {
                 const { pathname } = req.nextUrl;
 
-                // 로그인 없이 접근 가능한 공개 경로
-                const publicPaths = ['/login', '/api/'];
-                if (publicPaths.some(p => pathname.startsWith(p))) {
-                    return true;
+                // 모든 경로 공개 — 누구나 로그인 없이 접근 가능 (베타 오픈)
+                // /admin 경로만 로그인 필수
+                if (pathname.startsWith('/admin')) {
+                    return !!token;
                 }
-
-                // landing 페이지는 공개
-                if (pathname.startsWith('/landing')) {
-                    return true;
-                }
-
-                // 나머지 모든 페이지 경로: 로그인 필수 (베타 정책 — Google 로그인만 허용)
-                return !!token;
+                return true;
             },
         },
     }
