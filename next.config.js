@@ -56,16 +56,10 @@ const nextConfig = {
       },
     ];
   },
-  // 웹팩 설정 - FFmpeg WASM 지원
-  webpack: (config) => {
-    config.resolve.fallback = {
-      ...config.resolve.fallback,
-      fs: false,
-      path: false,
-    };
-    return config;
+  // Turbopack: root를 명시해서 한글 폴더명 경로 문제 우회
+  turbopack: {
+    root: __dirname,
   },
-  turbopack: {},
 };
 
 module.exports = nextConfig;

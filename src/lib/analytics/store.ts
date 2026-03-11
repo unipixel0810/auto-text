@@ -558,10 +558,12 @@ export async function getABExperimentResults(): Promise<any[] | { error: string 
     // 이벤트 데이터를 순회하며 수치 합산
     if (events) {
       events.forEach(e => {
-        // 이미 결과 맵에 있는 실험인 경우에만 집계 (혹은 새로 생성)
+        // 이미 결과 맵에 있는 실험인 경우에만 집계
+        // DB에 없는 실험(孤立 이벤트)은 _meta 없이 추가
         if (!results[e.experiment_name]) {
           results[e.experiment_name] = {
             name: e.experiment_name,
+            _meta: { name: e.experiment_name },
             variants: {
               A: { impressions: 0, clicks: 0 },
               B: { impressions: 0, clicks: 0 },
