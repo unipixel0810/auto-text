@@ -33,7 +33,7 @@ export default withAuth(
                 const { pathname } = req.nextUrl;
 
                 // 로그인 없이 접근 가능한 공개 경로
-                const publicPaths = ['/login', '/api/auth'];
+                const publicPaths = ['/login', '/api/'];
                 if (publicPaths.some(p => pathname.startsWith(p))) {
                     return true;
                 }
@@ -43,7 +43,7 @@ export default withAuth(
                     return true;
                 }
 
-                // 나머지 모든 경로: 로그인 필수 (베타 정책 — Google 로그인만 허용)
+                // 나머지 모든 페이지 경로: 로그인 필수 (베타 정책 — Google 로그인만 허용)
                 return !!token;
             },
         },
