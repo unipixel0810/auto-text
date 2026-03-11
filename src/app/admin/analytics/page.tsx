@@ -768,14 +768,13 @@ const HeatmapTab = memo(function HeatmapTab({
                   {selectedPage && (
                     <iframe
                       ref={iframeRef}
-                      src={selectedPage}
+                      src={`${typeof window !== 'undefined' ? window.location.origin : ''}${selectedPage}`}
                       title="페이지 배경"
                       className="absolute inset-0 w-full h-full border-0"
                       style={{
                         opacity: 0.7,
                         pointerEvents: 'none',
                       }}
-                      sandbox="allow-same-origin allow-scripts"
                       loading="lazy"
                     />
                   )}

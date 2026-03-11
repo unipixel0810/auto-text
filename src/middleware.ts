@@ -20,8 +20,8 @@ export default withAuth(
         // 보안 헤더 강화 (개인정보 보호 + 해킹 방지)
         const response = NextResponse.next();
 
-        // 클릭재킹 방지
-        response.headers.set('X-Frame-Options', 'DENY');
+        // 클릭재킹 방지 (SAMEORIGIN: 같은 도메인 iframe 허용 — 히트맵 배경용)
+        response.headers.set('X-Frame-Options', 'SAMEORIGIN');
         // MIME 스니핑 방지
         response.headers.set('X-Content-Type-Options', 'nosniff');
         // 리퍼러 정보 최소화 (개인정보 보호)
