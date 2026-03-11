@@ -71,6 +71,22 @@ export default function CreateExperimentPage() {
   const [errors, setErrors] = useState<ValidationErrors>({});
   const [activeStep, setActiveStep] = useState(1);
 
+  // 샘플 사이즈 계산기
+  const [baselineCTR, setBaselineCTR] = useState(3);
+  const [mde, setMde] = useState(20);
+
+  // MDE 기반 필요 샘플 사이즈 계산 (양측검정, alpha=0.05, power=0.8)
+  const calcRequiredSampleSize = (ctrPct: number, mdePct: number): number => {
+    const p1 = ctrPct / 100;
+    const p2 = p1 * (1 + mdePct / 100);
+    if (p1 <= 0 || p1 >= 1 || p2 <= 0 || p2 >= 1) return 0;
+    const pooled = (p1 + p2) / 2;
+    const z_alpha = 1.96;
+    const z_beta = 0.842;
+    const n = 2 * pooled * (1 - pooled) * Math.pow(z_alpha + z_beta, 2) / Math.pow(p2 - p1, 2);
+    return Math.ceil(n);
+  };
+
   useEffect(() => {
     fetchPages();
     fetchSavedExperiments();
@@ -755,6 +771,76 @@ export default function CreateExperimentPage() {
                   {errors.goal && <p className="text-red-400 text-[10px] mt-1">{errors.goal}</p>}
                 </div>
               )}
+
+              {/* Sample Size Calculator */}
+              <div className="bg-black/30 rounded-xl p-5 border border-[#222]">
+                <h3 className="text-xs font-bold text-gray-400 mb-4 flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[16px] text-[#00D4D4]">calculate</span>
+                  필요 샘플 사이즈 계산기
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                  <div>
+                    <label className="block text-[10px] text-gray-500 mb-1.5">
+                      현재 A 변형 CTR (%)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={0.1}
+                        max={99}
+                        step={0.1}
+                        value={baselineCTR}
+                        onChange={(e) => setBaselineCTR(parseFloat(e.target.value) || 1)}
+                        className="w-full bg-black border border-[#333] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#00D4D4] transition-colors"
+                      />
+                      <span className="text-gray-500 text-sm">%</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-500 mb-1.5">
+                      최소 탐지 효과 크기 MDE (%)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={1}
+                        max={200}
+                        step={1}
+                        value={mde}
+                        onChange={(e) => setMde(parseInt(e.target.value) || 10)}
+                        className="w-full bg-black border border-[#333] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#00D4D4] transition-colors"
+                      />
+                      <span className="text-gray-500 text-sm">%</span>
+                    </div>
+                  </div>
+                </div>
+                {(() => {
+                  const n = calcRequiredSampleSize(baselineCTR, mde);
+                  const total = n * 2;
+                  return n > 0 ? (
+                    <div className="bg-[#00D4D4]/5 rounded-lg p-3 border border-[#00D4D4]/20">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-[10px] text-gray-500 mb-0.5">변형당 필요 노출수</p>
+                          <p className="text-xl font-black font-mono text-[#00D4D4]">{n.toLocaleString()}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[10px] text-gray-500 mb-0.5">총 필요 노출수</p>
+                          <p className="text-xl font-black font-mono text-white">{total.toLocaleString()}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[10px] text-gray-500 mb-0.5">검정력 80% · 유의수준 5%</p>
+                          <p className="text-[10px] text-gray-400">
+                            A: {baselineCTR}% → B: {(baselineCTR * (1 + mde / 100)).toFixed(2)}%
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-red-400 text-xs">유효한 CTR과 MDE 값을 입력해주세요.</p>
+                  );
+                })()}
+              </div>
 
               {/* Duration */}
               <div>

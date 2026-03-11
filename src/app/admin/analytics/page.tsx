@@ -146,6 +146,7 @@ const OverviewTab = memo(function OverviewTab({
   const referrers: { name: string; value: number }[] = charts?.referralSources || [];
   const devices: { name: string; value: number }[] = charts?.devices || [];
   const daily: { name: string; value: number }[] = charts?.daily || [];
+  const topDurations: { name: string; value: number }[] = charts?.topDurations || [];
 
   return (
     <div className="space-y-6">
@@ -232,20 +233,56 @@ const OverviewTab = memo(function OverviewTab({
         </ChartCard>
       </div>
 
-      {/* Hourly distribution */}
-      {charts?.hourly && charts.hourly.length > 0 && (
-        <ChartCard title="시간대별 방문 분포" icon="schedule">
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={charts.hourly} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e1e2e" vertical={false} />
-              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#555', fontSize: 9 }} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#555', fontSize: 10 }} />
-              <RechartsTooltip content={<CustomTooltip />} />
-              <Bar dataKey="value" name="방문" fill="#3B82F6" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+      {/* 시간대별 분포 + 페이지별 체류시간 2열 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Hourly distribution */}
+        {charts?.hourly && charts.hourly.length > 0 && (
+          <ChartCard title="시간대별 방문 분포" icon="schedule">
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={charts.hourly} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e1e2e" vertical={false} />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#555', fontSize: 9 }} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fill: '#555', fontSize: 10 }} />
+                <RechartsTooltip content={<CustomTooltip />} />
+                <Bar dataKey="value" name="방문" fill="#3B82F6" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+
+        {/* 페이지별 평균 체류시간 TOP 5 */}
+        <ChartCard title="페이지별 평균 체류시간 TOP 5" icon="timer">
+          {topDurations.length > 0 ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart
+                data={topDurations}
+                layout="vertical"
+                margin={{ top: 0, right: 40, left: 0, bottom: 0 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e1e2e" horizontal={false} />
+                <XAxis
+                  type="number"
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fill: '#555', fontSize: 10 }}
+                  tickFormatter={(v: number) => `${v}초`}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  width={110}
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fill: '#888', fontSize: 10 }}
+                  tickFormatter={(v: string) => v.length > 15 ? v.slice(0, 13) + '…' : v}
+                />
+                <RechartsTooltip content={<CustomTooltip />} />
+                <Bar dataKey="value" name="평균 체류시간(초)" fill="#8B5CF6" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : <EmptyState icon="timer" message="체류시간 데이터 없음 (방문자가 페이지를 이탈하면 기록됩니다)" />}
         </ChartCard>
-      )}
+      </div>
     </div>
   );
 });

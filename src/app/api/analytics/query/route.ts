@@ -21,7 +21,19 @@ export async function GET(req: NextRequest) {
 
     if (action === 'charts') {
       const days = searchParams.get('days');
-      const charts = await getChartData(days ? parseInt(days) : 30);
+      const raw = await getChartData(days ? parseInt(days) : 30);
+      // OverviewTab이 기대하는 키로 정규화
+      // store: visitorsTrend → UI: daily
+      // store: deviceDist   → UI: devices
+      // store: topDurations → UI: topDurations (신규), topPages fallback 포함
+      const r = raw as Record<string, unknown>;
+      const charts = {
+        ...raw,
+        daily: raw.visitorsTrend ?? (r.daily as typeof raw.visitorsTrend) ?? [],
+        devices: raw.deviceDist ?? (r.devices as typeof raw.deviceDist) ?? [],
+        topPages: (r.topPages as { name: string; value: number }[] | undefined) ?? (raw.topDurations ?? []).map((d) => ({ name: d.name, value: d.value })),
+        topDurations: raw.topDurations ?? [],
+      };
       return NextResponse.json(charts);
     }
 

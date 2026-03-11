@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import type { ABAnalysisResult } from '@/app/api/ai/analyze-ab/route';
 
 interface VariantData {
   impressions: number;
@@ -37,11 +38,36 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; 
   completed: { label: '완료', color: 'text-blue-400', bg: 'bg-blue-500/10', ring: 'ring-blue-500/30' },
 };
 
+// 베이지안 A/B 테스트: Beta(a,b) 샘플링으로 P(B>A) 근사
+function betaSample(alpha: number, beta: number): number {
+  // Johnk's method 근사
+  let x = 0, y = 0;
+  while (x + y === 0 || x + y > 1) {
+    const u = Math.random();
+    const v = Math.random();
+    x = Math.pow(u, 1 / alpha);
+    y = Math.pow(v, 1 / beta);
+  }
+  return x / (x + y);
+}
+
+function bayesianProbBWins(aClicks: number, aImpressions: number, bClicks: number, bImpressions: number): number {
+  const aAlpha = aClicks + 1, aBeta = Math.max(aImpressions - aClicks + 1, 1);
+  const bAlpha = bClicks + 1, bBeta = Math.max(bImpressions - bClicks + 1, 1);
+  let bWins = 0;
+  const N = 5000;
+  for (let i = 0; i < N; i++) {
+    if (betaSample(bAlpha, bBeta) > betaSample(aAlpha, aBeta)) bWins++;
+  }
+  return (bWins / N) * 100;
+}
+
 export default function ExperimentsDashboard() {
   const [experiments, setExperiments] = useState<ExperimentResult[]>([]);
   const [loading, setLoading] = useState(true);
-  const [aiAnalysis, setAiAnalysis] = useState<Record<string, string>>({});
+  const [aiAnalysis, setAiAnalysis] = useState<Record<string, ABAnalysisResult | string>>({});
   const [analyzing, setAnalyzing] = useState<string | null>(null);
+  const [applyingWinner, setApplyingWinner] = useState<string | null>(null);
   const [supabaseConfigured, setSupabaseConfigured] = useState<boolean>(true);
   const [expandedExperiment, setExpandedExperiment] = useState<string | null>(null);
 
@@ -103,7 +129,7 @@ export default function ExperimentsDashboard() {
       });
 
       const data = await res.json();
-      setAiAnalysis(prev => ({ ...prev, [exp.name]: data.analysis }));
+      setAiAnalysis(prev => ({ ...prev, [exp.name]: data.structured ?? data.analysis }));
     } catch (err) {
       console.error('AI analysis failed:', err);
       setAiAnalysis(prev => ({ ...prev, [exp.name]: 'AI 분석을 가져오는 데 실패했습니다.' }));
@@ -155,6 +181,31 @@ export default function ExperimentsDashboard() {
       );
     } catch (err) {
       console.error('Failed to end experiment:', err);
+    }
+  };
+
+  const handleApplyWinner = async (expName: string, winner: 'A' | 'B') => {
+    if (!confirm(`"${expName}" 실험의 승자 변형 ${winner}를 적용하시겠습니까?\n이후 모든 사용자가 변형 ${winner}를 보게 됩니다.`)) return;
+    setApplyingWinner(expName);
+    try {
+      const res = await fetch('/api/ab-experiments/apply-winner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: expName, winner }),
+      });
+      if (res.ok) {
+        setExperiments(prev =>
+          prev.map(e => e.name === expName ? { ...e, status: 'completed' as const } : e)
+        );
+        alert(`변형 ${winner}가 성공적으로 적용되었습니다.`);
+      } else {
+        alert('승자 적용에 실패했습니다. API를 확인해주세요.');
+      }
+    } catch (err) {
+      console.error('Failed to apply winner:', err);
+      alert('오류가 발생했습니다.');
+    } finally {
+      setApplyingWinner(null);
     }
   };
 
@@ -285,6 +336,11 @@ export default function ExperimentsDashboard() {
               const statusConfig = STATUS_CONFIG[exp.status || 'running'];
               const isExpanded = expandedExperiment === exp.name;
 
+              const bayesianProb = bayesianProbBWins(
+                exp.variants.A.clicks, exp.variants.A.impressions,
+                exp.variants.B.clicks, exp.variants.B.impressions
+              );
+
               return (
                 <div key={exp.name} className="bg-[#1a1a1a] border border-[#222] rounded-2xl overflow-hidden shadow-xl">
                   {/* Header */}
@@ -368,7 +424,7 @@ export default function ExperimentsDashboard() {
                         />
 
                         {/* Lift and Confidence */}
-                        <div className="mt-4 grid grid-cols-3 gap-4">
+                        <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
                           <div className="bg-black/30 rounded-xl p-4 border border-[#222]">
                             <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">효과 크기 (리프트)</p>
                             <p className={`text-xl font-black font-mono ${lift > 0 ? 'text-green-400' : lift < 0 ? 'text-red-400' : 'text-gray-400'}`}>
@@ -386,11 +442,31 @@ export default function ExperimentsDashboard() {
                             <p className="text-sm font-mono text-gray-300">
                               {exp.pValue}
                               <span className="text-[10px] text-gray-600 ml-2">
-                                (신뢰도 {((1 - exp.pValue) * 100).toFixed(1)}%)
+                                ({((1 - exp.pValue) * 100).toFixed(1)}%)
                               </span>
                             </p>
                           </div>
+                          <div className="bg-black/30 rounded-xl p-4 border border-[#222]">
+                            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">P(B&gt;A) 베이지안</p>
+                            <p className={`text-xl font-black font-mono ${bayesianProb >= 95 ? 'text-green-400' : bayesianProb >= 80 ? 'text-yellow-400' : 'text-gray-400'}`}>
+                              {bayesianProb.toFixed(1)}%
+                            </p>
+                          </div>
                         </div>
+
+                        {/* Apply Winner Button */}
+                        {(exp.isSignificant || bayesianProb >= 95) && exp.winner !== 'Draw' && exp.status !== 'completed' && (
+                          <div className="mt-3 flex justify-end">
+                            <button
+                              onClick={() => handleApplyWinner(exp.name, exp.winner as 'A' | 'B')}
+                              disabled={applyingWinner === exp.name}
+                              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs bg-purple-500/10 text-purple-400 font-bold hover:bg-purple-500/20 ring-1 ring-purple-500/30 transition-all disabled:opacity-50"
+                            >
+                              <span className="material-symbols-outlined text-[14px]">trophy</span>
+                              {applyingWinner === exp.name ? '적용 중...' : `변형 ${exp.winner} 승자 적용`}
+                            </button>
+                          </div>
+                        )}
 
                         {/* Sample Size Progress */}
                         <div className="bg-black/30 rounded-xl p-4 border border-[#222]">
@@ -433,9 +509,13 @@ export default function ExperimentsDashboard() {
                           </button>
                         </div>
 
-                        <div className="flex-1 text-sm text-gray-300 leading-relaxed">
+                        <div className="flex-1 overflow-y-auto">
                           {aiAnalysis[exp.name] ? (
-                            <p className="whitespace-pre-wrap">{aiAnalysis[exp.name]}</p>
+                            typeof aiAnalysis[exp.name] === 'object' ? (
+                              <AIResultCard result={aiAnalysis[exp.name] as ABAnalysisResult} />
+                            ) : (
+                              <p className="text-sm text-gray-300 whitespace-pre-wrap">{aiAnalysis[exp.name] as string}</p>
+                            )
                           ) : (
                             <div className="flex flex-col items-center justify-center py-8 text-center">
                               <span className="material-symbols-outlined text-[32px] text-gray-700 mb-2">auto_awesome</span>
@@ -463,6 +543,83 @@ export default function ExperimentsDashboard() {
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+const VERDICT_CONFIG: Record<string, { color: string; bg: string; ring: string; icon: string }> = {
+  'B 채택 권장':    { color: 'text-green-400',  bg: 'bg-green-500/10',  ring: 'ring-green-500/30',  icon: 'thumb_up' },
+  'A 유지 권장':    { color: 'text-yellow-400', bg: 'bg-yellow-500/10', ring: 'ring-yellow-500/30', icon: 'thumb_down' },
+  '데이터 부족':    { color: 'text-gray-400',   bg: 'bg-gray-500/10',  ring: 'ring-gray-500/30',  icon: 'hourglass_empty' },
+  '무의미한 차이':  { color: 'text-blue-400',   bg: 'bg-blue-500/10',  ring: 'ring-blue-500/30',  icon: 'remove' },
+};
+const CONFIDENCE_CONFIG: Record<string, { color: string }> = {
+  '높음(95%+)':    { color: 'text-green-400' },
+  '중간(80-95%)': { color: 'text-yellow-400' },
+  '낮음(80% 미만)': { color: 'text-red-400' },
+};
+const PRIORITY_CONFIG: Record<string, { color: string; bg: string }> = {
+  '즉시': { color: 'text-red-400',    bg: 'bg-red-500/10' },
+  '단기': { color: 'text-yellow-400', bg: 'bg-yellow-500/10' },
+  '장기': { color: 'text-blue-400',   bg: 'bg-blue-500/10' },
+};
+
+function AIResultCard({ result }: { result: ABAnalysisResult }) {
+  const vc = VERDICT_CONFIG[result.verdict] ?? VERDICT_CONFIG['데이터 부족'];
+  const cc = CONFIDENCE_CONFIG[result.confidence] ?? { color: 'text-gray-400' };
+  return (
+    <div className="space-y-3 text-xs">
+      {/* Verdict + Confidence */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={`flex items-center gap-1 px-2.5 py-1 rounded-full font-bold ring-1 ${vc.bg} ${vc.color} ${vc.ring}`}>
+          <span className="material-symbols-outlined text-[13px]">{vc.icon}</span>
+          {result.verdict}
+        </span>
+        <span className={`font-mono text-[10px] ${cc.color}`}>신뢰도: {result.confidence}</span>
+      </div>
+      {/* Summary */}
+      <p className="text-gray-300 leading-relaxed">{result.summary}</p>
+      {/* Insights */}
+      {result.insights?.length > 0 && (
+        <div>
+          <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">인사이트</p>
+          <ul className="space-y-1">
+            {result.insights.map((ins, i) => (
+              <li key={i} className="flex gap-2 text-gray-400">
+                <span className="text-[#00D4D4] mt-0.5 shrink-0">•</span>
+                <span>{ins}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {/* Actions */}
+      {result.actions?.length > 0 && (
+        <div>
+          <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">액션 아이템</p>
+          <div className="space-y-1.5">
+            {result.actions.map((act, i) => {
+              const pc = PRIORITY_CONFIG[act.priority] ?? { color: 'text-gray-400', bg: 'bg-gray-500/10' };
+              return (
+                <div key={i} className="flex gap-2 items-start">
+                  <span className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded ${pc.bg} ${pc.color}`}>{act.priority}</span>
+                  <div className="min-w-0">
+                    <p className="text-gray-300">{act.action}</p>
+                    <p className="text-[10px] text-gray-500">{act.expected_impact}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {/* Next Test */}
+      {result.next_test && (
+        <div className="mt-2 pt-2 border-t border-[#222]">
+          <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">다음 테스트 제안</p>
+          <p className="text-gray-400 italic">{result.next_test}</p>
+        </div>
+      )}
     </div>
   );
 }
