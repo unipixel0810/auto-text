@@ -45,6 +45,7 @@ export default function Home() {
   const [rippleMode, setRippleMode] = useState(true);
   const [isTimelineHovered, setIsTimelineHovered] = useState(false);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const [importToast, setImportToast] = useState<string | null>(null);
   const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false);
   const [currentTool, setCurrentTool] = useState<'selection' | 'blade'>('selection');
@@ -2026,6 +2027,7 @@ export default function Home() {
             videoRefCallback={(ref) => { videoRef.current = ref; }}
             onPresetDrop={handlePresetDrop}
             onFileDrop={handlePlayerFileDrop}
+            isDraggingPlayhead={isDraggingPlayhead}
             viewerZoom={viewerZoom}
             onViewerZoomChange={setViewerZoom}
             playbackQuality={playbackQuality}
@@ -2107,6 +2109,7 @@ export default function Home() {
             snapEnabled={snapEnabled}
             onSnapToggle={() => setSnapEnabled(prev => !prev)}
             onPlayheadChange={handlePlayheadChange}
+            onPlayheadDragChange={setIsDraggingPlayhead}
             onHoverTimeChange={setHoverTimeSynced}
             onClipAdd={handleClipAdd}
             onClipUpdate={handleClipUpdate}

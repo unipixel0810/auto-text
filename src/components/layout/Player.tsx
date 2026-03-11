@@ -592,6 +592,7 @@ interface PlayerProps {
   onAspectRatioChange?: (ratio: '16:9' | '9:16' | '1:1' | '3:4') => void;
   onInteractionStart?: () => void;
   onInteractionEnd?: () => void;
+  isDraggingPlayhead?: boolean;
 }
 
 const Player = React.memo(({
@@ -618,6 +619,7 @@ const Player = React.memo(({
   onAspectRatioChange,
   onInteractionStart,
   onInteractionEnd,
+  isDraggingPlayhead = false,
 }: PlayerProps) => {
   const [internalCurrentTime, setInternalCurrentTime] = useState(0);
   const [totalTime, setTotalTime] = useState(0);
@@ -1196,7 +1198,13 @@ const Player = React.memo(({
             )}
           </div>
           <div className="flex items-center space-x-2">
-            <span className="text-xs font-mono text-primary">{formatTime(currentTime)}</span>
+            <span className={`text-xs font-mono font-semibold transition-colors duration-100 ${
+              isDraggingPlayhead
+                ? 'text-orange-400'
+                : isPlaying
+                  ? 'text-white'
+                  : 'text-[#4488FF]'
+            }`}>{formatTime(currentTime)}</span>
             <span className="text-xs font-mono text-text-secondary">/ {formatTime(totalTime)}</span>
           </div>
         </div>

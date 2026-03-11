@@ -38,6 +38,7 @@ interface TimelineProps {
   onSubtitleAdd?: (text: string, startTime: number) => void;
   isTimelineHovered?: boolean;
   onHoverChange?: (hovered: boolean) => void;
+  onPlayheadDragChange?: (isDragging: boolean) => void;
 }
 
 const TRACK_CONTROLS_WIDTH = 80;
@@ -349,7 +350,7 @@ const TRACK_COLORS: Record<number, { bg: string; bgSel: string; border: string; 
 const Timeline = React.memo(({
   clips, playheadPosition, playbackPosition = 0, isPlaying = false, currentTool = 'selection', onToolChange, selectedClipIds = [], zoom, onZoomChange, snapEnabled = true, onSnapToggle,
   onPlayheadChange, onHoverTimeChange, onClipAdd, onSubtitleAdd, onClipUpdate, onClipSelect, onClipDelete,
-  onSplit, onUndo, onRedo, onSpeedChange, onFitToScreen, onTrimLeft, onTrimRight, rippleMode, onRippleToggle, onResizeEnd, onInteractionStart, onInteractionEnd, isTimelineHovered, onHoverChange,
+  onSplit, onUndo, onRedo, onSpeedChange, onFitToScreen, onTrimLeft, onTrimRight, rippleMode, onRippleToggle, onResizeEnd, onInteractionStart, onInteractionEnd, isTimelineHovered, onHoverChange, onPlayheadDragChange,
 }: TimelineProps) => {
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; clipIds: string[] } | null>(null);
@@ -715,18 +716,19 @@ const Timeline = React.memo(({
   const handlePlayheadMouseDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault(); e.stopPropagation();
     setIsDraggingPlayhead(true);
-  }, []);
+    onPlayheadDragChange?.(true);
+  }, [onPlayheadDragChange]);
 
   useEffect(() => {
     if (!isDraggingPlayhead) return;
     const move = (e: PointerEvent) => {
-      if (e.pointerType === 'mouse' && e.buttons === 0) { setIsDraggingPlayhead(false); return; }
+      if (e.pointerType === 'mouse' && e.buttons === 0) { setIsDraggingPlayhead(false); onPlayheadDragChange?.(false); return; }
       if (!tracksRef.current) return;
       const rect = tracksRef.current.getBoundingClientRect();
       const scrollLeft = tracksRef.current.parentElement?.scrollLeft || 0;
       onPlayheadChange?.(Math.max(0, (e.clientX - rect.left + scrollLeft - TRACK_CONTROLS_WIDTH) / pixelsPerSecond));
     };
-    const up = () => setIsDraggingPlayhead(false);
+    const up = () => { setIsDraggingPlayhead(false); onPlayheadDragChange?.(false); };
     const onVisibility = () => { if (document.hidden) up(); };
     // pointermove/pointerup: 마우스를 빠르게 놓거나 포커스 이탈 시에도 확실히 종료
     document.addEventListener('pointermove', move);
@@ -1428,8 +1430,22 @@ const Timeline = React.memo(({
             const showSubTicks = subStep * pixelsPerSecond >= 4;
             const totalTicks = Math.ceil(maxTime / subStep) + 1;
 
-            // 시간 포맷: 1분 미만이면 초만, 1시간 미만이면 분:초, 그 이상 시:분:초
+            // 프레임 단위 레이블 표시: 레이블 간격 1초 미만 or zoom이 충분히 클 때
+            const showFrames = labelStep < 1 || pixelsPerSecond >= 150;
+            const FPS = 30;
+
+            // 시간 포맷: zoom에 따라 프레임 포함 여부 결정
             const fmtLabel = (s: number) => {
+              if (showFrames) {
+                // HH:MM:SS:FF
+                const h = Math.floor(s / 3600);
+                const m = Math.floor((s % 3600) / 60);
+                const sec = Math.floor(s % 60);
+                const f = Math.round((s % 1) * FPS);
+                if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}:${String(f).padStart(2,'0')}`;
+                if (m > 0) return `${m}:${String(sec).padStart(2,'0')}:${String(f).padStart(2,'0')}`;
+                return `${String(sec).padStart(2,'0')}:${String(f).padStart(2,'0')}`;
+              }
               if (s < 60) return `${s}s`;
               if (s < 3600) {
                 const m = Math.floor(s / 60), sec = s % 60;
