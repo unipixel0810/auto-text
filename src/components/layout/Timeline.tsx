@@ -1399,12 +1399,12 @@ const Timeline = React.memo(({
           <Tooltip label="Trim Left" shortcut="Q">
             <button onClick={onTrimLeft} className={cyanBtn()} disabled={selectedClipIds.length !== 1}>
               <span className="material-icons text-[16px]">content_cut</span>
-              <span className="material-icons text-[12px] -ml-0.5">chevron_left</span>
+              <span className="text-[13px] font-bold -ml-0.5">[</span>
             </button>
           </Tooltip>
           <Tooltip label="Trim Right" shortcut="W">
             <button onClick={onTrimRight} className={cyanBtn()} disabled={selectedClipIds.length !== 1}>
-              <span className="material-icons text-[12px] -mr-0.5">chevron_right</span>
+              <span className="text-[13px] font-bold -mr-0.5">]</span>
               <span className="material-icons text-[16px]">content_cut</span>
             </button>
           </Tooltip>
