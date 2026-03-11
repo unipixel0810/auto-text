@@ -850,7 +850,20 @@ const Player = React.memo(({
         c.positionX === prev[i].positionX &&
         c.positionY === prev[i].positionY &&
         c.rotation === prev[i].rotation &&
-        c.opacity === prev[i].opacity
+        c.opacity === prev[i].opacity &&
+        c.fontSize === prev[i].fontSize &&
+        c.lineHeight === prev[i].lineHeight &&
+        c.letterSpacing === prev[i].letterSpacing &&
+        c.fontFamily === prev[i].fontFamily &&
+        c.fontWeight === prev[i].fontWeight &&
+        c.fontStyle === prev[i].fontStyle &&
+        c.textDecoration === prev[i].textDecoration &&
+        c.color === prev[i].color &&
+        c.backgroundColor === prev[i].backgroundColor &&
+        c.strokeColor === prev[i].strokeColor &&
+        c.strokeWidth === prev[i].strokeWidth &&
+        c.shadowBlur === prev[i].shadowBlur &&
+        c.name === prev[i].name
       );
 
     if (!isSameSet) prevVisualClipsRef.current = current;
@@ -874,7 +887,13 @@ const Player = React.memo(({
         c.rotation === prev[i].rotation &&
         c.color === prev[i].color &&
         c.backgroundColor === prev[i].backgroundColor &&
+        c.fontFamily === prev[i].fontFamily &&
+        c.fontSize === prev[i].fontSize &&
         c.fontWeight === prev[i].fontWeight &&
+        c.fontStyle === prev[i].fontStyle &&
+        c.textDecoration === prev[i].textDecoration &&
+        c.lineHeight === prev[i].lineHeight &&
+        c.letterSpacing === prev[i].letterSpacing &&
         c.strokeColor === prev[i].strokeColor &&
         c.strokeWidth === prev[i].strokeWidth &&
         c.shadowBlur === prev[i].shadowBlur &&
