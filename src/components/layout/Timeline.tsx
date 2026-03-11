@@ -101,12 +101,6 @@ const Playhead = React.memo(({ x, onPointerDown, isDragging, time }: {
     onPointerDown={onPointerDown}
   >
     <div className={`absolute top-0 bottom-0 w-px left-1/2 -ml-[0.5px] transition-all ${isDragging ? 'w-0.5 bg-orange-400' : 'bg-[#4488FF] group-hover:w-0.5 group-hover:bg-[#5599FF]'}`} />
-    {/* 드래그 중 주황색 시간 툴팁 — overflow 밖으로 나오도록 fixed 위치 대신 translate로 위에 표시 */}
-    {isDragging && time !== undefined && (
-      <div className="absolute left-1/2 -translate-x-1/2 bg-orange-500 text-black text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap shadow-lg z-[9999]" style={{ top: '2px' }}>
-        {formatTimecode(time)}
-      </div>
-    )}
   </div>
 ));
 
@@ -731,13 +725,26 @@ const Timeline = React.memo(({
   }, [onPlayheadDragChange]);
 
   useEffect(() => {
-    if (!isDraggingPlayhead) return;
+    if (!isDraggingPlayhead) {
+      // 드래그 종료 시 툴팁 숨기기
+      if (hoverLineRef.current) hoverLineRef.current.style.display = 'none';
+      if (hoverRulerRef.current) hoverRulerRef.current.style.display = 'none';
+      return;
+    }
     const move = (e: PointerEvent) => {
       if (e.pointerType === 'mouse' && e.buttons === 0) { setIsDraggingPlayhead(false); onPlayheadDragChange?.(false); return; }
       if (!tracksRef.current) return;
       const rect = tracksRef.current.getBoundingClientRect();
       const scrollLeft = tracksRef.current.parentElement?.scrollLeft || 0;
-      onPlayheadChange?.(Math.max(0, (e.clientX - rect.left + scrollLeft - TRACK_CONTROLS_WIDTH) / pixelsPerSecond));
+      const time = Math.max(0, (e.clientX - rect.left + scrollLeft - TRACK_CONTROLS_WIDTH) / pixelsPerSecond);
+      onPlayheadChange?.(time);
+      // 드래그 중 주황 툴팁 업데이트
+      const tracksX = TRACK_CONTROLS_WIDTH + time * pixelsPerSecond;
+      if (hoverLineRef.current) { hoverLineRef.current.style.display = ''; hoverLineRef.current.style.left = `${tracksX}px`; }
+      if (hoverTooltip1Ref.current) hoverTooltip1Ref.current.textContent = formatTimecode(time);
+      const rulerX = time * pixelsPerSecond;
+      if (hoverRulerRef.current) { hoverRulerRef.current.style.display = ''; hoverRulerRef.current.style.left = `${rulerX}px`; }
+      if (hoverTooltip2Ref.current) hoverTooltip2Ref.current.textContent = formatTimecode(time);
     };
     const up = () => { setIsDraggingPlayhead(false); onPlayheadDragChange?.(false); };
     const onVisibility = () => { if (document.hidden) up(); };
