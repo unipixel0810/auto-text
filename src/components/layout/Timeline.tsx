@@ -1522,7 +1522,7 @@ const Timeline = React.memo(({
             style={{ display: 'none', zIndex: 15 }}
           >
             <div className="absolute top-0 bottom-0 w-px bg-orange-400/80 left-1/2 -ml-[0.5px]" />
-            <div ref={hoverTooltip2Ref} className="absolute -top-6 left-1/2 bg-orange-500 text-black text-[9px] font-mono px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap shadow-lg -translate-x-1/2" />
+            <div ref={hoverTooltip2Ref} className="hidden" />
           </div>
 
           {/* Lasso Box */}
@@ -1558,10 +1558,10 @@ const Timeline = React.memo(({
         {/* Scrub time tooltip (fixed playhead feedback) */}
         {scrubTime !== null && (
           <div
-            className="absolute -top-1 z-30 bg-[#4488FF] text-white text-[9px] font-mono px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap"
+            className="absolute -top-1 z-30 bg-orange-500 text-black text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap shadow-lg"
             style={{ left: `${TRACK_CONTROLS_WIDTH + scrubTime * pixelsPerSecond}px`, transform: 'translateX(-50%)' }}
           >
-            {fmtTime(scrubTime)}
+            {formatTimecode(scrubTime)}
           </div>
         )}
 
