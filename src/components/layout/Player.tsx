@@ -583,6 +583,7 @@ interface PlayerProps {
   onClipUpdate?: (clipId: string, updates: Partial<VideoClip>) => void;
   videoRefCallback?: (ref: HTMLVideoElement | null) => void;
   onPresetDrop?: (preset: SubtitlePreset, x: number, y: number) => void;
+  onFileDrop?: (files: File[]) => void;
   viewerZoom?: number;
   onViewerZoomChange?: (zoom: number) => void;
   playbackQuality?: 'auto' | 'high' | 'medium' | 'low';
@@ -608,6 +609,7 @@ const Player = React.memo(({
   onClipUpdate,
   videoRefCallback,
   onPresetDrop,
+  onFileDrop,
   viewerZoom = 100,
   onViewerZoomChange,
   playbackQuality = 'auto',
@@ -960,20 +962,41 @@ const Player = React.memo(({
   };
 
   const [isPresetDragOver, setIsPresetDragOver] = useState(false);
+  const [isFileDragOver, setIsFileDragOver] = useState(false);
+
+  const ACCEPTED_FILE_TYPES = ['video/', 'audio/', 'image/'];
+  const isAcceptedFile = (item: DataTransferItem) =>
+    item.kind === 'file' && ACCEPTED_FILE_TYPES.some(t => item.type.startsWith(t));
+
   const handleCanvasDragOver = useCallback((e: React.DragEvent) => {
     if (e.dataTransfer.types.includes('application/subtitle-preset')) {
       e.preventDefault();
       e.stopPropagation();
       setIsPresetDragOver(true);
+      return;
+    }
+    // 파일 드래그 감지
+    const hasFile = Array.from(e.dataTransfer.items).some(isAcceptedFile);
+    if (hasFile) {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsFileDragOver(true);
     }
   }, []);
+
   const handleCanvasDragLeave = useCallback((e: React.DragEvent) => {
     e.stopPropagation();
     setIsPresetDragOver(false);
+    setIsFileDragOver(false);
   }, []);
+
   const handleCanvasDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
     e.stopPropagation();
     setIsPresetDragOver(false);
+    setIsFileDragOver(false);
+
+    // 자막 프리셋 드롭
     const presetData = e.dataTransfer.getData('application/subtitle-preset');
     if (presetData && onPresetDrop) {
       try {
@@ -983,8 +1006,17 @@ const Player = React.memo(({
         const y = rect ? ((e.clientY - rect.top) / rect.height) * 100 : 50;
         onPresetDrop(preset, x, y);
       } catch { }
+      return;
     }
-  }, [onPresetDrop]);
+
+    // 파일 드롭
+    if (onFileDrop && e.dataTransfer.files.length > 0) {
+      const files = Array.from(e.dataTransfer.files).filter(f =>
+        ACCEPTED_FILE_TYPES.some(t => f.type.startsWith(t))
+      );
+      if (files.length > 0) onFileDrop(files);
+    }
+  }, [onPresetDrop, onFileDrop]);
 
   const handleClipContextMenu = useCallback((e: React.MouseEvent, clipId: string) => {
     e.preventDefault();
@@ -1014,6 +1046,7 @@ const Player = React.memo(({
         <div
           ref={containerRef}
           className={`bg-black shadow-2xl relative group overflow-visible transition-all duration-200 ${isPresetDragOver ? 'border-2 border-[#00D4D4] border-dashed shadow-lg shadow-[#00D4D4]/30'
+            : isFileDragOver ? 'border-2 border-blue-400 border-dashed shadow-lg shadow-blue-400/30'
             : 'border border-border-color/30'
             }`}
           onClick={(e) => handleVideoClick(e)}
@@ -1048,11 +1081,15 @@ const Player = React.memo(({
               />
             ) : (
               <div
-                className="w-full h-full flex flex-col items-center justify-center bg-gray-900 gap-3 cursor-pointer hover:bg-gray-800 transition-colors"
+                className={`w-full h-full flex flex-col items-center justify-center gap-3 cursor-pointer transition-colors ${isFileDragOver ? 'bg-blue-900/40' : 'bg-gray-900 hover:bg-gray-800'}`}
                 onDoubleClick={() => {}}
               >
-                <span className="material-icons text-gray-600 text-6xl">play_circle_outline</span>
-                <span className="text-gray-500 text-sm font-medium">더블클릭 또는 파일을 드래그하여 추가</span>
+                <span className={`material-icons text-6xl transition-colors ${isFileDragOver ? 'text-blue-400' : 'text-gray-600'}`}>
+                  {isFileDragOver ? 'file_download' : 'play_circle_outline'}
+                </span>
+                <span className={`text-sm font-medium transition-colors ${isFileDragOver ? 'text-blue-300' : 'text-gray-500'}`}>
+                  {isFileDragOver ? '여기에 놓으면 추가됩니다' : '더블클릭 또는 파일을 드래그하여 추가'}
+                </span>
                 <span className="text-gray-600 text-xs">동영상, 사진, 오디오, 자막 파일 지원</span>
               </div>
             )}
@@ -1075,6 +1112,14 @@ const Player = React.memo(({
               <span className="text-white text-sm font-medium bg-[#00D4D4]/20 px-4 py-2 rounded-lg border border-[#00D4D4]/50">
                 여기에 놓아 텍스트 추가
               </span>
+            </div>
+          )}
+
+          {isFileDragOver && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-blue-900/30 pointer-events-none z-30 border-2 border-blue-400 border-dashed rounded">
+              <span className="material-icons text-blue-300 text-5xl mb-2">file_download</span>
+              <span className="text-blue-200 text-sm font-semibold">파일을 놓으면 라이브러리에 추가됩니다</span>
+              <span className="text-blue-400 text-xs mt-1">동영상 · 사진 · 오디오</span>
             </div>
           )}
 

@@ -1998,6 +1998,7 @@ export default function Home() {
             onClipUpdate={handleClipUpdate}
             videoRefCallback={(ref) => { videoRef.current = ref; }}
             onPresetDrop={handlePresetDrop}
+            onFileDrop={(files) => files.forEach(handleVideoAdd)}
             viewerZoom={viewerZoom}
             onViewerZoomChange={setViewerZoom}
             playbackQuality={playbackQuality}

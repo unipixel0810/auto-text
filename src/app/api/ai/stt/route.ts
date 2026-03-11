@@ -12,45 +12,46 @@ export async function POST(req: Request) {
         }
         const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+        // 세션 없이도 사용 가능 (베타 오픈 정책)
         const session = await getServerSession(authOptions);
-        if (!session?.user?.email) {
-            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-        }
+        const email = session?.user?.email || null;
 
-        const email = session.user.email;
+        // 로그인한 사용자만 usage 추적 (비로그인은 무제한 베타 허용)
+        let usage: Record<string, number> | null = null;
+        let skipUsageTracking = !email;
 
-        // Check Usage
-        let { data: usage, error: usageError } = await supabase
-            .from('user_usages')
-            .select('*')
-            .eq('email', email)
-            .single();
-
-        let skipUsageTracking = false;
-
-        if (usageError && usageError.code === 'PGRST116') {
-            // No record, create one
-            const { data: newUsage, error: insertError } = await supabase
+        if (email) {
+            let { data: usageData, error: usageError } = await supabase
                 .from('user_usages')
-                .insert([{ email }])
-                .select()
+                .select('*')
+                .eq('email', email)
                 .single();
-            if (insertError) {
-                console.warn('Skipping usage tracking (insert failed):', insertError);
+
+            if (usageError && usageError.code === 'PGRST116') {
+                const { data: newUsage, error: insertError } = await supabase
+                    .from('user_usages')
+                    .insert([{ email }])
+                    .select()
+                    .single();
+                if (insertError) {
+                    console.warn('Skipping usage tracking (insert failed):', insertError);
+                    skipUsageTracking = true;
+                } else {
+                    usage = newUsage;
+                }
+            } else if (usageError) {
+                console.warn('Skipping usage tracking (fetch failed):', usageError);
                 skipUsageTracking = true;
             } else {
-                usage = newUsage;
+                usage = usageData;
             }
-        } else if (usageError) {
-            console.warn('Skipping usage tracking (fetch failed):', usageError);
-            skipUsageTracking = true;
-        }
 
-        // Admin override or usage check
-        const isUserAdmin = isAdmin(email);
-        if (!skipUsageTracking && usage && !isUserAdmin) {
-            if (usage.used_seconds >= usage.total_allowed_seconds) {
-                return NextResponse.json({ error: 'Payment Required. Quota Exceeded.' }, { status: 402 });
+            // 관리자 또는 usage 체크
+            const isUserAdmin = isAdmin(email);
+            if (!skipUsageTracking && usage && !isUserAdmin) {
+                if (usage.used_seconds >= usage.total_allowed_seconds) {
+                    return NextResponse.json({ error: 'Payment Required. Quota Exceeded.' }, { status: 402 });
+                }
             }
         }
 
@@ -65,7 +66,7 @@ export async function POST(req: Request) {
         const durationStr = formData.get('duration') as string;
         const durationSeconds = durationStr ? Math.ceil(parseFloat(durationStr)) : 60;
 
-        if (!skipUsageTracking && usage && !isUserAdmin) {
+        if (email && !skipUsageTracking && usage && !isAdmin(email)) {
             if ((usage.used_seconds + durationSeconds) > usage.total_allowed_seconds) {
                 return NextResponse.json({ error: 'Payment Required. Not enough quota for this audio.' }, { status: 402 });
             }
@@ -105,8 +106,8 @@ export async function POST(req: Request) {
 
         const data = await response.json();
 
-        // Successfully generated. Update usage.
-        if (!skipUsageTracking && usage && !isUserAdmin) {
+        // Successfully generated. Update usage (로그인 사용자만).
+        if (email && !skipUsageTracking && usage && !isAdmin(email)) {
             await supabase
                 .from('user_usages')
                 .update({ used_seconds: usage.used_seconds + durationSeconds })
