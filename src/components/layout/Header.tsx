@@ -9,18 +9,8 @@ interface HeaderProps {
   activeFileName?: string;
   activeFileDuration?: number;
   onRename?: (newName: string) => void;
-  onUndo?: () => void;
-  onRedo?: () => void;
-  onSplit?: () => void;
-  onDelete?: () => void;
-  onCopy?: () => void;
-  onPaste?: () => void;
-  onDuplicate?: () => void;
-  onSelectAll?: () => void;
   onExport?: () => void;
   onImport?: () => void;
-  onFitToScreen?: () => void;
-  onToggleSnap?: () => void;
   onOpenShortcuts?: () => void;
 }
 
@@ -34,8 +24,7 @@ interface MenuItem {
 
 export default function Header({
   activeFileName, activeFileDuration, onRename,
-  onUndo, onRedo, onSplit, onDelete, onCopy, onPaste, onDuplicate, onSelectAll,
-  onExport, onImport, onFitToScreen, onToggleSnap, onOpenShortcuts,
+  onExport, onImport, onOpenShortcuts,
 }: HeaderProps) {
   const { isAdmin: rawIsAdmin, user, isAuthenticated, signIn, signOut } = useAuth();
   const router = useRouter();
@@ -110,44 +99,6 @@ export default function Header({
         { label: '', divider: true },
         { label: '내보내기', shortcut: '⌘E', action: onExport },
         { label: '프로젝트 설정', action: () => alert('프로젝트 설정') },
-      ],
-    },
-    {
-      id: 'edit',
-      label: 'Edit',
-      icon: 'edit',
-      items: [
-        { label: '실행 취소', shortcut: '⌘Z', action: onUndo },
-        { label: '다시 실행', shortcut: '⌘⇧Z', action: onRedo },
-        { label: '', divider: true },
-        { label: '복사', shortcut: '⌘C', action: onCopy },
-        { label: '붙여넣기', shortcut: '⌘V', action: onPaste },
-        { label: '복제', shortcut: '⌘D', action: onDuplicate },
-        { label: '전체 선택', shortcut: '⌘A', action: onSelectAll },
-        { label: '', divider: true },
-        { label: '분할', shortcut: '⌘B', action: onSplit },
-        { label: '삭제', shortcut: '⌫', action: onDelete },
-        { label: '', divider: true },
-        { label: '단축키 설정', action: onOpenShortcuts },
-      ],
-    },
-    {
-      id: 'view',
-      label: 'View',
-      icon: 'preview',
-      items: [
-        { label: '타임라인 확대', shortcut: '⌘=', action: () => { } },
-        { label: '타임라인 축소', shortcut: '⌘-', action: () => { } },
-        { label: '화면에 맞추기', shortcut: '⇧Z', action: onFitToScreen },
-        { label: '', divider: true },
-        { label: '스냅 토글', shortcut: 'N', action: onToggleSnap },
-        { label: '', divider: true },
-        {
-          label: '전체 화면', shortcut: 'F11', action: () => {
-            if (document.fullscreenElement) document.exitFullscreen();
-            else document.documentElement.requestFullscreen();
-          }
-        },
       ],
     },
     {

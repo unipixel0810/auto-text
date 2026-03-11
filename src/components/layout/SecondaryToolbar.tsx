@@ -10,8 +10,6 @@ interface SecondaryToolbarProps {
   onSticker?: () => void;
   onAutoColorCorrection?: () => void;
   onAnimationEffect?: () => void;
-  snapEnabled?: boolean;
-  onSnapToggle?: () => void;
 }
 
 export default function SecondaryToolbar({
@@ -20,8 +18,6 @@ export default function SecondaryToolbar({
   onSticker,
   onAutoColorCorrection,
   onAnimationEffect,
-  snapEnabled = true,
-  onSnapToggle,
 }: SecondaryToolbarProps) {
   const [activeTab, setActiveTab] = useState<TabType>('media');
 
@@ -92,24 +88,6 @@ export default function SecondaryToolbar({
 
       {/* Spacer */}
       <div className="flex-1" />
-
-      {/* Snap Toggle */}
-      <button
-        onClick={onSnapToggle}
-        title={`스냅 ${snapEnabled ? 'ON' : 'OFF'} (S)`}
-        className={`
-          flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-all duration-150
-          ${snapEnabled
-            ? 'bg-yellow-500/20 border border-yellow-500/60 text-yellow-400'
-            : 'bg-transparent border border-gray-600 text-gray-500 hover:text-gray-300 hover:border-gray-400'
-          }
-        `}
-      >
-        <span className="material-symbols-outlined text-sm">
-          {snapEnabled ? 'magnet' : 'magnet'}
-        </span>
-        <span>Snap</span>
-      </button>
     </div>
   );
 }

@@ -2043,18 +2043,8 @@ export default function Home() {
           activeFileName={activeFileName}
           activeFileDuration={activeFileDuration}
           onRename={handleRename}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          onSplit={handleSplit}
-          onDelete={handleDeleteMenu}
-          onCopy={handleCopy}
-          onPaste={handlePaste}
-          onDuplicate={handleDuplicate}
-          onSelectAll={handleSelectAllMenu}
           onExport={handleExportClick}
           onImport={handleImportClick}
-          onFitToScreen={handleFitToScreen}
-          onToggleSnap={() => setSnapEnabled(prev => !prev)}
           onOpenShortcuts={() => setShortcutsModalOpen(true)}
         />
         <SecondaryToolbar
@@ -2063,8 +2053,6 @@ export default function Home() {
           onSticker={handleSticker}
           onAutoColorCorrection={handleAutoColorCorrection}
           onAnimationEffect={handleAnimationEffect}
-          snapEnabled={snapEnabled}
-          onSnapToggle={() => setSnapEnabled(prev => !prev)}
         />
         <div
           className="flex-1 flex overflow-hidden relative min-h-0"
