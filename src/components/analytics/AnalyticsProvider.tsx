@@ -4,14 +4,12 @@ import { useEffect, useRef } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { initTracker, destroyTracker, resetPageTracking } from '@/lib/analytics/tracker';
 import { initABTests } from '@/lib/analytics/ab-test';
-import { loadExperimentConfigs, applyExperimentsToPage } from '@/lib/analytics/ab-experiments';
 import { getSessionRecorder } from '@/lib/analytics/recorder';
 
 export default function AnalyticsProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const prevPath = useRef(pathname);
-  const configsLoaded = useRef(false);
   const recorderRef = useRef<ReturnType<typeof getSessionRecorder> | null>(null);
 
   const isPreview = searchParams.get('_analytics_preview') === '1';
@@ -19,19 +17,10 @@ export default function AnalyticsProvider({ children }: { children: React.ReactN
   useEffect(() => {
     if (isPreview) return;
 
-    // 실험 설정 로드 및 적용
-    if (!configsLoaded.current) {
-      loadExperimentConfigs().then(() => {
-        configsLoaded.current = true;
-        applyExperimentsToPage();
-        initABTests();
-      });
-    } else {
-      applyExperimentsToPage();
-      initABTests();
-    }
-
     initTracker();
+
+    // A/B 테스트 초기화 — [data-ab-test] 속성 요소 자동 감지 (DOM 렌더링 대기)
+    const abTimer = setTimeout(() => initABTests(), 300);
 
     // 세션 녹화 시작
     if (typeof window !== 'undefined') {
@@ -40,8 +29,8 @@ export default function AnalyticsProvider({ children }: { children: React.ReactN
     }
 
     return () => {
+      clearTimeout(abTimer);
       destroyTracker();
-      // 세션 녹화 중지
       if (recorderRef.current) {
         recorderRef.current.stop();
       }
@@ -62,12 +51,9 @@ export default function AnalyticsProvider({ children }: { children: React.ReactN
         });
       }
 
-      // 페이지 변경 시 실험 설정 적용 및 A/B 테스트 초기화 (약간의 지연 후 실행)
-      const timer = setTimeout(() => {
-        applyExperimentsToPage();
-        initABTests();
-      }, 200);
-      return () => clearTimeout(timer);
+      // 페이지 변경 시 A/B 테스트 재초기화 (DOM 렌더링 대기)
+      const abTimer = setTimeout(() => initABTests(), 300);
+      return () => clearTimeout(abTimer);
     }
   }, [pathname, isPreview]);
 

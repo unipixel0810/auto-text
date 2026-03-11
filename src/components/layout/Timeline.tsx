@@ -389,6 +389,7 @@ const Timeline = React.memo(({
   const pixelsPerSecondRef = useRef(0);
   const visibleTracksRef = useRef<TrackDef[]>([]);
   const CLIP_DRAG_THRESHOLD = 8; // 8px 이상 이동해야 드래그 시작 (단순 클릭과 확실히 분리)
+  const [snapGuideLine, setSnapGuideLine] = useState<number | null>(null); // 스냅 가이드라인 시간(초)
   const [showSpeedPopup, setShowSpeedPopup] = useState(false);
   const [speedValue, setSpeedValue] = useState(1);
   const [showLinkMenu, setShowLinkMenu] = useState(false);
@@ -474,14 +475,15 @@ const Timeline = React.memo(({
   const playheadX = useMemo(() => TRACK_CONTROLS_WIDTH + (playheadPosition * pixelsPerSecond), [playheadPosition, pixelsPerSecond]);
   const playbackX = useMemo(() => TRACK_CONTROLS_WIDTH + (playbackPosition * pixelsPerSecond), [playbackPosition, pixelsPerSecond]);
 
-  // Snap helper
-  const findSnapTime = useCallback((time: number, excludeClipId: string, trackIndex: number): number => {
-    if (!snapEnabled) return time;
-    const snapPoints: number[] = [0];
-    clips.filter(c => c.trackIndex === trackIndex && c.id !== excludeClipId).forEach(c => {
+  // Snap helper — cross-track support + guide line feedback
+  const findSnapTime = useCallback((time: number, excludeClipId: string, _trackIndex: number): number => {
+    if (!snapEnabled) { setSnapGuideLine(null); return time; }
+    const snapPoints: number[] = [0, playheadPosition];
+    // 모든 트랙의 클립 경계를 스냅 대상으로 수집 (크로스 트랙 스냅)
+    for (const c of clips) {
+      if (c.id === excludeClipId) continue;
       snapPoints.push(c.startTime, c.startTime + c.duration);
-    });
-    snapPoints.push(playheadPosition);
+    }
     let closest = time;
     let minDist = Infinity;
     for (const sp of snapPoints) {
@@ -490,6 +492,10 @@ const Timeline = React.memo(({
         minDist = dist;
         closest = sp;
       }
+    }
+    // 스냅 발동 시 가이드라인 표시
+    if (closest !== time) {
+      setSnapGuideLine(closest);
     }
     return closest;
   }, [clips, playheadPosition, pixelsPerSecond, snapEnabled]);
@@ -863,7 +869,7 @@ const Timeline = React.memo(({
       } else {
         onResizeEnd?.();
       }
-      setResizingClip(null); setResizePreview(null);
+      setResizingClip(null); setResizePreview(null); setSnapGuideLine(null);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       onClipSelect?.([]); // 리사이즈 종료 시 선택 해제
@@ -872,7 +878,7 @@ const Timeline = React.memo(({
     // document 레벨 pointer 이벤트로 등록 — 창 밖까지 추적 가능
     // pointercancel/blur/visibilitychange는 강제 종료용 안전망
     const forceEnd = () => {
-      setResizingClip(null); setResizePreview(null);
+      setResizingClip(null); setResizePreview(null); setSnapGuideLine(null);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       onInteractionEnd?.();
@@ -1004,9 +1010,15 @@ const Timeline = React.memo(({
 
         const snap = findSnapTimeRef.current;
         if (snap) {
-          newStart = snap(newStart, dragInfo.clipId, newTrackIndex);
+          const startSnapped = snap(newStart, dragInfo.clipId, newTrackIndex);
+          const startDidSnap = startSnapped !== newStart;
+          newStart = startSnapped;
           const endSnap = snap(newStart + clip.duration, dragInfo.clipId, newTrackIndex);
           if (endSnap !== newStart + clip.duration) newStart = endSnap - clip.duration;
+          // 시작점과 끝점 모두 스냅 안 됐으면 가이드라인 제거
+          if (!startDidSnap && endSnap === startSnapped + clip.duration) {
+            setSnapGuideLine(null);
+          }
         }
         if (newStart < 0) newStart = 0;
 
@@ -1043,6 +1055,7 @@ const Timeline = React.memo(({
     const up = () => {
       if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
       setDraggingClip(null);
+      setSnapGuideLine(null);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       // 선택 유지 — 빈 영역 클릭 시에만 해제 (handleTimelineMouseDown에서 처리)
@@ -1051,6 +1064,7 @@ const Timeline = React.memo(({
     const forceEnd = () => {
       if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
       setDraggingClip(null);
+      setSnapGuideLine(null);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       onInteractionEnd?.();
@@ -1658,6 +1672,26 @@ const Timeline = React.memo(({
               style={{ left: `${playbackX}px`, zIndex: 9999 }}
             >
               <div className="absolute top-0 bottom-0 left-0" style={{ width: '2px', backgroundColor: '#FFFFFF', boxShadow: '0 0 6px rgba(255,255,255,0.8)' }} />
+            </div>
+          )}
+
+          {/* Snap Guide Line — 스냅 발동 시 노란 점선 표시 */}
+          {snapGuideLine !== null && (
+            <div
+              className="absolute top-0 bottom-0 pointer-events-none"
+              style={{
+                left: `${TRACK_CONTROLS_WIDTH + snapGuideLine * pixelsPerSecond}px`,
+                zIndex: 45,
+              }}
+            >
+              <div
+                className="absolute top-0 bottom-0"
+                style={{
+                  width: '1px',
+                  borderLeft: '1px dashed #FACC15',
+                  opacity: 0.9,
+                }}
+              />
             </div>
           )}
 

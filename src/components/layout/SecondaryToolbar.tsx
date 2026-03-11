@@ -10,14 +10,18 @@ interface SecondaryToolbarProps {
   onSticker?: () => void;
   onAutoColorCorrection?: () => void;
   onAnimationEffect?: () => void;
+  snapEnabled?: boolean;
+  onSnapToggle?: () => void;
 }
 
-export default function SecondaryToolbar({ 
+export default function SecondaryToolbar({
   onTabChange,
   onSoundEffect,
   onSticker,
   onAutoColorCorrection,
   onAnimationEffect,
+  snapEnabled = true,
+  onSnapToggle,
 }: SecondaryToolbarProps) {
   const [activeTab, setActiveTab] = useState<TabType>('media');
 
@@ -28,61 +32,84 @@ export default function SecondaryToolbar({
 
   const tabs: { id: TabType; label: string; icon: string; action?: () => void }[] = [
     { id: 'media', label: 'Media', icon: 'movie' },
-    { 
-      id: 'audio', 
-      label: '효과음', 
+    {
+      id: 'audio',
+      label: '효과음',
       icon: 'music_note',
       action: onSoundEffect,
     },
-    { 
-      id: 'stickers', 
-      label: '스티커', 
+    {
+      id: 'stickers',
+      label: '스티커',
       icon: 'emoji_emotions',
       action: onSticker,
     },
-    { 
-      id: 'effects', 
-      label: '색상 자동 보정', 
+    {
+      id: 'effects',
+      label: '색상 자동 보정',
       icon: 'auto_fix_high',
       action: onAutoColorCorrection,
     },
-    { 
-      id: 'transitions', 
-      label: '애니메이션 효과', 
+    {
+      id: 'transitions',
+      label: '애니메이션 효과',
       icon: 'animation',
       action: onAnimationEffect,
     },
   ];
 
   return (
-    <div className="h-12 border-b border-border-color bg-editor-bg flex items-center px-2 shrink-0 space-x-1 select-none">
-      {tabs.map((tab) => (
-        <button
-          key={tab.id}
-          onClick={() => {
-            handleTabClick(tab.id);
-            tab.action?.();
-          }}
-          title={tab.label}
-          className={`
-            flex items-center justify-center px-4 py-1 h-full transition-all duration-200 relative group
-            ${activeTab === tab.id
-              ? 'text-primary border-b-2 border-primary bg-white/5'
-              : 'text-gray-300 hover:text-white hover:bg-white/10 rounded-t'
-            }
-            active:scale-95
-            hover:scale-105
-          `}
-        >
-          <span className={`material-icons text-xl transition-transform duration-200 ${activeTab === tab.id ? 'animate-pulse' : ''}`}>
-            {tab.icon}
-          </span>
-          {/* Tooltip */}
-          <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 text-xs text-white bg-gray-800 rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap transition-opacity z-50">
-            {tab.label}
-          </span>
-        </button>
-      ))}
+    <div className="h-12 border-b border-border-color bg-editor-bg flex items-center px-2 shrink-0 select-none">
+      <div className="flex items-center space-x-1">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => {
+              handleTabClick(tab.id);
+              tab.action?.();
+            }}
+            title={tab.label}
+            className={`
+              flex items-center justify-center px-4 py-1 h-full transition-all duration-200 relative group
+              ${activeTab === tab.id
+                ? 'text-primary border-b-2 border-primary bg-white/5'
+                : 'text-gray-300 hover:text-white hover:bg-white/10 rounded-t'
+              }
+              active:scale-95
+              hover:scale-105
+            `}
+          >
+            <span className={`material-icons text-xl transition-transform duration-200 ${activeTab === tab.id ? 'animate-pulse' : ''}`}>
+              {tab.icon}
+            </span>
+            {/* Tooltip */}
+            <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 text-xs text-white bg-gray-800 rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap transition-opacity z-50">
+              {tab.label}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* Snap Toggle */}
+      <button
+        onClick={onSnapToggle}
+        title={`스냅 ${snapEnabled ? 'ON' : 'OFF'} (S)`}
+        className={`
+          flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-all duration-150
+          ${snapEnabled
+            ? 'bg-yellow-500/20 border border-yellow-500/60 text-yellow-400'
+            : 'bg-transparent border border-gray-600 text-gray-500 hover:text-gray-300 hover:border-gray-400'
+          }
+        `}
+      >
+        <span className="material-symbols-outlined text-sm">
+          {snapEnabled ? 'magnet' : 'magnet'}
+        </span>
+        <span>Snap</span>
+      </button>
     </div>
   );
 }

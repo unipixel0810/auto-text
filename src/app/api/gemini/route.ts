@@ -3,7 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 // 사용 가능한 Gemini 모델 목록 (2.0-flash는 신규사용자 불가, 2.5-flash 사용)
 const GEMINI_MODELS = [
   'gemini-2.5-flash',
-  'gemini-flash-latest',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
 ];
 
 // OpenAI 모델
@@ -57,6 +58,29 @@ JSON 배열만 출력 (마크다운 코드블록 없이):
 [{"startTime": 0.0, "endTime": 2.5, "text": "자막내용만", "type": "ENTERTAINMENT", "reason": "이유"}]`;
 }
 
+// 재시도 가능한 fetch (503/429 대응)
+const MAX_RETRIES = 3;
+const RETRY_DELAYS = [2000, 5000, 10000]; // ms
+
+async function fetchWithRetry(url: string, options: RequestInit): Promise<Response> {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const response = await fetch(url, options);
+    if (response.ok) return response;
+
+    // 503(과부하) 또는 429(Rate Limit)만 재시도
+    if ((response.status === 503 || response.status === 429) && attempt < MAX_RETRIES) {
+      const delay = RETRY_DELAYS[attempt] ?? 10000;
+      console.warn(`[Gemini] ${response.status} 응답, ${delay / 1000}초 후 재시도 (${attempt + 1}/${MAX_RETRIES})`);
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
+
+    return response; // 다른 에러는 그대로 반환
+  }
+  // 도달 불가하지만 TypeScript 만족
+  throw new Error('Max retries exceeded');
+}
+
 // 단일 청크 처리 함수
 async function processChunk(
   transcripts: any[],
@@ -69,11 +93,11 @@ async function processChunk(
 
   const prompt = buildPrompt(transcriptText, true);
 
-  // Gemini 시도
+  // Gemini 시도 (재시도 포함)
   if (geminiKey) {
     for (const model of GEMINI_MODELS) {
       try {
-        const response = await fetch(
+        const response = await fetchWithRetry(
           `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${geminiKey}`,
           {
             method: 'POST',
@@ -93,7 +117,7 @@ async function processChunk(
         const result = await response.json();
         let text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
         text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-        
+
         const subtitles = JSON.parse(text);
         if (Array.isArray(subtitles) && subtitles.length > 0) {
           return subtitles;
@@ -167,7 +191,7 @@ export async function POST(request: NextRequest) {
       if (geminiKey) {
         for (const model of GEMINI_MODELS) {
           try {
-            const response = await fetch(
+            const response = await fetchWithRetry(
               `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${geminiKey}`,
               {
                 method: 'POST',
@@ -184,7 +208,7 @@ export async function POST(request: NextRequest) {
             const result = await response.json();
             let text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
             text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-            
+
             const subtitles = JSON.parse(text);
             if (Array.isArray(subtitles) && subtitles.length > 0) {
               return NextResponse.json({ subtitles });
@@ -194,7 +218,7 @@ export async function POST(request: NextRequest) {
           }
         }
       }
-      
+
       return NextResponse.json({ error: 'AI 자막 생성 실패' }, { status: 500 });
     }
 

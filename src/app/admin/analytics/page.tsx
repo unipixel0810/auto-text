@@ -451,10 +451,12 @@ type DeviceFilter = 'all' | 'desktop' | 'mobile' | 'tablet' | '4k';
 type VisualizationMode = 'heatmap' | 'markers';
 
 const HeatmapTab = memo(function HeatmapTab({
-  selectedPage, clickEvents, canvasRef,
+  selectedPage, setSelectedPage, pages, clickEvents, canvasRef,
   heatmapOpacity, setHeatmapOpacity, days,
 }: {
   selectedPage: string;
+  setSelectedPage: (v: string) => void;
+  pages: string[];
   clickEvents: AnalyticsEvent[];
   canvasRef: React.RefObject<HTMLCanvasElement>;
   heatmapOpacity: number;
@@ -473,6 +475,52 @@ const HeatmapTab = memo(function HeatmapTab({
   // 1-B: 툴팁
   const [tooltip, setTooltip] = useState<{ x: number; y: number; tag: string; text: string; count: number } | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  // 페이지 스크린샷 배경
+  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
+  const [screenshotLoading, setScreenshotLoading] = useState(false);
+  const [screenshotError, setScreenshotError] = useState(false);
+  // 수동 업로드 배경 (자동 캡처 실패 시 또는 직접 지정)
+  const [manualScreenshot, setManualScreenshot] = useState<string | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+
+  const handleManualUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string;
+      setManualScreenshot(dataUrl);
+    };
+    reader.readAsDataURL(file);
+    // 파일 입력 초기화 (같은 파일 재업로드 허용)
+    e.target.value = '';
+  };
+
+  // selectedPage 변경 시 스크린샷 로드
+  useEffect(() => {
+    // 페이지 바뀌면 수동 업로드 이미지도 초기화
+    setManualScreenshot(null);
+    if (!selectedPage) {
+      setScreenshotUrl(null);
+      setScreenshotError(false);
+      return;
+    }
+    setScreenshotLoading(true);
+    setScreenshotError(false);
+    setScreenshotUrl(null);
+
+    const img = new Image();
+    const url = `/api/screenshot?page_url=${encodeURIComponent(selectedPage)}`;
+    img.onload = () => {
+      setScreenshotUrl(url);
+      setScreenshotLoading(false);
+    };
+    img.onerror = () => {
+      setScreenshotError(true);
+      setScreenshotLoading(false);
+    };
+    img.src = url;
+  }, [selectedPage]);
 
   // 서브탭 변경 시 데이터 로드
   useEffect(() => {
@@ -515,7 +563,11 @@ const HeatmapTab = memo(function HeatmapTab({
         return vw >= 1024 && vw < 3840; // desktop (일반)
       });
 
-  // 1-A + 1-E: Canvas 렌더링 (iframe 제거 → 항상 렌더링)
+  // 수동 업로드 > 자동 캡처 우선순위
+  const effectiveScreenshotUrl = manualScreenshot || screenshotUrl;
+
+  // 1-A + 1-E: Canvas 렌더링
+  // screenshotUrl이 있으면 알파를 높여 히트맵을 선명하게 표시
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -528,23 +580,28 @@ const HeatmapTab = memo(function HeatmapTab({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // 스크린샷 배경 위: 히트맵 알파를 1.0으로 (완전 불투명), 배경 없음: 0.7
+    const maxAlpha = effectiveScreenshotUrl ? 1.0 : HEATMAP_MAX_ALPHA;
+
     const rafId = requestAnimationFrame(() => {
       const w = canvas.width, h = canvas.height;
       ctx.clearRect(0, 0, w, h);
 
       if (vizMode === 'markers') {
-        // 1-E: 마커 모드 — 각 클릭을 반투명 원으로 표시
-        ctx.globalAlpha = 0.55;
+        // 마커 모드
+        ctx.globalAlpha = effectiveScreenshotUrl ? 0.9 : 0.55;
         filtered.forEach(c => {
-          // 1-A 수정: 각 이벤트 자신의 viewport 기준으로 정규화
           const ix = Math.round(((c.x_pos || 0) / (c.viewport_width || 1920)) * w);
           const iy = Math.round(((c.y_pos || 0) / (c.viewport_height || 1080)) * h);
           ctx.beginPath();
-          ctx.arc(ix, iy, 6, 0, Math.PI * 2);
-          ctx.fillStyle = '#00D4D4';
+          ctx.arc(ix, iy, effectiveScreenshotUrl ? 8 : 6, 0, Math.PI * 2);
+          ctx.fillStyle = effectiveScreenshotUrl ? 'rgba(0,212,212,0.85)' : '#00D4D4';
           ctx.fill();
-          ctx.strokeStyle = 'rgba(0,212,212,0.3)';
-          ctx.lineWidth = 1;
+          // 외곽 링
+          ctx.beginPath();
+          ctx.arc(ix, iy, effectiveScreenshotUrl ? 14 : 10, 0, Math.PI * 2);
+          ctx.strokeStyle = effectiveScreenshotUrl ? 'rgba(0,212,212,0.45)' : 'rgba(0,212,212,0.3)';
+          ctx.lineWidth = effectiveScreenshotUrl ? 2 : 1;
           ctx.stroke();
         });
         ctx.globalAlpha = 1;
@@ -553,16 +610,17 @@ const HeatmapTab = memo(function HeatmapTab({
         const grid = new Float32Array(w * h);
         let maxVal = 0;
         filtered.forEach(c => {
-          // 1-A 수정: maxVW/maxVH 공유 기준 제거 → 각 이벤트 자신의 viewport 기준으로 정규화
           const ix = Math.round(((c.x_pos || 0) / (c.viewport_width || 1920)) * w);
           const iy = Math.round(((c.y_pos || 0) / (c.viewport_height || 1080)) * h);
-          for (let dy = -HEATMAP_RADIUS; dy <= HEATMAP_RADIUS; dy++) {
-            for (let dx = -HEATMAP_RADIUS; dx <= HEATMAP_RADIUS; dx++) {
-              const px = ix + dx, py = iy + dy;
+          // 스크린샷 있을 때 반경을 키워 더 잘 보이게
+          const radius = effectiveScreenshotUrl ? HEATMAP_RADIUS * 1.3 : HEATMAP_RADIUS;
+          for (let dy = -radius; dy <= radius; dy++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+              const px = ix + Math.round(dx), py = iy + Math.round(dy);
               if (px < 0 || px >= w || py < 0 || py >= h) continue;
               const dist = Math.sqrt(dx * dx + dy * dy);
-              if (dist > HEATMAP_RADIUS) continue;
-              const val = 1 - dist / HEATMAP_RADIUS;
+              if (dist > radius) continue;
+              const val = 1 - dist / radius;
               const idx = py * w + px;
               grid[idx] += val;
               if (grid[idx] > maxVal) maxVal = grid[idx];
@@ -582,18 +640,37 @@ const HeatmapTab = memo(function HeatmapTab({
           else if (v < 0.75) { const t = (v - 0.5) * 4; r = Math.round(t * 255); g = 255; b = 0; }
           else { const t = (v - 0.75) * 4; r = 255; g = Math.round(255 * (1 - t)); b = 0; }
           d[pi] = r; d[pi + 1] = g; d[pi + 2] = b;
-          d[pi + 3] = Math.round(Math.min(v * HEATMAP_MAX_ALPHA * 255, HEATMAP_MAX_ALPHA * 255));
+          d[pi + 3] = Math.round(Math.min(v * maxAlpha * 255, maxAlpha * 255));
         }
         ctx.putImageData(imageData, 0, 0);
       }
     });
     return () => cancelAnimationFrame(rafId);
-  // filteredClickEvents는 참조가 매 렌더마다 바뀌므로 .length + deviceFilter + vizMode로 의존성 관리
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredClickEvents.length, heatmapOpacity, selectedPage, deviceFilter, vizMode]);
+  }, [filteredClickEvents.length, heatmapOpacity, selectedPage, deviceFilter, vizMode, effectiveScreenshotUrl]);
 
   return (
     <div className="space-y-4">
+      {/* ── 히트맵 전용 페이지 선택기 ── */}
+      <div className="bg-[#12121a] border border-[#1e1e2e] rounded-xl p-4">
+        <label className="block text-[11px] text-gray-500 mb-2 uppercase tracking-wider font-medium">
+          분석할 페이지 선택
+        </label>
+        <select
+          value={selectedPage}
+          onChange={e => setSelectedPage(e.target.value)}
+          className="w-full bg-[#0d0d1a] border border-[#2a2a3e] rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#00D4D4] transition-colors"
+        >
+          <option value="">페이지를 선택하세요</option>
+          {pages.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        {pages.length === 0 && (
+          <p className="mt-2 text-[11px] text-gray-600">
+            아직 수집된 페이지 데이터가 없습니다. 페이지에 방문자가 있으면 자동으로 표시됩니다.
+          </p>
+        )}
+      </div>
+
       {/* 서브탭 */}
       <div className="flex gap-2 bg-[#12121a] border border-[#1e1e2e] rounded-xl p-2">
         {HEAT_SUBTABS.map(t => (
@@ -617,7 +694,7 @@ const HeatmapTab = memo(function HeatmapTab({
       {subTab === 'click' && (
         <>
           {!selectedPage ? (
-            <EmptyState icon="heat_map" message="히트맵을 보려면 위에서 페이지를 선택해주세요." />
+            <EmptyState icon="heat_map" message="위에서 페이지를 선택하면 히트맵이 표시됩니다." />
           ) : (
             <>
               {/* 컨트롤바 */}
@@ -694,19 +771,68 @@ const HeatmapTab = memo(function HeatmapTab({
 
               {/* 히트맵 + 오버레이 컨테이너 */}
               <div className="relative">
-                {/* 페이지 미리보기 링크 */}
+                {/* 페이지 미리보기 링크 + 스크린샷 새로고침 버튼 */}
                 {selectedPage && (
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="text-[11px] text-gray-500">페이지 미리보기:</span>
-                    <a
-                      href={selectedPage}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1 text-[11px] text-[#00D4D4] hover:underline font-mono"
-                    >
-                      {selectedPage}
-                      <span className="material-symbols-outlined text-[12px]">open_in_new</span>
-                    </a>
+                  <div className="mb-2 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-gray-500">분석 페이지:</span>
+                      <a
+                        href={selectedPage}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1 text-[11px] text-[#00D4D4] hover:underline font-mono"
+                      >
+                        {selectedPage}
+                        <span className="material-symbols-outlined text-[12px]">open_in_new</span>
+                      </a>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {screenshotLoading && !manualScreenshot && (
+                        <span className="text-[11px] text-gray-500 flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[13px] animate-spin">refresh</span>
+                          페이지 캡처 중...
+                        </span>
+                      )}
+                      {screenshotError && !manualScreenshot && (
+                        <span className="text-[11px] text-orange-400 flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[13px]">warning</span>
+                          자동 캡처 실패
+                        </span>
+                      )}
+                      {manualScreenshot && (
+                        <span className="text-[11px] text-emerald-400 flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[13px]">check_circle</span>
+                          업로드 배경 적용됨
+                        </span>
+                      )}
+                      {screenshotUrl && !manualScreenshot && (
+                        <span className="text-[11px] text-emerald-400 flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[13px]">check_circle</span>
+                          실제 페이지 배경
+                        </span>
+                      )}
+                      {/* 배경 이미지 수동 업로드 버튼 */}
+                      <label className="cursor-pointer flex items-center gap-1 px-2 py-1 bg-[#1e1e2e] hover:bg-[#2a2a3e] border border-[#2a2a3e] rounded-lg text-[11px] text-gray-300 transition-colors">
+                        <span className="material-symbols-outlined text-[13px]">upload</span>
+                        배경 업로드
+                        <input
+                          ref={uploadInputRef}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={handleManualUpload}
+                        />
+                      </label>
+                      {manualScreenshot && (
+                        <button
+                          onClick={() => setManualScreenshot(null)}
+                          className="flex items-center gap-1 px-2 py-1 bg-[#1e1e2e] hover:bg-red-900/30 border border-[#2a2a3e] rounded-lg text-[11px] text-gray-400 hover:text-red-400 transition-colors"
+                        >
+                          <span className="material-symbols-outlined text-[13px]">close</span>
+                          제거
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
                 <div
@@ -716,18 +842,60 @@ const HeatmapTab = memo(function HeatmapTab({
                     background: 'linear-gradient(135deg, #0d0d1a 0%, #111122 40%, #0a0a14 100%)',
                   }}
                 >
-                  {/* 배경 그리드 패턴 */}
-                  <div
-                    className="absolute inset-0 opacity-10"
-                    style={{
-                      backgroundImage: 'linear-gradient(rgba(0,212,212,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(0,212,212,0.15) 1px, transparent 1px)',
-                      backgroundSize: '40px 40px',
-                    }}
-                  />
+                  {/* 스크린샷 배경 이미지 (성공 시) — 선명도 70% */}
+                  {effectiveScreenshotUrl && (
+                    <div
+                      className="absolute inset-0"
+                      style={{
+                        backgroundImage: `url(${effectiveScreenshotUrl})`,
+                        backgroundSize: '100% 100%',
+                        backgroundPosition: 'top left',
+                        backgroundRepeat: 'no-repeat',
+                        opacity: 0.75,
+                      }}
+                    />
+                  )}
+                  {/* 스크린샷 있을 때: 히트맵이 잘 보이도록 반투명 어두운 오버레이 */}
+                  {effectiveScreenshotUrl && (
+                    <div
+                      className="absolute inset-0"
+                      style={{ background: 'rgba(0,0,0,0.25)', pointerEvents: 'none' }}
+                    />
+                  )}
+                  {/* 스크린샷 없을 때 그리드 패턴 */}
+                  {!effectiveScreenshotUrl && (
+                    <div
+                      className="absolute inset-0 opacity-10"
+                      style={{
+                        backgroundImage: 'linear-gradient(rgba(0,212,212,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(0,212,212,0.15) 1px, transparent 1px)',
+                        backgroundSize: '40px 40px',
+                      }}
+                    />
+                  )}
+                  {/* 스크린샷 로딩 중 오버레이 (수동 업로드 없을 때만) */}
+                  {screenshotLoading && !manualScreenshot && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#0d0d14]/60 pointer-events-none">
+                      <span className="material-symbols-outlined text-[32px] text-[#00D4D4] animate-spin">refresh</span>
+                      <p className="text-[12px] text-gray-400">페이지 스크린샷 캡처 중...</p>
+                    </div>
+                  )}
+                  {/* 히트맵 캔버스
+                    - 스크린샷 있음: blendMode=normal, opacity로만 제어 (색상 보존)
+                    - 스크린샷 없음: blendMode=screen (어두운 배경에서 밝게)
+                  */}
                   <canvas
                     ref={canvasRef} width={PREVIEW_WIDTH} height={PREVIEW_HEIGHT}
                     className="absolute inset-0 w-full h-full"
-                    style={{ opacity: heatmapOpacity / 100, mixBlendMode: vizMode === 'heatmap' ? 'screen' : 'normal', pointerEvents: 'none' }}
+                    style={{
+                      opacity: effectiveScreenshotUrl
+                        ? Math.min((heatmapOpacity / 100) * 1.4, 1)   // 스크린샷 위: 살짝 강조
+                        : heatmapOpacity / 100,
+                      mixBlendMode: vizMode === 'heatmap'
+                        ? (effectiveScreenshotUrl ? 'normal' : 'screen')   // 배경 있으면 normal로 색상 보존
+                        : 'normal',
+                      pointerEvents: 'none',
+                      filter: effectiveScreenshotUrl ? 'saturate(1.4) contrast(1.1)' : 'none', // 채도/대비 강조
+                    }}
                   />
                   {/* 1-B: 툴팁 인터랙션 오버레이 */}
                   <div
@@ -2082,8 +2250,8 @@ export default function AnalyticsDashboard() {
       </header>
 
       <main className="p-6 max-w-[1400px] mx-auto">
-        {/* Page selector */}
-        {pages.length > 0 && (
+        {/* Page selector — 히트맵 외 탭에서 사용 (데이터 있을 때만 표시) */}
+        {activeTab !== 'heatmap' && pages.length > 0 && (
           <div className="mb-5">
             <label className="block text-[11px] text-gray-600 mb-1.5 uppercase tracking-wider">페이지 필터</label>
             <select
@@ -2129,6 +2297,8 @@ export default function AnalyticsDashboard() {
         ) : activeTab === 'heatmap' ? (
           <HeatmapTab
             selectedPage={selectedPage}
+            setSelectedPage={setSelectedPage}
+            pages={pages}
             clickEvents={clickEvents}
             canvasRef={canvasRef}
             heatmapOpacity={heatmapOpacity}

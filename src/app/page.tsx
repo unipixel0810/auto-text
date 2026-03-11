@@ -2033,6 +2033,8 @@ export default function Home() {
           onSticker={handleSticker}
           onAutoColorCorrection={handleAutoColorCorrection}
           onAnimationEffect={handleAnimationEffect}
+          snapEnabled={snapEnabled}
+          onSnapToggle={() => setSnapEnabled(prev => !prev)}
         />
         <div
           className="flex-1 flex overflow-hidden relative min-h-0"

@@ -179,15 +179,33 @@ type 값은 반드시 "예능", "상황", "설명", "맥락" 중 하나:
 ]`;
         }
 
-        const result = await model.generateContent([
-            prompt,
-            {
-                inlineData: {
-                    mimeType: mimeType,
-                    data: base64Audio
+        // 503/429 재시도 (최대 3회, exponential backoff)
+        const RETRY_DELAYS = [2000, 5000, 10000];
+        let result;
+        for (let attempt = 0; ; attempt++) {
+            try {
+                result = await model.generateContent([
+                    prompt,
+                    {
+                        inlineData: {
+                            mimeType: mimeType,
+                            data: base64Audio
+                        }
+                    }
+                ]);
+                break; // 성공 시 루프 탈출
+            } catch (retryErr: any) {
+                const is503or429 = retryErr?.status === 503 || retryErr?.status === 429 ||
+                    retryErr?.message?.includes('503') || retryErr?.message?.includes('429') ||
+                    retryErr?.message?.includes('high demand') || retryErr?.message?.includes('Service Unavailable');
+                if (is503or429 && attempt < RETRY_DELAYS.length) {
+                    console.warn(`[Gemini] ${retryErr.status || '503/429'} 응답, ${RETRY_DELAYS[attempt] / 1000}초 후 재시도 (${attempt + 1}/${RETRY_DELAYS.length})`);
+                    await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]));
+                    continue;
                 }
+                throw retryErr; // 재시도 불가능한 에러
             }
-        ]);
+        }
 
         const responseText = result.response.text();
         if (!responseText) {

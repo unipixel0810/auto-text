@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { queryEvents, getDistinctPages, getStats, getChartData, getABExperimentResults, getRageClicks, getScrollDepthStats } from '@/lib/analytics/store';
+import { queryEvents, getDistinctPages, getStats, getChartData, getRageClicks, getScrollDepthStats } from '@/lib/analytics/store';
 import { getSupabase } from '@/lib/analytics/supabase';
 
 export async function GET(req: NextRequest) {
@@ -37,18 +37,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(charts);
     }
 
-    if (action === 'ab-results') {
-      try {
-        const results = await getABExperimentResults();
-        if (results && 'error' in results) {
-          return NextResponse.json(results);
-        }
-        return NextResponse.json({ experiments: results || [] });
-      } catch (err) {
-        console.error('[Analytics Query] ab-results error:', err);
-        return NextResponse.json({ experiments: [], error: 'Failed to fetch A/B test results' });
-      }
-    }
+    // A/B 결과는 /api/ab/results 로 분리됨
 
     // ===== type=demographics =====
     if (action === 'demographics') {

@@ -44,8 +44,10 @@ export default function LandingPage() {
                         <button
                             onClick={() => router.push('/')}
                             className="px-5 py-2 text-sm font-semibold bg-gradient-to-r from-cyan-500 to-blue-600 text-white rounded-lg hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-cyan-500/20"
+                            data-ab-test="nav-cta-test"
+                            data-ab-variant-b="무료로 시작하기"
                         >
-                            무료로 시작하기
+                            회원가입
                         </button>
                     </div>
                 </div>
@@ -64,9 +66,11 @@ export default function LandingPage() {
                         <span className="text-primary text-xs font-bold tracking-widest uppercase">✨ AI Auto Subtitle</span>
                     </div>
 
-                    {/* 메인 헤드라인 */}
+                    {/* ========== A/B TEST: 메인 헤드라인 ========== */}
                     <h1
                         className="text-5xl md:text-7xl font-extrabold mb-6 tracking-tight leading-[1.1]"
+                        data-ab-test="main-headline-test"
+                        data-ab-variant-b="3분 만에 시작하는 AI 자막 편집기"
                     >
                         <span className="bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">자동으로</span>
                         <br />
@@ -89,7 +93,7 @@ export default function LandingPage() {
                             onClick={() => router.push('/')}
                             className="px-10 py-4 bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-bold rounded-xl shadow-lg shadow-cyan-500/30 hover:scale-105 active:scale-95 transition-all w-full md:w-auto text-lg"
                             data-ab-test="cta-button-test"
-                            data-ab-event="signup-click"
+                            data-ab-variant-b="30초만에 무료 체험하기"
                         >
                             지금 무료로 시작하기
                         </button>

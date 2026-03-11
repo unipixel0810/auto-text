@@ -211,22 +211,46 @@ export async function getDistinctPages(days?: number): Promise<string[]> {
     }
 
     // Fallback: analytics_events 테이블 사용
-    let query = supabase
-      .from('analytics_events')
-      .select('page_url')
-      .not('page_url', 'is', null)
-      .not('page_url', 'ilike', '/admin/%'); // 관리자 페이지 제외
+    try {
+      let query = supabase
+        .from('analytics_events')
+        .select('page_url')
+        .not('page_url', 'is', null)
+        .not('page_url', 'ilike', '/admin/%'); // 관리자 페이지 제외
 
-    if (cutoff) query = query.gte('created_at', cutoff);
+      if (cutoff) query = query.gte('created_at', cutoff);
 
-    const { data } = await query;
-    if (data) {
-      const unique = Array.from(new Set(data.map((r: { page_url: string }) => r.page_url)));
-      return unique;
+      const { data } = await query;
+      if (data && data.length > 0) {
+        const unique = Array.from(new Set(data.map((r: { page_url: string }) => r.page_url)));
+        return unique;
+      }
+    } catch (err) {
+      console.error('[Analytics] getDistinctPages analytics_events error:', err);
+    }
+
+    // Final fallback: ab_experiments 테이블에서 page_url 수집
+    try {
+      const { data: expData } = await supabase
+        .from('ab_experiments')
+        .select('page_url')
+        .not('page_url', 'is', null)
+        .not('page_url', 'ilike', '/admin/%');
+
+      if (expData && expData.length > 0) {
+        const unique = Array.from(new Set(
+          expData.map((r: { page_url: string }) => r.page_url).filter(Boolean)
+        ));
+        if (unique.length > 0) return unique;
+      }
+    } catch (err) {
+      console.error('[Analytics] getDistinctPages ab_experiments error:', err);
     }
   }
 
-  const unique = Array.from(new Set(memoryStore.map(e => e.page_url)));
+  const unique = Array.from(new Set(memoryStore.map(e => e.page_url).filter(Boolean)));
+  // 페이지가 전혀 없으면 기본 페이지 목록 반환
+  if (unique.length === 0) return ['/'];
   return unique;
 }
 
@@ -501,123 +525,7 @@ export async function getChartData(days: number = 30) {
   return { visitorsTrend, referralSources, deviceDist, hourly, topDurations };
 }
 
-/**
- * Get A/B experiment results
- */
-export async function getABExperimentResults(): Promise<any[] | { error: string }> {
-  const supabase = getSupabase();
-  if (!supabase) {
-    console.warn('[Analytics] Supabase client not initialized');
-    return { error: 'Supabase configuration is missing. Please check .env.local' };
-  }
-
-  try {
-    // 1. 모든 활성 실험 설정 가져오기
-    const { data: experiments, error: expError } = await supabase
-      .from('ab_experiments')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (expError) {
-      console.error('[Analytics] fetching ab_experiments error:', expError.message);
-    }
-
-    // 2. 모든 이벤트 데이터 가져오기
-    const { data: events, error } = await supabase
-      .from('ab_events')
-      .select('*')
-      .order('created_at', { ascending: true });
-
-    if (error) {
-      console.error('[Analytics] getABExperimentResults error:', error.message);
-    }
-
-    const results: Record<string, {
-      name: string;
-      _meta: Record<string, any>; // DB 원본 실험 설정 보존
-      variants: {
-        A: { impressions: number; clicks: number };
-        B: { impressions: number; clicks: number };
-      };
-    }> = {};
-
-    // DB에 저장된 실험 목록으로 결과 맵 초기화 (원본 메타데이터 보존)
-    if (experiments) {
-      experiments.forEach(exp => {
-        results[exp.name] = {
-          name: exp.name,
-          _meta: exp, // status, traffic_allocation, target_sample_size 등 보존
-          variants: {
-            A: { impressions: 0, clicks: 0 },
-            B: { impressions: 0, clicks: 0 },
-          }
-        };
-      });
-    }
-
-    // 이벤트 데이터를 순회하며 수치 합산
-    if (events) {
-      events.forEach(e => {
-        // 이미 결과 맵에 있는 실험인 경우에만 집계
-        // DB에 없는 실험(孤立 이벤트)은 _meta 없이 추가
-        if (!results[e.experiment_name]) {
-          results[e.experiment_name] = {
-            name: e.experiment_name,
-            _meta: { name: e.experiment_name },
-            variants: {
-              A: { impressions: 0, clicks: 0 },
-              B: { impressions: 0, clicks: 0 },
-            }
-          };
-        }
-
-        const variant = e.variant as 'A' | 'B';
-        // 잘못된 variant 값이 들어온 경우 대비
-        if (variant !== 'A' && variant !== 'B') return;
-
-        if (e.event_type === 'impression') {
-          results[e.experiment_name].variants[variant].impressions++;
-        } else if (e.event_type === 'click') {
-          results[e.experiment_name].variants[variant].clicks++;
-        }
-      });
-    }
-
-    return Object.values(results).map(exp => {
-      const vA = exp.variants.A;
-      const vB = exp.variants.B;
-      const meta = exp._meta || {};
-
-      const ctrA = vA.impressions > 0 ? (vA.clicks / vA.impressions) * 100 : 0;
-      const ctrB = vB.impressions > 0 ? (vB.clicks / vB.impressions) * 100 : 0;
-
-      // 통계적 유의미성 검정 (p-value 계산)
-      const pValue = calculateChiSquared(vA.impressions, vA.clicks, vB.impressions, vB.clicks);
-
-      return {
-        // DB 원본 메타데이터 스프레드 (snake_case 필드들 포함)
-        ...meta,
-        // 명시적 camelCase 매핑 (UI 인터페이스와 일치)
-        name: exp.name,
-        status: meta.status || 'running',
-        trafficAllocation: meta.traffic_allocation ?? 50,
-        targetSampleSize: meta.target_sample_size ?? 1000,
-        startDate: meta.start_date || null,
-        // 집계된 통계 데이터
-        variants: {
-          A: { ...vA, ctr: ctrA },
-          B: { ...vB, ctr: ctrB },
-        },
-        pValue,
-        isSignificant: pValue < 0.05,
-        winner: ctrA > ctrB ? 'A' : (ctrB > ctrA ? 'B' : 'Draw'),
-      };
-    });
-  } catch (err) {
-    console.error('[Analytics] getABExperimentResults exception:', err);
-    return [];
-  }
-}
+// A/B 결과 집계는 /api/ab/results 로 분리됨
 
 /**
  * Rage Click 목록 집계 (같은 좌표 ±30px 반경으로 그루핑)
@@ -681,41 +589,4 @@ export async function getScrollDepthStats(params: {
   });
 }
 
-/**
- * Simple Chi-squared test for 2x2 table
- */
-function calculateChiSquared(n1: number, x1: number, n2: number, x2: number): number {
-  if (n1 === 0 || n2 === 0) return 1;
-
-  const o11 = x1;
-  const o12 = n1 - x1;
-  const o21 = x2;
-  const o22 = n2 - x2;
-
-  const row1 = o11 + o12;
-  const row2 = o21 + o22;
-  const col1 = o11 + o21;
-  const col2 = o12 + o22;
-  const total = row1 + row2;
-
-  if (total === 0 || col1 === 0 || col2 === 0) return 1;
-
-  const e11 = (row1 * col1) / total;
-  const e12 = (row1 * col2) / total;
-  const e21 = (row2 * col1) / total;
-  const e22 = (row2 * col2) / total;
-
-  const chiSq =
-    Math.pow(o11 - e11, 2) / e11 +
-    Math.pow(o12 - e12, 2) / e12 +
-    Math.pow(o21 - e21, 2) / e21 +
-    Math.pow(o22 - e22, 2) / e22;
-
-  // df = 1, alpha = 0.05 critical value = 3.841
-  // We return a p-value approximation (very simple)
-  if (chiSq > 10.83) return 0.001;
-  if (chiSq > 6.63) return 0.01;
-  if (chiSq > 3.84) return 0.05;
-  if (chiSq > 2.71) return 0.1;
-  return 1;
-}
+// 카이제곱 검정은 /api/ab/results 로 분리됨
