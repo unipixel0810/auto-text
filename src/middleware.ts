@@ -29,15 +29,22 @@ export default withAuth(
     },
     {
         callbacks: {
-            // /admin 경로만 인증 검사
             authorized: ({ token, req }) => {
                 const { pathname } = req.nextUrl;
-                // /admin 경로: 로그인 필수
-                if (pathname.startsWith('/admin')) {
-                    return !!token;
+
+                // 로그인 없이 접근 가능한 공개 경로
+                const publicPaths = ['/login', '/api/auth'];
+                if (publicPaths.some(p => pathname.startsWith(p))) {
+                    return true;
                 }
-                // 다른 경로: 통과 (로그인 없이도 접근 가능)
-                return true;
+
+                // landing 페이지는 공개
+                if (pathname.startsWith('/landing')) {
+                    return true;
+                }
+
+                // 나머지 모든 경로: 로그인 필수 (베타 정책 — Google 로그인만 허용)
+                return !!token;
             },
         },
     }
@@ -45,7 +52,13 @@ export default withAuth(
 
 export const config = {
     matcher: [
-        '/admin/:path*',
-        '/api/admin/:path*',
+        /*
+         * 아래 경로 제외하고 모든 요청에 미들웨어 적용:
+         * - _next/static (정적 파일)
+         * - _next/image (이미지 최적화)
+         * - favicon.ico
+         * - 공개 이미지/폰트 파일
+         */
+        '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|woff|woff2|ttf|ico)$).*)',
     ],
 };

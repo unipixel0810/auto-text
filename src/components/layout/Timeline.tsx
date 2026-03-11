@@ -7,7 +7,11 @@ import Tooltip from '@/components/ui/Tooltip';
 
 interface TimelineProps {
   clips: VideoClip[];
-  playheadPosition: number;
+  playheadPosition: number;    // Blue line: edit/click position
+  playbackPosition?: number;   // White line: actual playback position
+  isPlaying?: boolean;
+  currentTool?: 'selection' | 'blade';
+  onToolChange?: (tool: 'selection' | 'blade') => void;
   selectedClipIds?: string[];
   zoom: number;
   onZoomChange?: (zoom: number) => void;
@@ -40,7 +44,7 @@ const TRACK_CONTROLS_WIDTH = 80;
 const MIN_CLIP_DURATION = 0.3;
 const DELETE_THRESHOLD = 0.2;
 const SNAP_THRESHOLD_PX = 8;
-const MIN_ZOOM = 0.1;
+const MIN_ZOOM = 0.001;  // Shift+Z로 긴 영상도 한 화면에 표시 가능
 const MAX_ZOOM = 5;
 
 // Track definitions — dynamic tracks are built from clips
@@ -84,13 +88,13 @@ function formatTimecode(s: number, fps = 30): string {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}:${fr.toString().padStart(2, '0')}`;
 }
 
-const Playhead = React.memo(({ x, onMouseDown }: { x: number; onMouseDown: (e: React.MouseEvent) => void }) => (
+const Playhead = React.memo(({ x, onPointerDown }: { x: number; onPointerDown: (e: React.PointerEvent) => void }) => (
   <div
     className="absolute top-0 bottom-0 w-3 -ml-1.5 z-20 cursor-ew-resize group"
     style={{ left: `${x}px` }}
-    onMouseDown={onMouseDown}
+    onPointerDown={onPointerDown}
   >
-    <div className="absolute top-0 bottom-0 w-px bg-[#00D4D4] left-1/2 -ml-[0.5px] group-hover:w-0.5 group-hover:bg-[#00E5E5] transition-all" />
+    <div className="absolute top-0 bottom-0 w-px bg-[#4488FF] left-1/2 -ml-[0.5px] group-hover:w-0.5 group-hover:bg-[#5599FF] transition-all" />
   </div>
 ));
 
@@ -128,8 +132,8 @@ const ClipItem = React.memo(({
   resizePreview?: { clipId: string; newDuration: number } | null,
   onSelect: (e: React.MouseEvent, id: string) => void,
   onContextMenu: (e: React.MouseEvent, id: string) => void,
-  onDragStart: (e: React.MouseEvent, id: string) => void,
-  onResizeStart: (e: React.MouseEvent, id: string, edge: 'left' | 'right') => void,
+  onDragStart: (e: React.PointerEvent, id: string) => void,
+  onResizeStart: (e: React.PointerEvent, id: string, edge: 'left' | 'right') => void,
   onVolumeChange?: (clipId: string, volume: number) => void,
 }) => {
   const colors = TRACK_COLORS[clip.trackIndex] || TRACK_COLORS[1];
@@ -140,14 +144,14 @@ const ClipItem = React.memo(({
   const clipWidth = Math.max(clip.duration * pixelsPerSecond, 4);
   const isAudioTrack = clip.trackIndex >= 20;
   const isVideoTrack = clip.trackIndex === 1 || (clip.trackIndex >= 10 && clip.trackIndex <= 14);
-  const isSubtitleTrack = clip.trackIndex === 0 || clip.trackIndex === 5;
+  const isSubtitleTrack = clip.trackIndex === 0 || (clip.trackIndex >= 5 && clip.trackIndex <= 8);
   const hasUrl = !!clip.url;
 
   // Volume drag
   const volDragRef = useRef<{ startY: number; startVol: number } | null>(null);
   useEffect(() => {
     if (!volDragRef.current) return;
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       const vd = volDragRef.current;
       if (!vd) return;
       const delta = -(e.clientY - vd.startY);
@@ -155,9 +159,14 @@ const ClipItem = React.memo(({
       onVolumeChange?.(clip.id, Math.round(newVol));
     };
     const onUp = () => { volDragRef.current = null; };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
   });
 
   return (
@@ -165,26 +174,26 @@ const ClipItem = React.memo(({
       data-clip-id={clip.id}
       onClick={(e) => onSelect(e, clip.id)}
       onContextMenu={(e) => onContextMenu(e, clip.id)}
-      onMouseDown={(e) => onDragStart(e, clip.id)}
+      onPointerDown={(e) => onDragStart(e, clip.id)}
       className={`absolute top-1 bottom-1 rounded overflow-hidden select-none ${isAboutToDelete ? 'bg-red-900/60 border-2 border-red-500 shadow-lg shadow-red-500/50'
         : isSel ? `${colors.bgSel} border-2 border-primary shadow-lg shadow-primary/30`
           : clip.disabled ? 'bg-gray-800/80 border border-gray-700 opacity-60 grayscale-[0.5]'
             : `${colors.bg} border ${colors.border} hover:brightness-125`
         } ${isResizing || isDrag ? '' : 'transition-all duration-75'}`}
       style={{
-        left: `${clip.startTime * pixelsPerSecond}px`,
-        width: `${clipWidth}px`,
+        left: `${clip.startTime * pixelsPerSecond + (isSubtitleTrack ? 1 : 0)}px`,
+        width: `${Math.max(clipWidth - (isSubtitleTrack ? 2 : 0), 2)}px`,
         cursor: isDrag ? 'grabbing' : 'grab',
         opacity: isDrag ? 0.85 : 1,
         zIndex: isSel ? 5 : 1,
         ...(clip.disabled ? { backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(0,0,0,0.1) 10px, rgba(0,0,0,0.1) 20px)' } : {})
       }}
     >
-      {/* Video/Image thumbnails filmstrip */}
+      {/* Video/Image thumbnails filmstrip — lazy loaded */}
       {isVideoTrack && hasUrl && clip.thumbnails && clip.thumbnails.length > 0 && (
         <div className="absolute inset-0 flex pointer-events-none bg-gray-800/60">
           {clip.thumbnails.map((thumb, i) => (
-            <img key={i} src={thumb} alt="" className="h-full object-contain flex-shrink-0" style={{ width: `${clipWidth / clip.thumbnails!.length}px`, background: '#1a1a2e' }} />
+            <img key={i} src={thumb} alt="" loading="lazy" decoding="async" className="h-full object-contain flex-shrink-0" style={{ width: `${clipWidth / clip.thumbnails!.length}px`, background: '#1a1a2e' }} />
           ))}
           <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-black/40" />
         </div>
@@ -208,7 +217,7 @@ const ClipItem = React.memo(({
         <div
           className="absolute left-0 right-0 z-[5] cursor-ns-resize group"
           style={{ top: `${100 - (clip.volume ?? 100)}%`, height: 6, marginTop: -3 }}
-          onMouseDown={(e) => {
+          onPointerDown={(e) => {
             e.stopPropagation();
             volDragRef.current = { startY: e.clientY, startVol: clip.volume ?? 100 };
           }}
@@ -221,8 +230,10 @@ const ClipItem = React.memo(({
       )}
 
       {/* Clip name label */}
-      <div className="absolute top-0 left-0 right-0 flex items-center px-1.5 py-0.5 min-w-0 pointer-events-none z-[3]">
-        <span className={`text-[9px] font-medium truncate ${isVideoTrack && clip.thumbnails?.length ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]' : colors.text}`}>
+      <div className={`absolute top-0 left-0 right-0 px-1 py-0.5 min-w-0 pointer-events-none z-[3] ${isSubtitleTrack ? 'bottom-0 overflow-hidden' : 'flex items-center'}`}>
+        <span className={`text-[9px] font-medium leading-tight ${isSubtitleTrack ? 'block overflow-hidden' : 'truncate block'} ${isVideoTrack && clip.thumbnails?.length ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]' : colors.text}`}
+          style={isSubtitleTrack ? { wordBreak: 'break-all', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap', display: '-webkit-box', WebkitBoxOrient: 'vertical' as const, WebkitLineClamp: clipWidth < 40 ? 1 : clipWidth < 80 ? 2 : 4 } : undefined}
+        >
           {isAboutToDelete ? '🗑️' : (isSubtitleTrack ? clip.name : clip.name.replace(/\.[^.]+$/, ''))}
         </span>
         {clip.speed && clip.speed !== 1 && (
@@ -242,13 +253,13 @@ const ClipItem = React.memo(({
         )}
       </div>
 
-      {/* Resize handles */}
+      {/* Resize handles — onPointerDown + e.buttons 체크로 드래그 고착 근본 해결 */}
       <div data-handle="resize-left" className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 active:bg-white/50 z-10"
-        onMouseDown={(e) => { e.stopPropagation(); onResizeStart(e, clip.id, 'left'); }}>
+        onPointerDown={(e) => { e.stopPropagation(); onResizeStart(e, clip.id, 'left'); }}>
         <div className="absolute left-0.5 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-white/50 rounded-full" />
       </div>
       <div data-handle="resize-right" className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 active:bg-white/50 z-10"
-        onMouseDown={(e) => { e.stopPropagation(); onResizeStart(e, clip.id, 'right'); }}>
+        onPointerDown={(e) => { e.stopPropagation(); onResizeStart(e, clip.id, 'right'); }}>
         <div className="absolute right-0.5 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-white/50 rounded-full" />
       </div>
     </div>
@@ -281,8 +292,8 @@ const TrackRow = React.memo(({
   isVisible: boolean,
   onSelect: (e: React.MouseEvent, id: string) => void,
   onContextMenu: (e: React.MouseEvent, id: string) => void,
-  onDragStart: (e: React.MouseEvent, id: string) => void,
-  onResizeStart: (e: React.MouseEvent, id: string, edge: 'left' | 'right') => void,
+  onDragStart: (e: React.PointerEvent, id: string) => void,
+  onResizeStart: (e: React.PointerEvent, id: string, edge: 'left' | 'right') => void,
   onTrackDrop: (e: React.DragEvent, trackIndex: number) => void,
   onVolumeChange?: (clipId: string, volume: number) => void,
 }) => {
@@ -318,6 +329,9 @@ const TrackRow = React.memo(({
 
 const TRACK_COLORS: Record<number, { bg: string; bgSel: string; border: string; text: string }> = {
   5: { bg: 'bg-pink-900/50', bgSel: 'bg-pink-700/60', border: 'border-pink-500/50', text: 'text-pink-100' },
+  6: { bg: 'bg-pink-900/50', bgSel: 'bg-pink-700/60', border: 'border-pink-500/50', text: 'text-pink-100' },
+  7: { bg: 'bg-pink-900/50', bgSel: 'bg-pink-700/60', border: 'border-pink-500/50', text: 'text-pink-100' },
+  8: { bg: 'bg-pink-900/50', bgSel: 'bg-pink-700/60', border: 'border-pink-500/50', text: 'text-pink-100' },
   0: { bg: 'bg-purple-900/50', bgSel: 'bg-purple-700/60', border: 'border-purple-500/50', text: 'text-purple-100' },
   1: { bg: 'bg-[#0a0a0a]', bgSel: 'bg-blue-600/40', border: 'border-primary/40', text: 'text-white' },
   // Overlays (10-14)
@@ -333,7 +347,7 @@ const TRACK_COLORS: Record<number, { bg: string; bgSel: string; border: string; 
 };
 
 const Timeline = React.memo(({
-  clips, playheadPosition, selectedClipIds = [], zoom, onZoomChange, snapEnabled = true, onSnapToggle,
+  clips, playheadPosition, playbackPosition = 0, isPlaying = false, currentTool = 'selection', onToolChange, selectedClipIds = [], zoom, onZoomChange, snapEnabled = true, onSnapToggle,
   onPlayheadChange, onHoverTimeChange, onClipAdd, onSubtitleAdd, onClipUpdate, onClipSelect, onClipDelete,
   onSplit, onUndo, onRedo, onSpeedChange, onFitToScreen, onTrimLeft, onTrimRight, rippleMode, onRippleToggle, onResizeEnd, onInteractionStart, onInteractionEnd, isTimelineHovered, onHoverChange,
 }: TimelineProps) => {
@@ -363,7 +377,7 @@ const Timeline = React.memo(({
   const findSnapTimeRef = useRef<((time: number, excludeClipId: string, trackIndex: number) => number) | null>(null);
   const pixelsPerSecondRef = useRef(0);
   const visibleTracksRef = useRef<TrackDef[]>([]);
-  const CLIP_DRAG_THRESHOLD = 5;
+  const CLIP_DRAG_THRESHOLD = 8; // 8px 이상 이동해야 드래그 시작 (단순 클릭과 확실히 분리)
   const [showSpeedPopup, setShowSpeedPopup] = useState(false);
   const [speedValue, setSpeedValue] = useState(1);
   const [showLinkMenu, setShowLinkMenu] = useState(false);
@@ -403,8 +417,10 @@ const Timeline = React.memo(({
   const groupedClips = useMemo(() => {
     const map: Record<number, VideoClip[]> = {};
     clips.forEach(clip => {
-      if (!map[clip.trackIndex]) map[clip.trackIndex] = [];
-      map[clip.trackIndex].push(clip);
+      // Merge AI subtitle tracks 6,7,8 into track 5 for single-row rendering
+      const displayTrack = (clip.trackIndex >= 6 && clip.trackIndex <= 8) ? 5 : clip.trackIndex;
+      if (!map[displayTrack]) map[displayTrack] = [];
+      map[displayTrack].push(clip);
     });
     return map;
   }, [clips]);
@@ -445,6 +461,7 @@ const Timeline = React.memo(({
 
   const maxTime = useMemo(() => Math.max(clips.length > 0 ? Math.max(...clips.map(c => c.startTime + c.duration)) + 10 : 60, playheadPosition + 10), [clips, playheadPosition]);
   const playheadX = useMemo(() => TRACK_CONTROLS_WIDTH + (playheadPosition * pixelsPerSecond), [playheadPosition, pixelsPerSecond]);
+  const playbackX = useMemo(() => TRACK_CONTROLS_WIDTH + (playbackPosition * pixelsPerSecond), [playbackPosition, pixelsPerSecond]);
 
   // Snap helper
   const findSnapTime = useCallback((time: number, excludeClipId: string, trackIndex: number): number => {
@@ -471,7 +488,7 @@ const Timeline = React.memo(({
   pixelsPerSecondRef.current = pixelsPerSecond;
   visibleTracksRef.current = visibleTracks;
 
-  const handleTimelineMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+  const handleTimelineMouseDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!tracksRef.current || resizingClip || draggingClip || isDraggingPlayhead) return;
     if ((e.target as HTMLElement).closest('[data-clip-id]')) return;
 
@@ -523,9 +540,10 @@ const Timeline = React.memo(({
     setContextMenu({ x: e.clientX, y: e.clientY, clipIds });
   }, [selectedClipIds, onClipSelect]);
 
-  const handleClipDragStart = useCallback((e: React.MouseEvent, clipId: string) => {
+  const handleClipDragStart = useCallback((e: React.PointerEvent, clipId: string) => {
     if (e.button !== 0) return; // Left click only
     if ((e.target as HTMLElement).dataset.handle) return;
+    if (currentTool !== 'selection') return; // Only drag in selection mode
     e.preventDefault(); e.stopPropagation();
     const clip = clips.find(c => c.id === clipId);
     if (!clip || trackLocked[clip.trackIndex]) return;
@@ -537,9 +555,9 @@ const Timeline = React.memo(({
     // Use pending drag with threshold to avoid accidental moves
     pendingDragRef.current = { clipId, initialMouseX: e.clientX, initialStartTime: clip.startTime, initialMouseY: e.clientY };
     onInteractionStart?.();
-  }, [clips, trackLocked, selectedClipIds, onClipSelect, onInteractionStart]);
+  }, [clips, trackLocked, selectedClipIds, onClipSelect, onInteractionStart, currentTool]);
 
-  const handleResizeStart = useCallback((e: React.MouseEvent, clipId: string, edge: 'left' | 'right') => {
+  const handleResizeStart = useCallback((e: React.PointerEvent, clipId: string, edge: 'left' | 'right') => {
     e.preventDefault(); e.stopPropagation();
     const clip = clips.find(c => c.id === clipId);
     if (!clip || trackLocked[clip.trackIndex]) return;
@@ -592,7 +610,7 @@ const Timeline = React.memo(({
 
     let rafId: number;
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handleMouseMove = (e: PointerEvent) => {
       if (!tracksRef.current) return;
       const rect = tracksRef.current.getBoundingClientRect();
       const scrollLeft = tracksRef.current.parentElement?.scrollLeft || 0;
@@ -675,12 +693,14 @@ const Timeline = React.memo(({
       setLassoCurrent(null);
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('pointermove', handleMouseMove);
+    window.addEventListener('pointerup', handleMouseUp);
+    window.addEventListener('pointercancel', handleMouseUp);
     return () => {
       cancelAnimationFrame(rafId);
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('pointermove', handleMouseMove);
+      window.removeEventListener('pointerup', handleMouseUp);
+      window.removeEventListener('pointercancel', handleMouseUp);
     };
   }, [lassoStart, lassoCurrent, pixelsPerSecond, onPlayheadChange, onClipSelect]);
 
@@ -692,75 +712,172 @@ const Timeline = React.memo(({
     }
   }, [contextMenu, onClipDelete, onClipSelect]);
 
-  const handlePlayheadMouseDown = useCallback((e: React.MouseEvent) => {
+  const handlePlayheadMouseDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault(); e.stopPropagation();
     setIsDraggingPlayhead(true);
   }, []);
 
   useEffect(() => {
     if (!isDraggingPlayhead) return;
-    const move = (e: MouseEvent) => {
+    const move = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse' && e.buttons === 0) { setIsDraggingPlayhead(false); return; }
       if (!tracksRef.current) return;
       const rect = tracksRef.current.getBoundingClientRect();
       const scrollLeft = tracksRef.current.parentElement?.scrollLeft || 0;
       onPlayheadChange?.(Math.max(0, (e.clientX - rect.left + scrollLeft - TRACK_CONTROLS_WIDTH) / pixelsPerSecond));
     };
     const up = () => setIsDraggingPlayhead(false);
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-    return () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+    const onVisibility = () => { if (document.hidden) up(); };
+    // pointermove/pointerup: 마우스를 빠르게 놓거나 포커스 이탈 시에도 확실히 종료
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+    document.addEventListener('pointercancel', up);
+    window.addEventListener('blur', up);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', up);
+      window.removeEventListener('blur', up);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [isDraggingPlayhead, pixelsPerSecond, onPlayheadChange]);
 
   useEffect(() => {
     if (!resizingClip) return;
-    const move = (e: MouseEvent) => {
+    const clip = clips.find(c => c.id === resizingClip.clipId);
+    const speed = clip?.speed ?? 1;
+    // 원본 미디어 총 길이 (미디어 좌표, speed 미적용)
+    const origMediaDuration = clip?.originalDuration
+      ?? ((resizingClip.initialTrimStart + resizingClip.initialDuration) * speed);
+
+    // Main 트랙(1) 마그네틱: 왼쪽으로 늘릴 때 앞 클립 끝과 겹치지 않도록 제한
+    const isMainTrack = clip?.trackIndex === 1;
+    const prevClipEnd = isMainTrack
+      ? Math.max(0, ...clips
+          .filter(c => c.trackIndex === 1 && c.id !== resizingClip.clipId && c.startTime + c.duration <= resizingClip.initialStartTime + 0.01)
+          .map(c => c.startTime + c.duration))
+      : 0;
+    // 오른쪽으로 늘릴 때 뒤 클립 시작과 겹치지 않도록 제한
+    const nextClipStart = isMainTrack
+      ? Math.min(Infinity, ...clips
+          .filter(c => c.trackIndex === 1 && c.id !== resizingClip.clipId && c.startTime >= resizingClip.initialStartTime + resizingClip.initialDuration - 0.01)
+          .map(c => c.startTime))
+      : Infinity;
+
+    const move = (e: PointerEvent) => {
+      // 마우스 버튼이 이미 놓인 상태에서 move가 오면 → 강제 종료 (고착 방지)
+      if (e.pointerType === 'mouse' && e.buttons === 0) { up(); return; }
+
       const deltaX = e.clientX - resizingClip.initialMouseX;
       const deltaTime = deltaX / pixelsPerSecond;
       let newStart = resizingClip.initialStartTime;
       let newDur = resizingClip.initialDuration;
       let newTrimStart = resizingClip.initialTrimStart;
-      let newTrimEnd = resizingClip.initialTrimEnd;
+
       if (resizingClip.edge === 'right') {
+        // ─── 오른쪽 끝 드래그: duration 늘리기/줄이기 ───
         newDur = Math.max(0, resizingClip.initialDuration + deltaTime);
-        newTrimEnd = newDur;
+        // 원본 미디어 끝 초과 불가
+        const maxDurFromMedia = (origMediaDuration - resizingClip.initialTrimStart) / speed;
+        if (maxDurFromMedia > 0) newDur = Math.min(newDur, maxDurFromMedia);
+        // Main 트랙: 뒤 클립과 겹침 방지
+        if (isMainTrack && nextClipStart < Infinity) {
+          const maxDurFromNext = nextClipStart - resizingClip.initialStartTime;
+          newDur = Math.min(newDur, maxDurFromNext);
+        }
       } else {
-        const maxShift = resizingClip.initialDuration - MIN_CLIP_DURATION;
-        const shift = Math.min(Math.max(-resizingClip.initialStartTime, deltaTime), maxShift);
-        newStart = resizingClip.initialStartTime + shift;
+        // ─── 왼쪽 끝 드래그: 비파괴 복구 (Non-destructive Trimming) ───
+        //
+        // 핵심: shift 계산은 trimStart ≥ 0만으로 제한.
+        // startTime은 별도로 clamp하여, 0이나 앞 클립 끝에서 막혀도
+        // trimStart는 계속 감소 → 숨겨진 원본 프레임이 복구됨.
+        // startTime이 더 못 내려가면 클립이 오른쪽으로 확장됨.
+        //
+        // 예: startTime=0, trimStart=5s, duration=10s, 3초 왼쪽으로 당김
+        //   shift=-3 → trimStart=2s, startTime=max(0,-3)=0, duration=13s
+        //   → 클립 [0,13], 원본 2초부터 재생, 숨겨진 3초 복구됨
+
+        // shift 제한: trimStart ≥ 0 (원본 0초 이전 불가) + duration ≥ MIN
+        const maxRecovery = resizingClip.initialTrimStart / speed;
+        const maxTrimMore = resizingClip.initialDuration - MIN_CLIP_DURATION;
+        const shift = Math.max(-maxRecovery, Math.min(deltaTime, maxTrimMore));
+
+        // trimStart: 항상 shift 그대로 적용 (startTime clamp와 독립적)
+        newTrimStart = resizingClip.initialTrimStart + (shift * speed);
+
+        // startTime: 최소 경계(0 또는 앞 클립 끝)로 clamp
+        const desiredStart = resizingClip.initialStartTime + shift;
+        const minStart = isMainTrack ? prevClipEnd : 0;
+        newStart = Math.max(minStart, desiredStart);
+
+        // duration: trimStart가 줄어든 만큼 클립 전체 길이 증가
+        // endTime을 기준으로 계산하지 않고, shift 기반으로 직접 계산
         newDur = resizingClip.initialDuration - shift;
-        newTrimStart = resizingClip.initialTrimStart + shift;
       }
+
       setResizePreview({ clipId: resizingClip.clipId, newDuration: newDur });
       if (newDur >= MIN_CLIP_DURATION) {
-        onClipUpdate?.(resizingClip.clipId, { startTime: Math.max(0, newStart), duration: newDur, trimStart: Math.max(0, newTrimStart), trimEnd: newTrimEnd });
+        onClipUpdate?.(resizingClip.clipId, {
+          startTime: Math.max(0, newStart),
+          duration: newDur,
+          trimStart: Math.max(0, newTrimStart),
+        });
       }
     };
     const up = () => {
-      const clip = clips.find(c => c.id === resizingClip.clipId);
-      if (clip && clip.duration <= DELETE_THRESHOLD) {
+      // clipsRef.current 사용 — clips는 stale closure라 드래그 시작 시점 값을 가리킴
+      const c = clipsRef.current.find(c => c.id === resizingClip.clipId);
+      if (c && c.duration <= DELETE_THRESHOLD) {
         onClipDelete?.(resizingClip.clipId);
       } else {
         onResizeEnd?.();
       }
       setResizingClip(null); setResizePreview(null);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      onClipSelect?.([]); // 리사이즈 종료 시 선택 해제
       onInteractionEnd?.();
     };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-    return () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+    // document 레벨 pointer 이벤트로 등록 — 창 밖까지 추적 가능
+    // pointercancel/blur/visibilitychange는 강제 종료용 안전망
+    const forceEnd = () => {
+      setResizingClip(null); setResizePreview(null);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      onInteractionEnd?.();
+    };
+    const onVisibility = () => { if (document.hidden) forceEnd(); };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+    document.addEventListener('pointercancel', forceEnd);
+    window.addEventListener('blur', forceEnd);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', forceEnd);
+      window.removeEventListener('blur', forceEnd);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [resizingClip, pixelsPerSecond, clips, onClipUpdate, onClipDelete, onResizeEnd, onInteractionEnd]);
 
   // Pending drag → real drag with threshold
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       const pd = pendingDragRef.current;
-      if (pd) {
-        if (Math.hypot(e.clientX - pd.initialMouseX, e.clientY - pd.initialMouseY) >= CLIP_DRAG_THRESHOLD) {
-          setDraggingClip(pd);
-          pendingDragRef.current = null;
-          document.body.style.cursor = 'grabbing';
-          document.body.style.userSelect = 'none';
-        }
+      if (!pd) return;
+      // 마우스 버튼이 이미 놓인 상태면 pending drag 취소 (고착 방지)
+      if (e.pointerType === 'mouse' && e.buttons === 0) {
+        pendingDragRef.current = null;
+        onInteractionEnd?.();
+        return;
+      }
+      if (Math.hypot(e.clientX - pd.initialMouseX, e.clientY - pd.initialMouseY) >= CLIP_DRAG_THRESHOLD) {
+        setDraggingClip(pd);
+        pendingDragRef.current = null;
+        document.body.style.cursor = 'grabbing';
+        document.body.style.userSelect = 'none';
       }
     };
     const onUp = () => {
@@ -769,18 +886,35 @@ const Timeline = React.memo(({
         onInteractionEnd?.(); // cancelled drag — still end interaction
       }
     };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    // 포커스 이탈·탭 전환 시 pending drag 취소
+    const cancel = () => {
+      if (pendingDragRef.current) {
+        pendingDragRef.current = null;
+        onInteractionEnd?.();
+      }
+    };
+    const onVisibility = () => { if (document.hidden) cancel(); };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    window.addEventListener('blur', cancel);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      window.removeEventListener('blur', cancel);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [onInteractionEnd]);
 
   useEffect(() => {
     if (!draggingClip) return;
     const dragInfo = draggingClip; // capture once
-    const move = (e: MouseEvent) => {
+    const move = (e: PointerEvent) => {
+      // 마우스 버튼이 이미 놓인 상태에서 move가 오면 → 강제 종료 (고착 방지)
+      if (e.pointerType === 'mouse' && e.buttons === 0) { up(); return; }
+
       const currentClips = clipsRef.current;
       const pps = pixelsPerSecondRef.current;
       const clip = currentClips.find(c => c.id === dragInfo.clipId);
@@ -834,11 +968,28 @@ const Timeline = React.memo(({
       setDraggingClip(null);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      onClipSelect?.([]); // 드래그 종료 시 선택 해제
       onInteractionEnd?.();
     };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-    return () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+    const forceEnd = () => {
+      setDraggingClip(null);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      onInteractionEnd?.();
+    };
+    const onVisibility = () => { if (document.hidden) forceEnd(); };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+    document.addEventListener('pointercancel', forceEnd);
+    window.addEventListener('blur', forceEnd);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', forceEnd);
+      window.removeEventListener('blur', forceEnd);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   // All other values accessed via refs to avoid re-registering listeners on every change
   }, [draggingClip, onInteractionEnd]);
 
@@ -861,7 +1012,7 @@ const Timeline = React.memo(({
     }
   }, [onPlayheadChange]);
 
-  const handleScrubMouseDown = useCallback((e: React.MouseEvent) => {
+  const handleScrubMouseDown = useCallback((e: React.PointerEvent) => {
     if (scrubMode === 'click') {
       setIsScrubbing(true);
       isScrubbingRef.current = true;
@@ -870,7 +1021,7 @@ const Timeline = React.memo(({
     }
   }, [scrubMode, getTimeFromMouseX, onPlayheadChange]);
 
-  const handleScrubMouseMove = useCallback((e: React.MouseEvent) => {
+  const handleScrubMouseMove = useCallback((e: React.PointerEvent) => {
     const time = getTimeFromMouseX(e.clientX);
     hoverTimeRef.current = time;
 
@@ -1018,6 +1169,25 @@ const Timeline = React.memo(({
           <Tooltip label="Redo" shortcut="⌘⇧Z">
             <button onClick={onRedo} className="p-1 rounded hover:bg-white/10 text-white hover:text-primary transition-all active:scale-90">
               <span className="material-icons text-sm">redo</span>
+            </button>
+          </Tooltip>
+          <div className="w-px h-4 bg-gray-700 mx-1" />
+
+          {/* Tool Mode: Selection (A) / Blade (B) */}
+          <Tooltip label="선택 툴" shortcut="A">
+            <button
+              onClick={() => onToolChange?.('selection')}
+              className={`p-1 rounded transition-all active:scale-90 ${currentTool === 'selection' ? 'bg-[#00D4D4]/20 text-[#00D4D4]' : 'text-gray-400 hover:text-white hover:bg-white/10'}`}
+            >
+              <span className="material-icons text-sm">near_me</span>
+            </button>
+          </Tooltip>
+          <Tooltip label="자르기 툴" shortcut="B">
+            <button
+              onClick={() => onToolChange?.('blade')}
+              className={`p-1 rounded transition-all active:scale-90 ${currentTool === 'blade' ? 'bg-[#00D4D4]/20 text-[#00D4D4]' : 'text-gray-400 hover:text-white hover:bg-white/10'}`}
+            >
+              <span className="material-symbols-outlined text-[18px]">content_cut</span>
             </button>
           </Tooltip>
           <div className="w-px h-4 bg-gray-700 mx-1" />
@@ -1231,7 +1401,7 @@ const Timeline = React.memo(({
             </button>
           </Tooltip>
           <input className="w-20 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#00D4D4]"
-            type="range" min={MIN_ZOOM} max={MAX_ZOOM} step="0.05" value={zoom}
+            type="range" min={MIN_ZOOM} max={MAX_ZOOM} step="0.001" value={zoom}
             onChange={(e) => onZoomChange?.(Number(e.target.value))} />
           <Tooltip label="Zoom In" shortcut="⌘=">
             <button onClick={() => onZoomChange?.(Math.min(MAX_ZOOM, zoom * 1.25))} className={cyanBtn()}>
@@ -1256,13 +1426,23 @@ const Timeline = React.memo(({
           </div>
           
           {/* High-frequency isolated components */}
-          <Playhead x={playheadPosition * pixelsPerSecond} onMouseDown={handlePlayheadMouseDown} />
-          
+          <Playhead x={playheadPosition * pixelsPerSecond} onPointerDown={handlePlayheadMouseDown} />
+
+          {/* White playback marker in ruler — 재생 중일 때만 표시 */}
+          {isPlaying && (
+            <div
+              className="absolute top-0 bottom-0 pointer-events-none"
+              style={{ left: `${playbackPosition * pixelsPerSecond}px`, zIndex: 9999 }}
+            >
+              <div className="absolute top-0 bottom-0 left-0" style={{ width: '2px', backgroundColor: '#FFFFFF' }} />
+            </div>
+          )}
+
           {/* Hover ruler marker — DOM-direct, no React state */}
           <div
             ref={hoverRulerRef}
-            className="absolute top-0 bottom-0 w-3 -ml-1.5 z-15 pointer-events-none"
-            style={{ display: 'none' }}
+            className="absolute top-0 bottom-0 w-3 -ml-1.5 pointer-events-none"
+            style={{ display: 'none', zIndex: 15 }}
           >
             <div className="absolute top-0 bottom-0 w-px bg-orange-400/80 left-1/2 -ml-[0.5px]" />
             <div ref={hoverTooltip2Ref} className="absolute -top-6 left-1/2 bg-orange-500 text-black text-[9px] font-mono px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap shadow-lg -translate-x-1/2" />
@@ -1277,9 +1457,9 @@ const Timeline = React.memo(({
                 top: Math.min(lassoStart.y, lassoCurrent.y),
                 width: Math.abs(lassoCurrent.x - lassoStart.x),
                 height: Math.abs(lassoCurrent.y - lassoStart.y),
-                background: 'rgba(0, 150, 255, 0.15)',
-                border: '1.5px solid rgba(0, 150, 255, 0.7)',
-                boxShadow: '0 0 8px rgba(0, 150, 255, 0.3), inset 0 0 12px rgba(0, 150, 255, 0.08)',
+                background: 'rgba(255, 165, 0, 0.2)',
+                border: '1px solid orange',
+                boxShadow: '0 0 8px rgba(255, 165, 0, 0.3), inset 0 0 12px rgba(255, 165, 0, 0.08)',
               }}
             />
           )}
@@ -1290,17 +1470,18 @@ const Timeline = React.memo(({
       {/* Tracks */}
       <div
         ref={timelineRef}
-        className={`flex-1 overflow-y-auto overflow-x-auto relative bg-[#151515] ${scrubMode === 'hover' ? 'cursor-crosshair' : ''}`}
+        data-timeline-scroll="true"
+        className={`flex-1 overflow-y-auto overflow-x-auto relative bg-[#151515] ${scrubMode === 'hover' ? 'cursor-crosshair' : currentTool === 'blade' ? 'cursor-crosshair' : ''}`}
         style={{ display: 'flex', flexDirection: 'column' }}
-        onMouseDown={handleScrubMouseDown}
-        onMouseMove={handleScrubMouseMove}
-        onMouseUp={handleScrubMouseUp}
-        onMouseLeave={handleScrubMouseLeave}
+        onPointerDown={handleScrubMouseDown}
+        onPointerMove={handleScrubMouseMove}
+        onPointerUp={handleScrubMouseUp}
+        onPointerLeave={handleScrubMouseLeave}
       >
         {/* Scrub time tooltip (fixed playhead feedback) */}
         {scrubTime !== null && (
           <div
-            className="absolute -top-1 z-30 bg-[#00D4D4] text-black text-[9px] font-mono px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap"
+            className="absolute -top-1 z-30 bg-[#4488FF] text-white text-[9px] font-mono px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap"
             style={{ left: `${TRACK_CONTROLS_WIDTH + scrubTime * pixelsPerSecond}px`, transform: 'translateX(-50%)' }}
           >
             {fmtTime(scrubTime)}
@@ -1311,13 +1492,13 @@ const Timeline = React.memo(({
           ref={tracksRef}
           className="flex flex-col relative min-w-full"
           style={{ width: `calc(${TRACK_CONTROLS_WIDTH + maxTime * pixelsPerSecond}px + 20% )`, minHeight: '100%' }}
-          onMouseDown={handleTimelineMouseDown}
+          onPointerDown={handleTimelineMouseDown}
         >
           {/* Hover Scrubber Line (orange) — DOM-direct, no React state */}
           <div
             ref={hoverLineRef}
-            className="absolute top-0 bottom-0 w-3 -ml-1.5 z-15 pointer-events-none"
-            style={{ display: 'none' }}
+            className="absolute top-0 bottom-0 w-3 -ml-1.5 pointer-events-none"
+            style={{ display: 'none', zIndex: 15 }}
           >
             <div className="absolute top-0 bottom-0 w-px bg-orange-400/80 left-1/2 -ml-[0.5px]" />
             <div
@@ -1326,13 +1507,23 @@ const Timeline = React.memo(({
             />
           </div>
 
-          {/* Fixed Playhead Line (cyan, click to set position) */}
+          {/* White Playback Line — 재생 중일 때만 표시 (정지 시 파란 선이 그 위치로 이동) */}
+          {isPlaying && (
+            <div
+              className="absolute top-0 bottom-0 pointer-events-none"
+              style={{ left: `${playbackX}px`, zIndex: 9999 }}
+            >
+              <div className="absolute top-0 bottom-0 left-0" style={{ width: '2px', backgroundColor: '#FFFFFF', boxShadow: '0 0 6px rgba(255,255,255,0.8)' }} />
+            </div>
+          )}
+
+          {/* Blue Edit Line (click to set position, used for Q/W/B cuts) */}
           <div
-            className="absolute top-0 bottom-0 w-3 -ml-1.5 z-20 cursor-ew-resize group"
-            style={{ left: `${playheadX}px` }}
-            onMouseDown={handlePlayheadMouseDown}
+            className="absolute top-0 bottom-0 w-3 -ml-1.5 cursor-ew-resize group"
+            style={{ left: `${playheadX}px`, zIndex: 20 }}
+            onPointerDown={handlePlayheadMouseDown}
           >
-            <div className="absolute top-0 bottom-0 w-px bg-[#00D4D4] left-1/2 -ml-[0.5px] group-hover:w-0.5 group-hover:bg-[#00E5E5] transition-all" />
+            <div className="absolute top-0 bottom-0 w-px bg-[#4488FF] left-1/2 -ml-[0.5px] group-hover:w-0.5 group-hover:bg-[#5599FF] transition-all" />
           </div>
 
           {/* Top spacer — drop zone for video/image → overlay tracks */}

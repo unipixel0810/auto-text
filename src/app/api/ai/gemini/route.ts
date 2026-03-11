@@ -80,53 +80,77 @@ export async function POST(req: Request) {
         let prompt: string;
 
         if (mode === 'creative' && transcriptData) {
-            // Creative subtitle mode: generate entertainment/situation/explanation subtitles
-            // that do NOT overlap with the existing transcript
+            // Creative subtitle mode: generate 4 types of dynamic subtitles
             const transcriptJson = JSON.stringify(transcriptData, null, 2);
             const targetCount = Math.max(20, Math.round(duration / 2.5));
             const targetSeconds = Math.round(duration * 0.6);
+            // 영상 구간을 5등분하여 각 구간에서 고루 배치하도록 안내
+            const segmentSize = Math.round(duration / 5);
+            const segments = Array.from({ length: 5 }, (_, i) => `  구간${i + 1}: ${i * segmentSize}초 ~ ${(i + 1) * segmentSize}초`).join('\n');
+            // 각 유형별 목표 개수 (예능40 상황20 설명20 맥락20)
+            const countEntertain = Math.round(targetCount * 0.4);
+            const countSituation = Math.round(targetCount * 0.2);
+            const countExplain = Math.round(targetCount * 0.2);
+            const countContext = targetCount - countEntertain - countSituation - countExplain;
             prompt = `당신은 한국 최고의 유튜브 예능 편집자입니다. 나영석 PD 스타일의 자막 연출을 해주세요.
 첨부된 오디오를 분석하고, 아래 [기존 대본]을 참고하여 **대본에 없는** 연출 자막을 대량으로 만들어주세요.
 
 영상 길이: ${Math.round(duration)}초
-★★★ 필수 목표: 최소 ${targetCount}개, 총 ${targetSeconds}초 이상 분량 (전체의 60%) ★★★
+★★★ 필수 목표: 정확히 ${targetCount}개, 총 ${targetSeconds}초 이상 분량 ★★★
 
-[기존 대본] (이미 화면에 표시됨)
+[기존 대본] (이미 화면에 표시됨 — 이 시간대와 절대 겹치면 안 됨)
 ${transcriptJson}
 
 [규칙 — 반드시 지켜야 합니다]
-1. ★★★ 시간이 겹치면 안 됩니다! ★★★ AI 자막의 시간 구간(start_time ~ end_time)이 기존 대본의 시간 구간과 절대 겹치면 안 됩니다. 대본이 없는 빈 시간대에 AI 자막을 넣으세요. 대본이 있는 시간에는 대본이 우선이고, 대본이 없는 구간에 AI 자막을 채워 넣으세요.
-2. 대본 텍스트를 절대 반복하지 마세요. 같은 내용의 말을 쓰면 안 됩니다.
-3. 3가지 유형을 **골고루 섞어서** 만드세요 (비율 예능 50% : 상황 25% : 설명 25%):
+1. ★★★ 시간이 겹치면 안 됩니다! ★★★ AI 자막의 start~end가 기존 대본 구간과 절대 겹치면 안 됩니다.
+2. 대본 텍스트를 절대 반복하지 마세요.
+3. ★★★ 유형 비율을 정확히 지키세요 ★★★
+   - "예능" ${countEntertain}개 (40%): 감정·리액션·웃음 포인트
+   - "상황" ${countSituation}개 (20%): 행동묘사·BGM·효과음
+   - "설명" ${countExplain}개 (20%): 정보·팩트·수치 강조
+   - "맥락" ${countContext}개 (20%): 배경·전후 연결
 
-   ★ "예능자막" (가장 많이! 재미를 최우선):
-   - 화자의 말에 대한 과장된 리액션: "헐ㅋㅋㅋ 진심?!", "아니 이게 말이 돼?!", "소름 돋았다..."
-   - 감정 극대화: "감동의 눈물 한 바가지 ㅠㅠ", "분노 게이지 MAX", "당황 x 100"
-   - 효과음/밈: "띠용?!", "두둥!", "삐빅- 거짓말 탐지", "⚡충격⚡"
+4. ★★★ 5개 구간에 고루 분산하세요 (각 구간에 최소 3개 이상) ★★★
+${segments}
+   → 각 구간에 예능/상황/설명/맥락이 골고루 섞여야 합니다!
+   → 앞부분에만 몰리거나 뒷부분에만 몰리면 실패입니다.
+
+   ★ type "예능" — 감정·리액션·웃음 포인트 과장:
+   - 과장된 리액션: "앗! ㅋㅋㅋ", "헐 진심?!", "아니 이게 말이 돼?!"
+   - 감정 극대화: "멘붕 온 과일장수", "분노 게이지 MAX", "당황 x 100"
+   - 밈/효과음 텍스트: "띠용?!", "두둥!", "삐빅- 거짓말 탐지", "⚡충격⚡"
    - 시청자 대변: "(시청자 심정) 그래서 결론이 뭔데...", "나만 이해 안 되는 건가?"
-   - 상황 비틀기: 반전, 아이러니, 웃긴 요약, 츳코미(ツッコミ)
+   - 상황 비틀기: 반전, 아이러니, 츳코미
 
-   ★ "상황자막" (분위기 연출):
+   ★ type "상황" — 현재 벌어지는 행동/심각한 상태 묘사:
+   - 행동 묘사: "[다급하게 박스를 뒤지는 손길]", "[고개를 절레절레 흔드는 중]"
    - BGM 묘사: "♪ 긴장감 폭발 BGM ♪", "♬ 슬픈 피아노 선율 ♬"
-   - 효과음: "[ 적막 ]", "[ 웅성웅성 ]", "[ 심장 쿵쿵 ]"
-   - 시간/장소: "— 3시간 뒤 —", "그로부터 10초 후..."
+   - 효과음 텍스트: "[ 적막 ]", "[ 웅성웅성 ]", "[ 심장 쿵쿵 ]"
    - 분위기 전환: "[ 갑분싸 ]", "[ 훈훈 모드 ON ]"
+   - 시간/장소: "— 3시간 뒤 —", "그로부터 10초 후..."
 
-   ★ "설명자막" (정보 보충):
-   - 전문용어 해설, 맥락 보충, 팩트체크
-   - 핵심 요약: "요약: ~한 상황", "참고로 ~입니다"
+   ★ type "설명" — 정보 전달, 팩트 체크, 수치 강조:
+   - 수치/팩트: "💡 사과 가격 144% 폭등!", "참고: 국내 생산량 역대 최저"
+   - 전문용어 해설: "※ 여기서 '숏커버링'이란 공매도 청산을 뜻함"
+   - 핵심 요약: "요약: ~한 상황"
 
-4. ★★★ 핵심: ${targetCount}개 이상 반드시 만들어야 합니다! 적게 만들면 안 됩니다! ★★★
-5. 대본이 없는 빈 구간에 집중적으로 배치하세요. 대본 사이사이 빈틈을 AI 자막으로 가득 채우세요!
-6. 각 자막은 1~4초 길이로, 짧고 임팩트 있게 만드세요.
-7. 재미없으면 실패입니다. 시청자가 "ㅋㅋㅋ" 할 수 있도록 센스 있게 만드세요.
+   ★ type "맥락" — 앞뒤 상황을 이어주는 배경 지식:
+   - 배경 정보: "내년부터 미국산 감귤류 관세 철폐"
+   - 전후 연결: "사실 이 이야기는 3년 전부터 시작된 것"
+   - 숨은 의미: "이 말의 진짜 뜻은...", "업계에서는 이를 두고..."
+   - 비하인드: "참고로 이 장면 촬영에만 8시간 걸렸다고"
+
+5. 각 자막은 1~4초 길이로, 짧고 임팩트 있게 만드세요.
+6. 재미없으면 실패입니다. 시청자가 "ㅋㅋㅋ" 할 수 있도록 센스 있게 만드세요.
 
 [출력 형식]
-반드시 아래 JSON 배열만 출력하세요. 다른 설명/마크다운 금지:
+반드시 아래 JSON 배열만 출력하세요. 다른 설명/마크다운 금지.
+type 값은 반드시 "예능", "상황", "설명", "맥락" 중 하나:
 [
-  {"start_time": 0.5, "end_time": 2.5, "text": "ㅋㅋㅋ 이 표정 실화?!", "style_type": "예능자막"},
-  {"start_time": 3.0, "end_time": 5.0, "text": "♪ 두근두근 BGM ♪", "style_type": "상황자막"},
-  {"start_time": 6.0, "end_time": 8.5, "text": "여기서 말하는 건 쉽게 말해 ~라는 뜻", "style_type": "설명자막"}
+  {"start": 0.5, "end": 2.5, "text": "ㅋㅋㅋ 이 표정 실화?!", "type": "예능"},
+  {"start": 3.0, "end": 5.0, "text": "[다급하게 뛰어가는 중]", "type": "상황"},
+  {"start": 6.0, "end": 8.5, "text": "💡 사과 가격 144% 폭등!", "type": "설명"},
+  {"start": 9.0, "end": 11.0, "text": "내년부터 미국산 감귤류 관세 철폐", "type": "맥락"}
 ]`;
         } else {
             // Default mode: transcribe everything with style annotation

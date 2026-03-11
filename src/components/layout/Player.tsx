@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import ContextMenu from '@/components/ui/ContextMenu';
 import type { VideoClip } from '@/types/video';
 import type { SubtitlePreset } from '@/lib/subtitlePresets';
+import { ANIMATION_CSS_CLASS } from '@/components/editor/SubtitleAnimationPanel';
 
 // --- Sub-components for Performance Optimization ---
 
@@ -111,11 +112,20 @@ const VisualLayer = React.memo(({
       if (dragRef.current?.dragging) onInteractionEndRef.current?.(); // push single history entry
       dragRef.current = null;
     };
+    const onCancel = () => { dragRef.current = null; };
+    const onBlur = () => { if (dragRef.current?.dragging) onInteractionEndRef.current?.(); dragRef.current = null; };
+    const onVisibility = () => { if (document.hidden) onBlur(); };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('blur', onBlur);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('blur', onBlur);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
 
@@ -380,11 +390,22 @@ const SubtitleOverlay = React.memo(({
       if (dragRef.current?.dragging) onInteractionEndRef.current?.();
       dragRef.current = null;
     };
+    // pointercancel: 터치 중단·시스템 인터럽트 등으로 포인터 이벤트가 취소될 때
+    const onCancel = () => { dragRef.current = null; };
+    // 탭 전환·포커스 이탈로 pointerup이 오지 않을 때 강제 종료
+    const onBlur = () => { if (dragRef.current?.dragging) onInteractionEndRef.current?.(); dragRef.current = null; };
+    const onVisibility = () => { if (document.hidden) onBlur(); };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('blur', onBlur);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('blur', onBlur);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
 
@@ -410,16 +431,25 @@ const SubtitleOverlay = React.memo(({
     <>
       {activeSubtitleClips.map(clip => {
         const selected = selectedClipIds.includes(clip.id);
+
+        // 애니메이션 클래스 계산 (IN 프리셋 기준)
+        const inPreset = clip.subtitleAnimationPreset as keyof typeof ANIMATION_CSS_CLASS | undefined;
+        const animClass = inPreset && inPreset !== 'none' && ANIMATION_CSS_CLASS[inPreset]
+          ? ANIMATION_CSS_CLASS[inPreset]
+          : '';
+        const animDuration = clip.subtitleAnimationDuration ?? 0.3;
+
         return (
           <div
             key={clip.id}
             data-subtitle-box
-            className="absolute left-1/2 -translate-x-1/2 bottom-[12%] z-[110] max-w-[80%] text-center transition-none select-none"
+            className={`absolute left-1/2 -translate-x-1/2 bottom-[12%] z-[110] max-w-[80%] text-center transition-none select-none${animClass ? ` ${animClass}` : ''}`}
             style={{
               transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
               left: '50%',
               cursor: selected ? 'grab' : 'pointer',
-            }}
+              '--anim-duration': `${animDuration}s`,
+            } as React.CSSProperties}
             onClick={(e) => { e.stopPropagation(); if (editingClipId !== clip.id) onClipSelect?.([clip.id]); }}
             onPointerDown={(e) => { if (editingClipId !== clip.id) startDrag(e, clip, 'move'); }}
             onDoubleClick={(e) => {
@@ -524,7 +554,10 @@ const SubtitleOverlay = React.memo(({
                   caretColor: editingClipId === clip.id ? '#00D4D4' : 'transparent',
                   minWidth: editingClipId === clip.id ? '20px' : undefined,
                 }}>
-                {!clip.url && !clip.name.match(/\.(mp4|mov|webm|m4v|jpg|jpeg|png|gif|webp|svg)/i) && clip.name}
+                {/* trackIndex 0(대본) 또는 5~8(AI자막)은 텍스트 클립 — url 없이 name을 직접 렌더링 */}
+                {(clip.trackIndex === 0 || (clip.trackIndex >= 5 && clip.trackIndex <= 8))
+                  ? clip.name
+                  : (!clip.url && !clip.name.match(/\.(mp4|mov|webm|m4v|jpg|jpeg|png|gif|webp|svg)/i) ? clip.name : null)}
               </span>
             </div>
           </div>
@@ -637,7 +670,7 @@ const Player = React.memo(({
     [clips]);
 
   const subtitleClips = React.useMemo(() => 
-    clips.filter(c => !c.disabled && (c.trackIndex === 0 || c.trackIndex === 5)),
+    clips.filter(c => !c.disabled && (c.trackIndex === 0 || (c.trackIndex >= 5 && c.trackIndex <= 8))),
     [clips]);
 
   // Interval-based indexing for O(1) candidate lookup (5-second buckets)
@@ -720,7 +753,10 @@ const Player = React.memo(({
         c.strokeWidth === prev[i].strokeWidth &&
         c.shadowBlur === prev[i].shadowBlur &&
         c.glowColor === prev[i].glowColor &&
-        c.name === prev[i].name
+        c.name === prev[i].name &&
+        c.subtitleAnimationPreset === prev[i].subtitleAnimationPreset &&
+        c.subtitleOutPreset === prev[i].subtitleOutPreset &&
+        c.subtitleAnimationDuration === prev[i].subtitleAnimationDuration
       );
 
     if (!isSame) prevSubtitleClipsRef.current = current;
@@ -746,6 +782,11 @@ const Player = React.memo(({
     const syncPlayback = async () => {
       try {
         if (isPlaying) {
+          // 재생할 클립이 없으면(전부 삭제됨) 자동으로 정지
+          if (!activeVideoClip) {
+            onPlayingChange?.(false);
+            return;
+          }
           if (video.paused) await video.play();
         } else {
           if (!video.paused) video.pause();
@@ -759,7 +800,7 @@ const Player = React.memo(({
     };
 
     syncPlayback();
-  }, [isPlaying, activeVideoClip?.id]);
+  }, [isPlaying, activeVideoClip?.id, activeVideoClip]);
 
   // Sync playback rate
   useEffect(() => {
@@ -772,16 +813,56 @@ const Player = React.memo(({
 
   // External time sync - relaxed threshold during playback to avoid circular loops
   // Combined dependencies to ensure stable array size and logical grouping
+  const justPausedRef = useRef(false);
+  useEffect(() => {
+    // 정지 직후 0.3초간 외부 seek를 무시 → 파란 선이 과거 위치로 되돌려지는 것 방지
+    if (!isPlaying) {
+      justPausedRef.current = true;
+      const timer = setTimeout(() => { justPausedRef.current = false; }, 300);
+      return () => clearTimeout(timer);
+    } else {
+      justPausedRef.current = false;
+    }
+  }, [isPlaying]);
+
+  // trimStart/duration/startTime 변경 추적용 ref
+  // Q/W로 클립을 자르면 같은 clipId라도 trimStart·startTime이 바뀜 → 강제 seek 필요
+  const prevClipGeomRef = useRef<{ trimStart: number; startTime: number; duration: number } | null>(null);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video || externalCurrentTime === undefined || !activeVideoClip || hoverTime !== null) return;
 
-    // Small cooldown after manual seek/hover to prevent state-fighting induced stutter
-    if (Date.now() - lastSeekTimeRef.current < 500) return;
+    // 정지 직후에는 외부 시간 동기화 스킵 (onPause에서 이미 올바른 위치 설정됨)
+    if (justPausedRef.current) return;
 
     const mediaOffset = activeVideoClip.trimStart ?? 0;
     const relativeTime = (externalCurrentTime - activeVideoClip.startTime) + mediaOffset;
     const diff = Math.abs(video.currentTime - relativeTime);
+
+    // Q/W trim 감지: trimStart·startTime·duration 중 하나라도 바뀌었으면 threshold 무시하고 강제 seek
+    const prevGeom = prevClipGeomRef.current;
+    const clipChanged =
+      !prevGeom ||
+      prevGeom.trimStart  !== (activeVideoClip.trimStart  ?? 0) ||
+      prevGeom.startTime  !== activeVideoClip.startTime ||
+      prevGeom.duration   !== activeVideoClip.duration;
+
+    prevClipGeomRef.current = {
+      trimStart: activeVideoClip.trimStart  ?? 0,
+      startTime: activeVideoClip.startTime,
+      duration:  activeVideoClip.duration,
+    };
+
+    if (clipChanged) {
+      // trim/편집으로 클립 구조가 바뀌었음 → 무조건 seek (쿨다운 무시)
+      video.currentTime = Math.max(0, relativeTime);
+      lastSeekTimeRef.current = Date.now();
+      return;
+    }
+
+    // Small cooldown after manual seek/hover to prevent state-fighting induced stutter
+    if (Date.now() - lastSeekTimeRef.current < 500) return;
 
     // Increased threshold (0.8s) during playback to prevent "pull-back" stutters
     // Tight threshold (0.15s) when scrubbing/paused for editing precision
@@ -792,15 +873,38 @@ const Player = React.memo(({
     }
   }, [externalCurrentTime, activeVideoClip, hoverTime, isPlaying]);
 
-  // Sync for hover preview (only when not playing - seeking during playback causes stutter)
+  // Sync for hover preview — rAF-throttled with video.seeking guard
+  // Video seeking is fully independent from audio scrubbing (which runs in page.tsx)
+  const pendingHoverSeekRef = useRef<number | null>(null);
+  const hoverRafRef = useRef<number>(0);
+
   useEffect(() => {
-    if (videoRef.current && hoverTime != null && activeVideoClip && !isPlaying) {
-      const mediaOffset = activeVideoClip.trimStart ?? 0;
-      const relativeTime = (hoverTime - activeVideoClip.startTime) + mediaOffset;
-      videoRef.current.currentTime = relativeTime;
-      lastSeekTimeRef.current = Date.now();
+    if (!videoRef.current || hoverTime == null || !activeVideoClip || isPlaying) {
+      pendingHoverSeekRef.current = null;
+      return;
     }
+    const mediaOffset = activeVideoClip.trimStart ?? 0;
+    const relativeTime = (hoverTime - activeVideoClip.startTime) + mediaOffset;
+    pendingHoverSeekRef.current = relativeTime;
   }, [hoverTime, activeVideoClip, isPlaying]);
+
+  useEffect(() => {
+    const tick = () => {
+      const video = videoRef.current;
+      const target = pendingHoverSeekRef.current;
+      if (video && target != null && !video.seeking) {
+        // Only seek if the target is meaningfully different from current position
+        if (Math.abs(video.currentTime - target) > 0.02) {
+          video.currentTime = target;
+          lastSeekTimeRef.current = Date.now();
+        }
+        pendingHoverSeekRef.current = null;
+      }
+      hoverRafRef.current = requestAnimationFrame(tick);
+    };
+    hoverRafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(hoverRafRef.current);
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -815,6 +919,17 @@ const Player = React.memo(({
       return () => video.removeEventListener('loadedmetadata', h);
     }
   }, [activeVideoClip]);
+
+  // video.ended 이벤트: 마지막 클립 재생 완료 또는 클립이 삭제된 뒤 영상이 끝까지 재생될 때 정지
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const handleEnded = () => {
+      onPlayingChange?.(false);
+    };
+    video.addEventListener('ended', handleEnded);
+    return () => video.removeEventListener('ended', handleEnded);
+  }, [onPlayingChange]);
 
   const handlePlayPause = () => {
     onPlayingChange?.(!isPlaying);

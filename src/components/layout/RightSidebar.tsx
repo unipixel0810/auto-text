@@ -4,10 +4,11 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { transcribeVideo } from '@/lib/sttService';
 import { parseSubtitleFile } from '@/lib/subtitleParser';
 import { generateSubtitlesFromAudio, type TranscriptDataForAI } from '@/lib/geminiAudioService';
-import type { TranscriptItem, SubtitleItem } from '@/types/subtitle';
+import type { TranscriptItem, SubtitleItem, SubtitleAnimation } from '@/types/subtitle';
 import type { VideoClip } from '@/types/video';
 import { SUBTITLE_PRESETS, FONT_FAMILIES, type SubtitlePreset, loadCustomPresets, addCustomPreset, deleteCustomPreset } from '@/lib/subtitlePresets';
 import UpgradeModal from '@/components/payment/UpgradeModal';
+import SubtitleAnimationPanel from '@/components/editor/SubtitleAnimationPanel';
 
 interface RightSidebarProps {
   transcripts?: TranscriptItem[];
@@ -137,6 +138,21 @@ const RightSidebar = React.memo(({
 
   // Caption states
   const [captionTab, setCaptionTab] = useState<'caption' | 'text' | 'animation' | 'tracking' | 'tts'>('caption');
+
+  // AI Sound / TTS 상태
+  const [soundPrompt, setSoundPrompt] = useState('');
+  const [soundSuggestions, setSoundSuggestions] = useState<{ text: string; time: number }[]>([]);
+  const [isGeneratingSound, setIsGeneratingSound] = useState(false);
+  const [soundGenStatus, setSoundGenStatus] = useState('');
+
+  // TTS (실제 음성 생성) 상태
+  const [ttsText, setTtsText] = useState('');
+  const [ttsVoice, setTtsVoice] = useState<'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer'>('nova');
+  const [ttsSpeed, setTtsSpeed] = useState(1.0);
+  const [isGeneratingTts, setIsGeneratingTts] = useState(false);
+  const [ttsAudioUrl, setTtsAudioUrl] = useState<string | null>(null);
+  const [ttsStatus, setTtsStatus] = useState('');
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [replaceQuery, setReplaceQuery] = useState('');
   const [showReplace, setShowReplace] = useState(false);
@@ -174,16 +190,18 @@ const RightSidebar = React.memo(({
     const filtered: T[] = [];
     for (const item of items) {
       for (const clip of mainClips) {
+        const speed = clip.speed || 1;
         const mediaStart = clip.trimStart ?? 0;
-        const mediaEnd = mediaStart + clip.duration;
+        // Media duration covered = timeline duration * speed
+        const mediaEnd = mediaStart + (clip.duration * speed);
 
         // 아이템이 이 클립의 미디어 범위 안에 있는지 확인
         if (item.startTime >= mediaStart && item.startTime < mediaEnd) {
-          // 미디어 시간 → 타임라인 시간으로 변환
-          const timelineStart = clip.startTime + (item.startTime - mediaStart);
+          // 미디어 시간 → 타임라인 시간으로 변환 (account for speed)
+          const timelineStart = clip.startTime + (item.startTime - mediaStart) / speed;
           const timelineEnd = Math.min(
             clip.startTime + clip.duration,
-            clip.startTime + (item.endTime - mediaStart),
+            clip.startTime + (item.endTime - mediaStart) / speed,
           );
           if (timelineEnd > timelineStart) {
             filtered.push({ ...item, startTime: timelineStart, endTime: timelineEnd });
@@ -370,10 +388,11 @@ const RightSidebar = React.memo(({
         ? mappedResults.map(r => ({ ...r, start_time: r.startTime, end_time: r.endTime }))
         : rawResults;
 
-      // Separate by type with colors
+      // Separate by type with colors (supports both old "예능자막" and new "예능" formats)
       const entertainmentItems: TranscriptItem[] = [];
       const situationItems: TranscriptItem[] = [];
       const explanationItems: TranscriptItem[] = [];
+      const contextItems: TranscriptItem[] = [];
 
       results.forEach((r, i) => {
         const base: TranscriptItem = {
@@ -386,42 +405,51 @@ const RightSidebar = React.memo(({
           color: '#FFFFFF',
           strokeColor: '#000000',
         };
-        if (r.style_type === '예능자막') {
-          entertainmentItems.push({ ...base, color: '#FFD700' });
-        } else if (r.style_type === '상황자막') {
+        const st = r.style_type;
+        if (st === '예능자막' || st === '예능') {
+          entertainmentItems.push({ ...base, color: '#FFE066', strokeColor: '#FF6B6B' });
+        } else if (st === '상황자막' || st === '상황') {
           situationItems.push({ ...base, color: '#A8E6CF' });
-        } else if (r.style_type === '설명자막') {
-          explanationItems.push({ ...base, color: '#00BFFF' });
+        } else if (st === '설명자막' || st === '설명') {
+          explanationItems.push({ ...base, color: '#88D8FF', strokeColor: '#0066CC' });
+        } else if (st === '맥락') {
+          contextItems.push({ ...base, color: '#C9A0FF', strokeColor: '#6B21A8' });
         } else {
           situationItems.push({ ...base, color: '#A8E6CF' });
         }
       });
 
-      const allNewT = [...entertainmentItems, ...situationItems, ...explanationItems];
+      const allNewT = [...entertainmentItems, ...situationItems, ...explanationItems, ...contextItems];
       // Remove transcript segments that overlap with AI subtitles
       const filteredTranscripts = hasTranscripts ? removeOverlappingTranscripts(transcripts, allNewT) : [];
       onTranscriptsUpdate?.([...filteredTranscripts, ...allNewT]);
 
-      const newSubs: SubtitleItem[] = results.map((r, i) => ({
-        id: `gemsub_${Date.now()}_${i}`,
-        startTime: r.start_time,
-        endTime: r.end_time,
-        text: r.text,
-        type: r.style_type === '예능자막' ? 'ENTERTAINMENT' as const : r.style_type === '설명자막' ? 'EXPLANATION' as const : 'SITUATION' as const,
-        confidence: 0.9,
-      }));
+      const newSubs: SubtitleItem[] = results.map((r, i) => {
+        const st = r.style_type;
+        const type = (st === '예능자막' || st === '예능') ? 'ENTERTAINMENT' as const
+          : (st === '설명자막' || st === '설명') ? 'EXPLANATION' as const
+          : st === '맥락' ? 'CONTEXT' as const
+          : 'SITUATION' as const;
+        return {
+          id: `gemsub_${Date.now()}_${i}`,
+          startTime: r.start_time,
+          endTime: r.end_time,
+          text: r.text,
+          type,
+          confidence: 0.9,
+        };
+      });
       onSubtitlesUpdate?.(newSubs);
       setAiScript(results.map(r => `[${r.style_type}] ${r.text}`).join('\n'));
 
-      // Add to timeline — each type on its own track (replace existing)
+      // Add to timeline — all AI subtitles on single track 5 (replace existing)
       if (onAddSubtitleClips) {
-        // Replace dialogue track (0) with filtered transcripts (non-overlapping with AI)
         if (hasTranscripts && filteredTranscripts.length > 0) {
           onAddSubtitleClips(filteredTranscripts, 0, true);
         }
-        if (entertainmentItems.length > 0) onAddSubtitleClips(entertainmentItems, 5, true);
-        if (situationItems.length > 0) onAddSubtitleClips(situationItems, 6, true);
-        if (explanationItems.length > 0) onAddSubtitleClips(explanationItems, 7, true);
+        const allAiItems = [...entertainmentItems, ...situationItems, ...explanationItems, ...contextItems]
+          .sort((a, b) => a.startTime - b.startTime);
+        if (allAiItems.length > 0) onAddSubtitleClips(allAiItems, 5, true);
       }
 
       setGeminiStatus('완료!');
@@ -519,10 +547,11 @@ const RightSidebar = React.memo(({
         ? mappedGemini.map(r => ({ ...r, start_time: r.startTime, end_time: r.endTime }))
         : rawGeminiResults;
 
-      // Separate by style_type and assign colors + tracks
+      // Separate by style_type and assign colors + tracks (supports both old and new formats)
       const entertainmentItems: TranscriptItem[] = [];
       const situationItems: TranscriptItem[] = [];
       const explanationItems: TranscriptItem[] = [];
+      const contextItems: TranscriptItem[] = [];
 
       geminiResults.forEach((r, i) => {
         const base: TranscriptItem = {
@@ -535,41 +564,51 @@ const RightSidebar = React.memo(({
           color: '#FFFFFF',
           strokeColor: '#000000',
         };
-        if (r.style_type === '예능자막') {
-          entertainmentItems.push({ ...base, color: '#FFD700' });
-        } else if (r.style_type === '상황자막') {
+        const st = r.style_type;
+        if (st === '예능자막' || st === '예능') {
+          entertainmentItems.push({ ...base, color: '#FFE066', strokeColor: '#FF6B6B' });
+        } else if (st === '상황자막' || st === '상황') {
           situationItems.push({ ...base, color: '#A8E6CF' });
-        } else if (r.style_type === '설명자막') {
-          explanationItems.push({ ...base, color: '#00BFFF' });
+        } else if (st === '설명자막' || st === '설명') {
+          explanationItems.push({ ...base, color: '#88D8FF', strokeColor: '#0066CC' });
+        } else if (st === '맥락') {
+          contextItems.push({ ...base, color: '#C9A0FF', strokeColor: '#6B21A8' });
         } else {
           situationItems.push({ ...base, color: '#A8E6CF' });
         }
       });
 
-      const allGeminiT = [...entertainmentItems, ...situationItems, ...explanationItems];
+      const allGeminiT = [...entertainmentItems, ...situationItems, ...explanationItems, ...contextItems];
 
       // Remove transcript segments that overlap with AI subtitles
       const filteredSttT = removeOverlappingTranscripts(filteredSttT_pre, allGeminiT);
 
-      const geminiSubs: SubtitleItem[] = geminiResults.map((r, i) => ({
-        id: `intsub_${Date.now()}_${i}`,
-        startTime: r.start_time,
-        endTime: r.end_time,
-        text: r.text,
-        type: r.style_type === '예능자막' ? 'ENTERTAINMENT' as const : r.style_type === '설명자막' ? 'EXPLANATION' as const : 'SITUATION' as const,
-        confidence: 0.9,
-      }));
+      const geminiSubs: SubtitleItem[] = geminiResults.map((r, i) => {
+        const st = r.style_type;
+        const type = (st === '예능자막' || st === '예능') ? 'ENTERTAINMENT' as const
+          : (st === '설명자막' || st === '설명') ? 'EXPLANATION' as const
+          : st === '맥락' ? 'CONTEXT' as const
+          : 'SITUATION' as const;
+        return {
+          id: `intsub_${Date.now()}_${i}`,
+          startTime: r.start_time,
+          endTime: r.end_time,
+          text: r.text,
+          type,
+          confidence: 0.9,
+        };
+      });
 
       // Combine and update
       onTranscriptsUpdate?.([...filteredSttT, ...allGeminiT]);
       onSubtitlesUpdate?.(geminiSubs);
 
-      // Add to timeline — each type on its own track (replace existing)
+      // Add to timeline — all AI subtitles on single track 5 (replace existing)
       if (onAddSubtitleClips) {
         onAddSubtitleClips(filteredSttT, 0, true);                                     // Track 0: 대본 (replace)
-        if (entertainmentItems.length > 0) onAddSubtitleClips(entertainmentItems, 5, true);
-        if (situationItems.length > 0) onAddSubtitleClips(situationItems, 6, true);
-        if (explanationItems.length > 0) onAddSubtitleClips(explanationItems, 7, true);
+        const allAiItems = [...entertainmentItems, ...situationItems, ...explanationItems, ...contextItems]
+          .sort((a, b) => a.startTime - b.startTime);
+        if (allAiItems.length > 0) onAddSubtitleClips(allAiItems, 5, true);
       }
 
       setIntegratedStatus('모든 자막 생성 완료!');
@@ -671,7 +710,7 @@ const RightSidebar = React.memo(({
                 { id: 'text' as const, icon: 'title' },
                 { id: 'animation' as const, icon: 'animation' },
                 { id: 'tracking' as const, icon: 'track_changes' },
-                { id: 'tts' as const, icon: 'record_voice_over' },
+                { id: 'tts' as const, icon: 'volume_up' },
               ].map(tab => (
                 <button key={tab.id} onClick={() => setCaptionTab(tab.id)}
                   className={`flex-1 py-1.5 text-[10px] font-medium transition-all ${captionTab === tab.id ? 'text-primary border-b-2 border-primary bg-white/5' : 'text-text-secondary hover:text-white hover:bg-white/5'} active:scale-95`}>
@@ -1211,9 +1250,292 @@ const RightSidebar = React.memo(({
               </div>
             )}
 
-            {captionTab === 'animation' && <div className="flex-1 flex items-center justify-center text-text-secondary text-xs">애니메이션 설정</div>}
+            {captionTab === 'animation' && (
+              <SubtitleAnimationPanel
+                selectedSubtitle={
+                  subtitles?.find(s =>
+                    currentTime !== undefined &&
+                    s.startTime <= currentTime && s.endTime >= currentTime
+                  ) ?? null
+                }
+                isPro={false}
+                onUpdate={(id, animation: SubtitleAnimation) => {
+                  // 1. SubtitleItem 상태 업데이트
+                  if (subtitles && onSubtitlesUpdate) {
+                    onSubtitlesUpdate(subtitles.map(s =>
+                      s.id === id ? { ...s, animation } : s
+                    ));
+                  }
+                  // 2. 타임라인의 VideoClip도 업데이트 (Player에서 CSS 클래스 적용용)
+                  if (onClipUpdate && clips) {
+                    const targetSubtitle = subtitles?.find(s => s.id === id);
+                    if (targetSubtitle) {
+                      // 해당 자막 시간대에 있는 자막 클립 찾기
+                      const subtitleClip = clips.find(c =>
+                        (c.trackIndex === 0 || (c.trackIndex >= 5 && c.trackIndex <= 8)) &&
+                        Math.abs(c.startTime - targetSubtitle.startTime) < 0.1
+                      );
+                      if (subtitleClip) {
+                        onClipUpdate(subtitleClip.id, {
+                          subtitleAnimationPreset: animation.inPreset,
+                          subtitleOutPreset: animation.outPreset,
+                          subtitleAnimationDuration: animation.duration,
+                        });
+                      }
+                    }
+                  }
+                }}
+                onUpgradeClick={() => setShowPaymentModal(true)}
+              />
+            )}
             {captionTab === 'tracking' && <div className="flex-1 flex items-center justify-center text-text-secondary text-xs">트래킹 설정</div>}
-            {captionTab === 'tts' && <div className="flex-1 flex items-center justify-center text-text-secondary text-xs">텍스트-음성 변환</div>}
+
+            {/* ── AI 사운드 효과 탭 ── */}
+            {captionTab === 'tts' && (
+              <div className="flex-1 overflow-y-auto p-3 space-y-4">
+
+                {/* ── 섹션 1: AI 음성 (TTS) ── */}
+                <div className="rounded-xl bg-gradient-to-br from-blue-900/40 to-cyan-900/30 border border-blue-500/30 p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="material-icons text-blue-400 text-base">volume_up</span>
+                    <span className="text-xs font-semibold text-blue-300">AI 음성 생성 (TTS)</span>
+                  </div>
+
+                  {/* 텍스트 입력 — 선택된 자막 자동 채움 */}
+                  <textarea
+                    value={ttsText}
+                    onChange={e => setTtsText(e.target.value)}
+                    placeholder={selectedClip?.trackIndex === 0 || (selectedClip?.trackIndex ?? -1) >= 5
+                      ? selectedClip?.name || '자막 텍스트를 입력하세요...'
+                      : '읽어줄 텍스트를 입력하세요...'}
+                    rows={3}
+                    className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-blue-400/50 resize-none mb-2"
+                  />
+
+                  {/* 선택된 자막 → 자동 입력 버튼 */}
+                  {selectedClip && (selectedClip.trackIndex === 0 || selectedClip.trackIndex >= 5) && selectedClip.name && (
+                    <button
+                      onClick={() => setTtsText(selectedClip.name)}
+                      className="w-full mb-2 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 text-blue-300 text-[10px] hover:bg-blue-500/20 transition-all flex items-center justify-center gap-1"
+                    >
+                      <span className="material-icons text-[12px]">auto_fix_high</span>
+                      선택된 자막 텍스트 불러오기
+                    </button>
+                  )}
+
+                  {/* 음성 선택 */}
+                  <div className="grid grid-cols-3 gap-1.5 mb-2">
+                    {([
+                      { id: 'nova', label: 'Nova', desc: '밝고 친근' },
+                      { id: 'alloy', label: 'Alloy', desc: '중성적' },
+                      { id: 'echo', label: 'Echo', desc: '남성적' },
+                      { id: 'fable', label: 'Fable', desc: '스토리텔링' },
+                      { id: 'onyx', label: 'Onyx', desc: '깊고 낮음' },
+                      { id: 'shimmer', label: 'Shimmer', desc: '여성적' },
+                    ] as const).map(v => (
+                      <button
+                        key={v.id}
+                        onClick={() => setTtsVoice(v.id)}
+                        className={`px-1.5 py-1.5 rounded-lg border text-center transition-all ${ttsVoice === v.id ? 'bg-blue-500/30 border-blue-400/60 text-blue-200' : 'bg-white/5 border-white/10 text-text-secondary hover:border-blue-400/30 hover:text-white'}`}
+                      >
+                        <div className="text-[10px] font-semibold">{v.label}</div>
+                        <div className="text-[8px] opacity-60">{v.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* 속도 */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-[10px] text-text-secondary w-8">속도</span>
+                    <input
+                      type="range" min="0.25" max="4" step="0.25"
+                      value={ttsSpeed}
+                      onChange={e => setTtsSpeed(Number(e.target.value))}
+                      className="flex-1 h-1 accent-blue-400 cursor-pointer"
+                    />
+                    <span className="text-[10px] text-blue-300 w-8 text-right">{ttsSpeed}x</span>
+                  </div>
+
+                  {/* 생성 버튼 */}
+                  <button
+                    disabled={!ttsText.trim() || isGeneratingTts}
+                    onClick={async () => {
+                      if (!ttsText.trim()) return;
+                      setIsGeneratingTts(true);
+                      setTtsStatus('음성 생성 중...');
+                      setTtsAudioUrl(null);
+                      try {
+                        const res = await fetch('/api/ai/tts', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ text: ttsText, voice: ttsVoice, speed: ttsSpeed }),
+                        });
+                        if (!res.ok) {
+                          const err = await res.json();
+                          setTtsStatus(`실패: ${err.error || '알 수 없는 오류'}`);
+                          return;
+                        }
+                        const blob = await res.blob();
+                        const url = URL.createObjectURL(blob);
+                        setTtsAudioUrl(url);
+                        setTtsStatus('생성 완료! 아래에서 재생하세요.');
+                      } catch {
+                        setTtsStatus('네트워크 오류');
+                      } finally {
+                        setIsGeneratingTts(false);
+                      }
+                    }}
+                    className={`w-full py-2.5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 ${!ttsText.trim() || isGeneratingTts ? 'bg-gray-800 text-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white shadow-lg shadow-blue-900/30 active:scale-95'}`}
+                  >
+                    {isGeneratingTts ? (
+                      <><span className="material-icons text-base animate-spin">refresh</span>음성 생성 중...</>
+                    ) : (
+                      <><span className="material-icons text-base">volume_up</span>AI 음성 생성</>
+                    )}
+                  </button>
+
+                  {/* 생성된 오디오 플레이어 */}
+                  {ttsAudioUrl && (
+                    <div className="mt-3 space-y-2">
+                      <div className="text-[10px] text-blue-300 flex items-center gap-1">
+                        <span className="material-icons text-[12px]">check_circle</span>
+                        {ttsStatus}
+                      </div>
+                      <audio
+                        ref={ttsAudioRef}
+                        src={ttsAudioUrl}
+                        controls
+                        className="w-full h-8"
+                        style={{ filter: 'invert(0.9) hue-rotate(180deg)', transform: 'scale(0.95)' }}
+                      />
+                      <a
+                        href={ttsAudioUrl}
+                        download={`tts-${ttsVoice}-${Date.now()}.mp3`}
+                        className="w-full py-1.5 rounded-lg bg-blue-500/20 border border-blue-500/40 text-blue-300 text-[10px] hover:bg-blue-500/30 transition-all flex items-center justify-center gap-1"
+                      >
+                        <span className="material-icons text-[12px]">download</span>
+                        MP3 다운로드
+                      </a>
+                    </div>
+                  )}
+
+                  {ttsStatus && !isGeneratingTts && !ttsAudioUrl && (
+                    <div className="mt-2 text-center text-[10px] text-red-400">{ttsStatus}</div>
+                  )}
+                </div>
+
+                {/* ── 섹션 2: 사운드 효과 제안 ── */}
+                <div className="rounded-xl bg-gradient-to-br from-purple-900/40 to-blue-900/30 border border-purple-500/30 p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="material-icons text-purple-400 text-base">music_note</span>
+                    <span className="text-xs font-semibold text-purple-300">사운드 효과 제안</span>
+                  </div>
+
+                  {/* 자막에서 상황 묘사 자동 감지 */}
+                  {(() => {
+                    const situationClips = (clips || []).filter(c =>
+                      (c.trackIndex === 5 || c.trackIndex === 0) &&
+                      (c.name.includes('[') || c.name.includes('♪') || c.name.includes('♬') || c.name.includes('BGM') || c.name.includes('효과음'))
+                    );
+                    if (situationClips.length === 0) return null;
+                    return (
+                      <div className="mb-2">
+                        <div className="text-[10px] text-text-secondary mb-1.5 flex items-center gap-1">
+                          <span className="material-icons text-[11px]">auto_awesome</span>감지된 상황 묘사
+                        </div>
+                        <div className="space-y-1 max-h-24 overflow-y-auto">
+                          {situationClips.slice(0, 6).map(c => (
+                            <button key={c.id}
+                              onClick={() => { setSoundPrompt(c.name.replace(/[\[\]♪♬]/g, '').trim()); setTtsText(c.name.replace(/[\[\]♪♬🎵]/g, '').trim()); }}
+                              className="w-full text-left px-2 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-purple-500/10 hover:border-purple-500/30 transition-all text-[10px] text-text-secondary hover:text-white"
+                            >
+                              <span className="text-purple-400 mr-1">♪</span>{c.name}
+                              <span className="ml-1 text-[9px] text-gray-600">({c.startTime.toFixed(1)}s)</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* 빠른 선택 칩 */}
+                  <div className="flex flex-wrap gap-1 mb-2">
+                    {['긴장감 BGM', '웃음 소리', '박수', '두둥!', '적막', '심장 박동', '슬픈 피아노', '신나는 BGM'].map(s => (
+                      <button key={s} onClick={() => { setSoundPrompt(s); setTtsText(s); }}
+                        className={`px-2 py-0.5 rounded-full border text-[10px] transition-all ${soundPrompt === s ? 'bg-purple-500/30 border-purple-400/60 text-purple-300' : 'bg-white/5 border-white/10 text-text-secondary hover:border-purple-400/40 hover:text-white'}`}>
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+
+                  <textarea value={soundPrompt} onChange={e => setSoundPrompt(e.target.value)}
+                    placeholder="사운드 설명 입력 (예: 긴장감 폭발 BGM, 웃음 소리...)"
+                    rows={2}
+                    className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-purple-400/50 resize-none mb-2"
+                  />
+
+                  <button disabled={!soundPrompt.trim() || isGeneratingSound}
+                    onClick={async () => {
+                      if (!soundPrompt.trim()) return;
+                      setIsGeneratingSound(true); setSoundGenStatus('분석 중...'); setSoundSuggestions([]);
+                      try {
+                        const res = await fetch('/api/ai/sound-suggest', {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ prompt: soundPrompt, clips: (clips || []).filter(c => c.trackIndex === 5 || c.trackIndex === 0).map(c => ({ name: c.name, startTime: c.startTime, duration: c.duration })) }),
+                        });
+                        if (res.ok) { const d = await res.json(); setSoundSuggestions(d.suggestions || []); setSoundGenStatus(''); }
+                        else { setSoundGenStatus('생성 실패'); }
+                      } catch { setSoundGenStatus('네트워크 오류'); }
+                      finally { setIsGeneratingSound(false); }
+                    }}
+                    className={`w-full py-2 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 ${!soundPrompt.trim() || isGeneratingSound ? 'bg-gray-800 text-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white active:scale-95'}`}
+                  >
+                    {isGeneratingSound
+                      ? <><span className="material-icons text-sm animate-spin">refresh</span>분석 중...</>
+                      : <><span className="material-icons text-sm">auto_awesome</span>사운드 효과 제안</>}
+                  </button>
+
+                  {/* 제안 결과 */}
+                  {soundSuggestions.length > 0 && (
+                    <div className="mt-3 space-y-1.5">
+                      {soundSuggestions.map((s, i) => (
+                        <div key={i} className="rounded-lg bg-white/5 border border-white/10 p-2 flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-[11px] text-white font-medium truncate">{s.text}</div>
+                            {s.time >= 0 && <div className="text-[9px] text-text-secondary">{s.time.toFixed(1)}s</div>}
+                          </div>
+                          <div className="flex gap-1 shrink-0">
+                            {/* TTS로 생성 */}
+                            <button onClick={() => { setTtsText(s.text); }}
+                              className="px-1.5 py-1 rounded bg-blue-500/20 border border-blue-500/40 text-blue-300 text-[9px] hover:bg-blue-500/30 transition-all">
+                              TTS
+                            </button>
+                            {/* 대본에 추가 */}
+                            <button
+                              className="px-1.5 py-1 rounded bg-purple-500/20 border border-purple-500/40 text-purple-300 text-[9px] hover:bg-purple-500/30 transition-all"
+                              onClick={() => {
+                                if (onAddSubtitleClips) {
+                                  onAddSubtitleClips([{
+                                    id: Math.random().toString(36).slice(2),
+                                    originalText: `🎵 ${s.text}`,
+                                    editedText: `🎵 ${s.text}`,
+                                    startTime: Math.max(0, s.time),
+                                    endTime: Math.max(0, s.time) + 2,
+                                    color: '#A78BFA', strokeColor: '#1e1b4b', isEdited: false,
+                                  }], 0, false);
+                                }
+                              }}>
+                              대본
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {soundGenStatus && <div className="mt-2 text-center text-[10px] text-text-secondary">{soundGenStatus}</div>}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
