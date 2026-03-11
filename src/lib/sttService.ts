@@ -53,17 +53,23 @@ export interface STTOptions {
 // 상수
 // ============================================
 
-/** Vercel 서버리스 함수 제한 (3MB로 안전하게 - 모바일 호환) */
-const VERCEL_MAX_SIZE = 3 * 1024 * 1024;
+/** Vercel 서버리스 함수 제한 (20MB — Next.js body 기본 파싱 한도) */
+const VERCEL_MAX_SIZE = 20 * 1024 * 1024;
 
 /** Whisper API 최대 파일 크기 (25MB) */
-const WHISPER_MAX_SIZE = 25 * 1024 * 1024;
+const WHISPER_MAX_SIZE = 24 * 1024 * 1024; // 24MB로 여유 확보
 
-/** 오디오 청크 길이 (30초 - 모바일 호환) */
+/** 청크 크기 — 20MB (Vercel 업로드 한도 이하) */
+const CHUNK_SIZE_BYTES = 20 * 1024 * 1024;
+
+/** 오디오 청크 길이 (30초) */
 const CHUNK_DURATION_SECONDS = 30;
 
-/** 지원하는 최대 파일 크기 (400GB) */
-const MAX_FILE_SIZE = 400 * 1024 * 1024 * 1024;
+/** 지원하는 최대 파일 크기 (제한 없음) */
+const MAX_FILE_SIZE = Number.MAX_SAFE_INTEGER;
+
+/** 병렬 처리 최대 동시 요청 수 */
+const MAX_CONCURRENT = 3;
 
 // ============================================
 // 오디오 추출 (아이폰 HEVC 호환)
@@ -78,89 +84,10 @@ export async function extractAudioFromVideo(
   onProgress?: (status: string) => void
 ): Promise<Blob> {
   const sizeMB = videoFile.size / 1024 / 1024;
-
-  // 모바일 감지
-  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-  const maxSize = isMobile ? 4 : VERCEL_MAX_SIZE / 1024 / 1024; // 모바일 4MB, PC는 청크 처리
-
-  onProgress?.('오디오 준비 중...');
-
-  // 아이폰/모바일: 파일 크기 체크 후 원본 사용 (Whisper가 비디오도 처리 가능)
-  if (isMobile) {
-    if (sizeMB > maxSize) {
-      throw new Error(`모바일에서는 ${maxSize}MB 이하 영상만 가능합니다.\n현재: ${sizeMB.toFixed(1)}MB\n\n💡 해결방법:\n1. 캡컷 등으로 영상 압축\n2. PC에서 이용`);
-    }
-    onProgress?.(`파일 준비 완료 (${sizeMB.toFixed(1)}MB)`);
-    return videoFile;
-  }
-
-  // PC: 오디오 추출 시도
-  return new Promise((resolve, reject) => {
-    onProgress?.('오디오 추출 준비 중...');
-
-    const video = document.createElement('video');
-    video.src = URL.createObjectURL(videoFile);
-    video.muted = false;
-    video.playsInline = true;
-
-    // 타임아웃 설정 (10초)
-    const timeout = setTimeout(() => {
-      URL.revokeObjectURL(video.src);
-      onProgress?.('오디오 추출 완료 (원본 사용)');
-      resolve(videoFile);
-    }, 10000);
-
-    video.onloadedmetadata = async () => {
-      try {
-        clearTimeout(timeout);
-        const duration = video.duration;
-        onProgress?.(`영상 길이: ${Math.floor(duration / 60)}분 ${Math.floor(duration % 60)}초`);
-
-        // AudioContext 생성 (16kHz)
-        const audioContext = new AudioContext({ sampleRate: 16000 });
-
-        onProgress?.('오디오 디코딩 중...');
-
-        const response = await fetch(video.src);
-        const arrayBuffer = await response.arrayBuffer();
-
-        let audioBuffer: AudioBuffer;
-        try {
-          audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        } catch {
-          // 디코딩 실패 시 원본 파일 반환
-          URL.revokeObjectURL(video.src);
-          onProgress?.('오디오 추출 완료 (원본 사용)');
-          resolve(videoFile);
-          return;
-        }
-
-        onProgress?.('오디오 인코딩 중...');
-
-        // WAV 형식으로 변환
-        const wavBlob = audioBufferToWav(audioBuffer);
-
-        URL.revokeObjectURL(video.src);
-        onProgress?.(`오디오 추출 완료 (${(wavBlob.size / 1024).toFixed(0)}KB)`);
-        resolve(wavBlob);
-
-      } catch (error) {
-        clearTimeout(timeout);
-        URL.revokeObjectURL(video.src);
-        // 실패 시 원본 파일 사용
-        onProgress?.('오디오 추출 완료 (원본 사용)');
-        resolve(videoFile);
-      }
-    };
-
-    video.onerror = () => {
-      clearTimeout(timeout);
-      URL.revokeObjectURL(video.src);
-      // 비디오 로드 실패해도 원본 파일 시도
-      onProgress?.('오디오 추출 완료 (원본 사용)');
-      resolve(videoFile);
-    };
-  });
+  onProgress?.(`파일 준비 완료 (${sizeMB.toFixed(1)}MB) — 청크 분할 방식으로 처리합니다`);
+  // 전체 파일을 메모리에 올리지 않고 원본을 그대로 반환
+  // 청크 분할은 splitAudioIntoChunks에서 처리
+  return videoFile;
 }
 
 /**
@@ -223,83 +150,49 @@ function writeString(view: DataView, offset: number, string: string) {
 /**
  * 오디오 Blob을 청크로 분할 (시간 기반)
  */
+/**
+ * 파일을 크기 기반으로 청크 분할 (메모리 효율 — 전체 디코딩 없음)
+ * Whisper는 원본 비디오/오디오 파일도 처리 가능하므로 파일 슬라이스로 분할
+ */
 export async function splitAudioIntoChunks(
   audioBlob: Blob,
   chunkDurationSeconds: number = CHUNK_DURATION_SECONDS,
   onProgress?: (status: string) => void
-): Promise<{ blob: Blob; startTime: number }[]> {
-  // 파일이 4MB 이하면 분할 불필요 (Vercel 제한)
-  if (audioBlob.size <= VERCEL_MAX_SIZE) {
-    return [{ blob: audioBlob, startTime: 0 }];
+): Promise<{ blob: Blob; startTime: number; index: number; total: number }[]> {
+  const totalSize = audioBlob.size;
+
+  // 20MB 이하면 분할 없이 그대로 사용
+  if (totalSize <= CHUNK_SIZE_BYTES) {
+    return [{ blob: audioBlob, startTime: 0, index: 0, total: 1 }];
   }
 
-  onProgress?.('대용량 파일 분할 중...');
+  onProgress?.('대용량 파일 청크 분할 중...');
 
-  // AudioContext로 오디오 로드
-  const audioContext = new AudioContext();
-  const arrayBuffer = await audioBlob.arrayBuffer();
-
-  let audioBuffer: AudioBuffer;
-  try {
-    audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-  } catch {
-    // 디코딩 실패 시 크기 기반 분할
-    return splitBySize(audioBlob, WHISPER_MAX_SIZE);
-  }
-
-  const duration = audioBuffer.duration;
-  const chunks: { blob: Blob; startTime: number }[] = [];
-  const numChunks = Math.ceil(duration / chunkDurationSeconds);
-
-  for (let i = 0; i < numChunks; i++) {
-    const startTime = i * chunkDurationSeconds;
-    const endTime = Math.min((i + 1) * chunkDurationSeconds, duration);
-    const chunkDuration = endTime - startTime;
-
-    onProgress?.(`청크 ${i + 1}/${numChunks} 생성 중...`);
-
-    // 청크 AudioBuffer 생성
-    const startSample = Math.floor(startTime * audioBuffer.sampleRate);
-    const endSample = Math.floor(endTime * audioBuffer.sampleRate);
-    const chunkLength = endSample - startSample;
-
-    const chunkBuffer = audioContext.createBuffer(
-      1, // 모노
-      chunkLength,
-      audioBuffer.sampleRate
-    );
-
-    const sourceData = audioBuffer.getChannelData(0);
-    const destData = chunkBuffer.getChannelData(0);
-
-    for (let j = 0; j < chunkLength; j++) {
-      destData[j] = sourceData[startSample + j] || 0;
-    }
-
-    const wavBlob = audioBufferToWav(chunkBuffer);
-    chunks.push({ blob: wavBlob, startTime });
-  }
-
-  await audioContext.close();
-  return chunks;
-}
-
-/**
- * 크기 기반 분할 (오디오 디코딩 실패 시 폴백)
- */
-function splitBySize(blob: Blob, maxSize: number): { blob: Blob; startTime: number }[] {
-  const chunks: { blob: Blob; startTime: number }[] = [];
+  // 파일을 20MB 단위로 슬라이스 (메모리에 전체 올리지 않음)
+  const chunks: { blob: Blob; startTime: number; index: number; total: number }[] = [];
   let offset = 0;
   let chunkIndex = 0;
+  const totalChunks = Math.ceil(totalSize / CHUNK_SIZE_BYTES);
 
-  while (offset < blob.size) {
-    const chunkSize = Math.min(maxSize, blob.size - offset);
-    const chunk = blob.slice(offset, offset + chunkSize);
-    chunks.push({ blob: chunk, startTime: chunkIndex * 600 }); // 추정 시간
+  // 파일 1MB당 약 1분 오디오로 추정 (mp4 기준 ~1Mbps)
+  const estimatedTotalSeconds = (totalSize / (1024 * 1024)) * 60;
+  const secondsPerByte = estimatedTotalSeconds / totalSize;
+
+  while (offset < totalSize) {
+    const chunkSize = Math.min(CHUNK_SIZE_BYTES, totalSize - offset);
+    const chunkBlob = audioBlob.slice(offset, offset + chunkSize);
+    const estimatedStartTime = offset * secondsPerByte;
+    chunks.push({
+      blob: chunkBlob,
+      startTime: estimatedStartTime,
+      index: chunkIndex,
+      total: totalChunks,
+    });
     offset += chunkSize;
     chunkIndex++;
   }
 
+  onProgress?.(`총 ${totalChunks}개 청크로 분할 완료`);
   return chunks;
 }
 
@@ -472,25 +365,27 @@ export async function transcribeVideo(
     onProgress?.('📦 파일 처리 중...');
     const chunks = await splitAudioIntoChunks(audioBlob, CHUNK_DURATION_SECONDS, onProgress);
 
-    // 4. 각 청크에 대해 Whisper API 호출
-    const results: STTResult[] = [];
+    // 4. 각 청크에 대해 Whisper API 호출 (병렬 처리, 최대 MAX_CONCURRENT 동시)
+    const results: STTResult[] = new Array(chunks.length);
 
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      onProgress?.(`🎤 음성 인식 중... (${i + 1}/${chunks.length})`);
+    for (let batchStart = 0; batchStart < chunks.length; batchStart += MAX_CONCURRENT) {
+      const batch = chunks.slice(batchStart, batchStart + MAX_CONCURRENT);
+      onProgress?.(`🎤 음성 인식 중... (${batchStart + 1}~${Math.min(batchStart + MAX_CONCURRENT, chunks.length)}/${chunks.length})`);
 
-      const whisperResponse = await transcribeWithWhisper(chunk.blob, {
-        apiKey,
-        language: 'ko',
-        responseFormat: 'verbose_json',
-        timestampGranularities: ['word', 'segment'],
-      });
+      await Promise.all(
+        batch.map(async (chunk) => {
+          const whisperResponse = await transcribeWithWhisper(chunk.blob, {
+            apiKey,
+            language: 'ko',
+            responseFormat: 'verbose_json',
+            timestampGranularities: ['word', 'segment'],
+          });
+          results[chunk.index] = convertWhisperToSTTResult(whisperResponse, chunk.startTime);
+        })
+      );
 
-      const result = convertWhisperToSTTResult(whisperResponse, chunk.startTime);
-      results.push(result);
-
-      // API 레이트 리밋 방지
-      if (i < chunks.length - 1) {
+      // API 레이트 리밋 방지 (배치 사이 딜레이)
+      if (batchStart + MAX_CONCURRENT < chunks.length) {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
     }

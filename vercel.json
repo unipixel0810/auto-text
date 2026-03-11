@@ -5,6 +5,12 @@
     },
     "src/app/api/gemini/route.ts": {
       "maxDuration": 60
+    },
+    "src/app/api/ai/stt/route.ts": {
+      "maxDuration": 300
+    },
+    "src/app/api/ai/gemini/route.ts": {
+      "maxDuration": 120
     }
   }
 }
