@@ -75,8 +75,12 @@ export default function ExperimentsDashboard() {
   const fetchResults = useCallback(async () => {
     setLoading(true);
     setFetchError(null);
+    // 15초 타임아웃 — Supabase 응답 지연 시 무한 로딩 방지
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
-      const res = await fetch('/api/analytics/query?action=ab-results');
+      const res = await fetch('/api/analytics/query?action=ab-results', { signal: controller.signal });
+      clearTimeout(timeoutId);
       if (!res.ok) {
         throw new Error(`서버 오류가 발생했습니다. (HTTP ${res.status})`);
       }
@@ -101,8 +105,13 @@ export default function ExperimentsDashboard() {
         setExperiments(exps);
       }
     } catch (err) {
+      clearTimeout(timeoutId);
       console.error('Failed to fetch experiment results:', err);
-      setFetchError(err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다.');
+      if (err instanceof Error && err.name === 'AbortError') {
+        setFetchError('요청 시간이 초과되었습니다 (15초). Supabase 연결 상태를 확인해주세요.');
+      } else {
+        setFetchError(err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다.');
+      }
       setExperiments([]);
     } finally {
       setLoading(false);
