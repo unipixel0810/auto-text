@@ -767,6 +767,25 @@ export default function Home() {
     setTimeout(() => setImportToast(null), 3000);
   }, [currentVideoUrl]);
 
+  /**
+   * 프리뷰 화면 드래그앤드롭 핸들러
+   * main 트랙(trackIndex=1) 끝에 바로 배치
+   */
+  const handlePlayerFileDrop = useCallback((files: File[]) => {
+    files.forEach(file => {
+      // main 트랙 현재 끝 시간 계산
+      const mainTrackEnd = clipsRef.current
+        .filter(c => c.trackIndex === 1)
+        .reduce((maxEnd, c) => Math.max(maxEnd, c.startTime + c.duration), 0);
+
+      // 타임라인 main 트랙에 바로 배치
+      handleClipAdd(file, 1, mainTrackEnd);
+
+      setImportToast(`${file.name} 타임라인에 추가됨`);
+      setTimeout(() => setImportToast(null), 3000);
+    });
+  }, [handleClipAdd]);
+
   const handleClipUpdate = useCallback((clipId: string, updates: Partial<VideoClip>) => {
     setClips(prev => {
       const oldClip = prev.find(c => c.id === clipId);
@@ -1985,7 +2004,7 @@ export default function Home() {
             onClipUpdate={handleClipUpdate}
             videoRefCallback={(ref) => { videoRef.current = ref; }}
             onPresetDrop={handlePresetDrop}
-            onFileDrop={(files) => files.forEach(handleVideoAdd)}
+            onFileDrop={handlePlayerFileDrop}
             viewerZoom={viewerZoom}
             onViewerZoomChange={setViewerZoom}
             playbackQuality={playbackQuality}
