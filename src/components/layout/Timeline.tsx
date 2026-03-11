@@ -89,13 +89,24 @@ function formatTimecode(s: number, fps = 30): string {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}:${fr.toString().padStart(2, '0')}`;
 }
 
-const Playhead = React.memo(({ x, onPointerDown }: { x: number; onPointerDown: (e: React.PointerEvent) => void }) => (
+const Playhead = React.memo(({ x, onPointerDown, isDragging, time }: {
+  x: number;
+  onPointerDown: (e: React.PointerEvent) => void;
+  isDragging?: boolean;
+  time?: number;
+}) => (
   <div
     className="absolute top-0 bottom-0 w-3 -ml-1.5 z-20 cursor-ew-resize group"
     style={{ left: `${x}px` }}
     onPointerDown={onPointerDown}
   >
-    <div className="absolute top-0 bottom-0 w-px bg-[#4488FF] left-1/2 -ml-[0.5px] group-hover:w-0.5 group-hover:bg-[#5599FF] transition-all" />
+    <div className={`absolute top-0 bottom-0 w-px left-1/2 -ml-[0.5px] transition-all ${isDragging ? 'w-0.5 bg-orange-400' : 'bg-[#4488FF] group-hover:w-0.5 group-hover:bg-[#5599FF]'}`} />
+    {/* 드래그 중 주황색 시간 툴팁 */}
+    {isDragging && time !== undefined && (
+      <div className="absolute top-1 left-1/2 -translate-x-1/2 bg-orange-500 text-black text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap shadow-lg z-30">
+        {fmtTime(time)}
+      </div>
+    )}
   </div>
 ));
 
@@ -1485,7 +1496,7 @@ const Timeline = React.memo(({
           <div className="absolute inset-0" style={{ width: `${maxTime * pixelsPerSecond}px` }} />
           
           {/* High-frequency isolated components */}
-          <Playhead x={playheadPosition * pixelsPerSecond} onPointerDown={handlePlayheadMouseDown} />
+          <Playhead x={playheadPosition * pixelsPerSecond} onPointerDown={handlePlayheadMouseDown} isDragging={isDraggingPlayhead} time={playheadPosition} />
 
           {/* White playback marker in ruler — 재생 중일 때만 표시 */}
           {isPlaying && (
@@ -1577,13 +1588,7 @@ const Timeline = React.memo(({
           )}
 
           {/* Blue Edit Line (click to set position, used for Q/W/B cuts) */}
-          <div
-            className="absolute top-0 bottom-0 w-3 -ml-1.5 cursor-ew-resize group"
-            style={{ left: `${playheadX}px`, zIndex: 20 }}
-            onPointerDown={handlePlayheadMouseDown}
-          >
-            <div className="absolute top-0 bottom-0 w-px bg-[#4488FF] left-1/2 -ml-[0.5px] group-hover:w-0.5 group-hover:bg-[#5599FF] transition-all" />
-          </div>
+          <Playhead x={playheadX} onPointerDown={handlePlayheadMouseDown} isDragging={isDraggingPlayhead} time={playheadPosition} />
 
           {/* Top spacer — drop zone for video/image → overlay tracks */}
           <div className="flex" style={{ flex: '1 0 0', minHeight: '8px' }}>
