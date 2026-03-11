@@ -86,6 +86,7 @@ export default function Home() {
   // ===== REFS for stable access inside document-level keydown =====
   const isAuthenticatedRef = useRef(isAuthenticated);
   const clipsRef = useRef(clips);
+  const currentVideoUrlRef = useRef(currentVideoUrl);
   const selectedClipIdsRef = useRef(selectedClipIds);
   const currentTimeRef = useRef(currentTime);
   const clipboardRef = useRef(clipboard);
@@ -133,6 +134,7 @@ export default function Home() {
   // Keep ALL refs in sync — catches mutations from non-synced setters (Timeline, Player, etc.)
   useEffect(() => { clipsRef.current = clips; }, [clips]);
   useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
+  useEffect(() => { currentVideoUrlRef.current = currentVideoUrl; }, [currentVideoUrl]);
   useEffect(() => { selectedClipIdsRef.current = selectedClipIds; }, [selectedClipIds]);
   useEffect(() => { clipboardRef.current = clipboard; }, [clipboard]);
   useEffect(() => {
@@ -775,7 +777,7 @@ export default function Home() {
    * - handleVideoAdd(라이브러리+상태) + handleClipAdd(타임라인) 분리 호출로 thumbnails/waveform 포함
    */
   const handlePlayerFileDrop = useCallback(async (files: File[]) => {
-    // 현재 main 트랙 끝 시간 (스냅샷)
+    // 현재 main 트랙 끝 시간 (스냅샷) — clipsRef로 최신값 읽기
     let insertAt = clipsRef.current
       .filter(c => c.trackIndex === 1)
       .reduce((maxEnd, c) => Math.max(maxEnd, c.startTime + c.duration), 0);
@@ -802,15 +804,16 @@ export default function Home() {
       // 1. 라이브러리에 추가
       setLibraryItems(prev => [...prev, { id: libId, name: file.name, url, type, duration, file }]);
 
-      // 2. currentVideoUrl 등 첫 번째 비디오 상태 세팅
-      if (type === 'video' && !currentVideoUrl) {
+      // 2. 첫 번째 비디오만 currentVideoUrl 세팅 — ref로 최신값 읽어 stale closure 방지
+      if (type === 'video' && !currentVideoUrlRef.current) {
+        currentVideoUrlRef.current = url; // 즉시 업데이트해서 다음 파일이 덮어쓰지 않도록
         setCurrentVideoUrl(url);
         setCurrentVideoFile(file);
         setActiveFileName(file.name);
         setActiveFileDuration(duration);
       }
 
-      // 3. 타임라인에 직접 추가 (setTimeout 없이 동기적으로)
+      // 3. 타임라인에 직접 추가
       setClipsSynced(prev => [...prev, {
         id: clipId,
         name: file.name,
@@ -835,7 +838,7 @@ export default function Home() {
 
     setImportToast(`${files.length}개 파일 타임라인에 추가됨`);
     setTimeout(() => setImportToast(null), 3000);
-  }, [currentVideoUrl, setClipsSynced]);
+  }, [setClipsSynced]);
 
   const handleClipUpdate = useCallback((clipId: string, updates: Partial<VideoClip>) => {
     setClips(prev => {
