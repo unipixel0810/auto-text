@@ -3,19 +3,19 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 
 const EMOTIONS = [
-  { value: 1, emoji: '\ud83d\ude21', label: '\ub9e4\uc6b0 \ubd88\ub9cc' },
-  { value: 2, emoji: '\ud83d\ude1e', label: '\ubd88\ub9cc' },
-  { value: 3, emoji: '\ud83d\ude10', label: '\ubcf4\ud1b5' },
-  { value: 4, emoji: '\ud83d\ude0a', label: '\ub9cc\uc871' },
-  { value: 5, emoji: '\ud83e\udd29', label: '\ub9e4\uc6b0 \ub9cc\uc871' },
+  { value: 1, emoji: '😡', label: '매우 불만' },
+  { value: 2, emoji: '😞', label: '불만' },
+  { value: 3, emoji: '😐', label: '보통' },
+  { value: 4, emoji: '😊', label: '만족' },
+  { value: 5, emoji: '🤩', label: '매우 만족' },
 ];
 
 const CATEGORIES = [
-  { id: 'ui', label: 'UI/\ub514\uc790\uc778', icon: 'palette' },
-  { id: 'feature', label: '\uae30\ub2a5', icon: 'build' },
-  { id: 'speed', label: '\uc18d\ub3c4', icon: 'speed' },
-  { id: 'content', label: '\ucf58\ud150\uce20', icon: 'article' },
-  { id: 'other', label: '\uae30\ud0c0', icon: 'more_horiz' },
+  { id: 'ui', label: 'UI/디자인', icon: 'palette' },
+  { id: 'feature', label: '기능', icon: 'build' },
+  { id: 'speed', label: '속도', icon: 'speed' },
+  { id: 'content', label: '콘텐츠', icon: 'article' },
+  { id: 'other', label: '기타', icon: 'more_horiz' },
 ];
 
 type Step = 'emotion' | 'category' | 'message' | 'done';
@@ -44,7 +44,7 @@ export default function FeedbackWidget() {
     setTimeout(reset, 300);
   }, [reset]);
 
-  // done \ub2e8\uacc4 2\ucd08 \ud6c4 \uc790\ub3d9 \ub2eb\uae30
+  // done 단계 2초 후 자동 닫기
   useEffect(() => {
     if (step === 'done') {
       const timer = setTimeout(handleClose, 2000);
@@ -64,7 +64,7 @@ export default function FeedbackWidget() {
       });
       setScreenshot(canvas.toDataURL('image/jpeg', 0.6));
     } catch {
-      // html2canvas \uc2e4\ud328 \uc2dc \ubb34\uc2dc
+      // html2canvas 실패 시 무시
     }
     setScreenshotLoading(false);
   };
@@ -87,14 +87,14 @@ export default function FeedbackWidget() {
       });
       setStep('done');
     } catch {
-      // \uc5d0\ub7ec \ubb34\uc2dc
+      // 에러 무시
     }
     setSubmitting(false);
   };
 
   return (
     <div data-feedback-widget className="fixed bottom-6 right-6 z-[9999]">
-      {/* \ud50c\ub85c\ud305 \ubc84\ud2bc */}
+      {/* 플로팅 버튼 */}
       {!open && (
         <button
           onClick={() => setOpen(true)}
@@ -102,23 +102,23 @@ export default function FeedbackWidget() {
         >
           <span className="material-symbols-outlined text-white text-[26px]">rate_review</span>
           <span className="absolute bottom-full right-0 mb-2 px-3 py-1.5 text-[11px] text-white bg-[#1a1a24] rounded-lg opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap transition-opacity shadow-xl border border-white/10">
-            \ud53c\ub4dc\ubc31 \ubcf4\ub0b4\uae30
+            피드백 보내기
           </span>
         </button>
       )}
 
-      {/* \ud53c\ub4dc\ubc31 \ud3fc */}
+      {/* 피드백 폼 */}
       {open && (
         <div
           ref={formRef}
           className="w-[340px] bg-[#12121a] border border-[#2a2a3e] rounded-2xl shadow-2xl shadow-black/50 overflow-hidden animate-in slide-in-from-bottom-4 fade-in duration-300"
         >
-          {/* \ud5e4\ub354 */}
+          {/* 헤더 */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-[#1e1e2e]">
             <div className="flex items-center gap-2">
               <span className="material-symbols-outlined text-[#00D4D4] text-[18px]">feedback</span>
               <span className="text-sm font-semibold text-white">
-                {step === 'done' ? '\uac10\uc0ac\ud569\ub2c8\ub2e4!' : '\ud53c\ub4dc\ubc31'}
+                {step === 'done' ? '감사합니다!' : '피드백'}
               </span>
             </div>
             <button onClick={handleClose} className="p-1 hover:bg-white/10 rounded-lg transition-colors">
@@ -127,10 +127,10 @@ export default function FeedbackWidget() {
           </div>
 
           <div className="p-4">
-            {/* Step 1: \uac10\uc815 \uc120\ud0dd */}
+            {/* Step 1: 감정 선택 */}
             {step === 'emotion' && (
               <div className="space-y-3">
-                <p className="text-[13px] text-gray-400">\uc11c\ube44\uc2a4 \uacbd\ud5d8\uc740 \uc5b4\ub5a0\uc168\ub098\uc694?</p>
+                <p className="text-[13px] text-gray-400">서비스 경험은 어떠셨나요?</p>
                 <div className="flex justify-between px-2">
                   {EMOTIONS.map(e => (
                     <button
@@ -146,14 +146,14 @@ export default function FeedbackWidget() {
               </div>
             )}
 
-            {/* Step 2: \uce74\ud14c\uace0\ub9ac \uc120\ud0dd */}
+            {/* Step 2: 카테고리 선택 */}
             {step === 'category' && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <button onClick={() => setStep('emotion')} className="p-0.5 hover:bg-white/10 rounded transition-colors">
                     <span className="material-symbols-outlined text-gray-500 text-[16px]">arrow_back</span>
                   </button>
-                  <p className="text-[13px] text-gray-400">\uc5b4\ub5a4 \ubd80\ubd84\uc5d0 \ub300\ud55c \ud53c\ub4dc\ubc31\uc778\uac00\uc694?</p>
+                  <p className="text-[13px] text-gray-400">어떤 부분에 대한 피드백인가요?</p>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
                   {CATEGORIES.map(c => (
@@ -170,17 +170,17 @@ export default function FeedbackWidget() {
               </div>
             )}
 
-            {/* Step 3: \uba54\uc2dc\uc9c0 \uc785\ub825 */}
+            {/* Step 3: 메시지 입력 */}
             {step === 'message' && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <button onClick={() => setStep('category')} className="p-0.5 hover:bg-white/10 rounded transition-colors">
                     <span className="material-symbols-outlined text-gray-500 text-[16px]">arrow_back</span>
                   </button>
-                  <p className="text-[13px] text-gray-400">\uc790\uc138\ud55c \ub0b4\uc6a9\uc744 \uc54c\ub824\uc8fc\uc138\uc694 (\uc120\ud0dd)</p>
+                  <p className="text-[13px] text-gray-400">자세한 내용을 알려주세요 (선택)</p>
                 </div>
 
-                {/* \uc120\ud0dd\ub41c \uac10\uc815 + \uce74\ud14c\uace0\ub9ac \ud45c\uc2dc */}
+                {/* 선택된 감정 + 카테고리 표시 */}
                 <div className="flex items-center gap-2 text-[12px] text-gray-500">
                   <span className="text-[18px]">{EMOTIONS.find(e => e.value === emotion)?.emoji}</span>
                   <span className="px-2 py-0.5 bg-[#1e1e2e] rounded-md">{CATEGORIES.find(c => c.id === category)?.label}</span>
@@ -189,12 +189,12 @@ export default function FeedbackWidget() {
                 <textarea
                   value={message}
                   onChange={e => setMessage(e.target.value)}
-                  placeholder="\ubb34\uc5c7\uc774\ub4e0 \uc790\uc720\ub86d\uac8c \uc801\uc5b4\uc8fc\uc138\uc694..."
+                  placeholder="무엇이든 자유롭게 적어주세요..."
                   rows={3}
                   className="w-full bg-[#0d0d14] border border-[#2a2a3e] rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-[#00D4D4]/50 resize-none"
                 />
 
-                {/* \uc2a4\ud06c\ub9b0\uc0f7 */}
+                {/* 스크린샷 */}
                 <div className="flex items-center gap-2">
                   <button
                     onClick={captureScreenshot}
@@ -204,22 +204,22 @@ export default function FeedbackWidget() {
                     <span className="material-symbols-outlined text-[14px]">
                       {screenshotLoading ? 'hourglass_empty' : screenshot ? 'check_circle' : 'screenshot_monitor'}
                     </span>
-                    {screenshot ? '\uc2a4\ud06c\ub9b0\uc0f7 \ucca8\ubd80\ub428' : '\uc2a4\ud06c\ub9b0\uc0f7 \ucca8\ubd80'}
+                    {screenshot ? '스크린샷 첨부됨' : '스크린샷 첨부'}
                   </button>
                   {screenshot && (
                     <button onClick={() => setScreenshot(null)} className="text-[11px] text-gray-600 hover:text-red-400 transition-colors">
-                      \uc81c\uac70
+                      제거
                     </button>
                   )}
                 </div>
 
-                {/* \uc81c\ucd9c */}
+                {/* 제출 */}
                 <button
                   onClick={handleSubmit}
                   disabled={submitting}
                   className="w-full py-2.5 bg-gradient-to-r from-[#00D4D4] to-[#0099CC] text-white text-sm font-semibold rounded-xl hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-50"
                 >
-                  {submitting ? '\ubcf4\ub0b4\ub294 \uc911...' : '\ud53c\ub4dc\ubc31 \ubcf4\ub0b4\uae30'}
+                  {submitting ? '보내는 중...' : '피드백 보내기'}
                 </button>
               </div>
             )}
@@ -227,9 +227,9 @@ export default function FeedbackWidget() {
             {/* Done */}
             {step === 'done' && (
               <div className="flex flex-col items-center py-6 gap-3">
-                <span className="text-[48px] animate-bounce">\ud83d\ude4f</span>
-                <p className="text-sm text-white font-semibold">\uac10\uc0ac\ud569\ub2c8\ub2e4!</p>
-                <p className="text-[12px] text-gray-500">\uc18c\uc911\ud55c \ud53c\ub4dc\ubc31 \ubc18\uc601\ud558\uaca0\uc2b5\ub2c8\ub2e4.</p>
+                <span className="text-[48px] animate-bounce">🙏</span>
+                <p className="text-sm text-white font-semibold">감사합니다!</p>
+                <p className="text-[12px] text-gray-500">소중한 피드백 반영하겠습니다.</p>
               </div>
             )}
           </div>
@@ -239,7 +239,7 @@ export default function FeedbackWidget() {
   );
 }
 
-/** \uc138\uc158 ID (\ud0ed \ub2e8\uc704 \uc720\uc9c0) */
+/** 세션 ID (탭 단위 유지) */
 function getSessionId(): string {
   const KEY = 'feedback_session_id';
   let id = sessionStorage.getItem(KEY);
