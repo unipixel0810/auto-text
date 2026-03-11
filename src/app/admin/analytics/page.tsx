@@ -1974,6 +1974,11 @@ export default function AnalyticsDashboard() {
 
   useEffect(() => { setMounted(true); }, []);
 
+  // 히트맵: 페이지 변경 시 iframe 로딩 상태 초기화
+  useEffect(() => {
+    setIframeLoaded(false);
+  }, [selectedPage]);
+
   const fetchPages = useCallback(async () => {
     try {
       const res = await fetch(`/api/analytics/query?action=pages&days=${activeFilter.days}`);

@@ -534,17 +534,19 @@ export async function getABExperimentResults(): Promise<any[] | { error: string 
 
     const results: Record<string, {
       name: string;
+      _meta: Record<string, any>; // DB 원본 실험 설정 보존
       variants: {
         A: { impressions: number; clicks: number };
         B: { impressions: number; clicks: number };
       };
     }> = {};
 
-    // DB에 저장된 실험 목록으로 결과 맵 초기화
+    // DB에 저장된 실험 목록으로 결과 맵 초기화 (원본 메타데이터 보존)
     if (experiments) {
       experiments.forEach(exp => {
         results[exp.name] = {
           name: exp.name,
+          _meta: exp, // status, traffic_allocation, target_sample_size 등 보존
           variants: {
             A: { impressions: 0, clicks: 0 },
             B: { impressions: 0, clicks: 0 },
@@ -582,6 +584,7 @@ export async function getABExperimentResults(): Promise<any[] | { error: string 
     return Object.values(results).map(exp => {
       const vA = exp.variants.A;
       const vB = exp.variants.B;
+      const meta = exp._meta || {};
 
       const ctrA = vA.impressions > 0 ? (vA.clicks / vA.impressions) * 100 : 0;
       const ctrB = vB.impressions > 0 ? (vB.clicks / vB.impressions) * 100 : 0;
@@ -590,14 +593,22 @@ export async function getABExperimentResults(): Promise<any[] | { error: string 
       const pValue = calculateChiSquared(vA.impressions, vA.clicks, vB.impressions, vB.clicks);
 
       return {
-        ...exp,
+        // DB 원본 메타데이터 스프레드 (snake_case 필드들 포함)
+        ...meta,
+        // 명시적 camelCase 매핑 (UI 인터페이스와 일치)
+        name: exp.name,
+        status: meta.status || 'running',
+        trafficAllocation: meta.traffic_allocation ?? 50,
+        targetSampleSize: meta.target_sample_size ?? 1000,
+        startDate: meta.start_date || null,
+        // 집계된 통계 데이터
         variants: {
           A: { ...vA, ctr: ctrA },
           B: { ...vB, ctr: ctrB },
         },
         pValue,
         isSignificant: pValue < 0.05,
-        winner: ctrA > ctrB ? 'A' : (ctrB > ctrA ? 'B' : 'Draw')
+        winner: ctrA > ctrB ? 'A' : (ctrB > ctrA ? 'B' : 'Draw'),
       };
     });
   } catch (err) {

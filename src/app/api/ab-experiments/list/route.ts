@@ -9,10 +9,11 @@ export async function GET() {
       return NextResponse.json({ experiments: [], error: 'Supabase configuration is missing. Please check .env.local' });
     }
 
-    // 실험 목록 가져오기 (is_active 필터 제거하여 모든 실험 확인 - 테스트용)
+    // 활성화된 실험만 가져오기
     const { data: rawExperiments, error } = await supabase
       .from('ab_experiments')
       .select('*')
+      .eq('is_active', true)
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -22,7 +23,7 @@ export async function GET() {
 
     console.log(`[API] Found ${rawExperiments?.length || 0} experiments in DB`);
 
-    // 형식 변환
+    // 형식 변환 (snake_case → camelCase 매핑 포함)
     const experiments = (rawExperiments || []).map((exp: any) => ({
       name: exp.name,
       pageUrl: exp.page_url,
@@ -31,6 +32,10 @@ export async function GET() {
       variantB: exp.variant_b,
       elementType: exp.element_type || 'text',
       isActive: exp.is_active,
+      status: exp.status || 'running',
+      trafficAllocation: exp.traffic_allocation ?? 50,
+      targetSampleSize: exp.target_sample_size ?? 1000,
+      startDate: exp.start_date || null,
     }));
 
     return NextResponse.json({ experiments });

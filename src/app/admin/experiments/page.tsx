@@ -69,20 +69,25 @@ export default function ExperimentsDashboard() {
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [applyingWinner, setApplyingWinner] = useState<string | null>(null);
   const [supabaseConfigured, setSupabaseConfigured] = useState<boolean>(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [expandedExperiment, setExpandedExperiment] = useState<string | null>(null);
 
   const fetchResults = useCallback(async () => {
     setLoading(true);
+    setFetchError(null);
     try {
       const res = await fetch('/api/analytics/query?action=ab-results');
       if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
+        throw new Error(`서버 오류가 발생했습니다. (HTTP ${res.status})`);
       }
       const data = await res.json();
       if (data.error) {
         console.error('API error:', data.error);
         if (data.error.includes('Supabase configuration is missing')) {
           setSupabaseConfigured(false);
+        } else {
+          // Supabase 설정 외의 다른 오류 (테이블 없음, RLS 차단, 쿼리 실패 등)
+          setFetchError(data.error);
         }
         setExperiments([]);
       } else {
@@ -90,13 +95,14 @@ export default function ExperimentsDashboard() {
         const exps = (data.experiments || []).map((exp: ExperimentResult) => ({
           ...exp,
           status: exp.status || 'running',
-          trafficAllocation: exp.trafficAllocation || 50,
-          targetSampleSize: exp.targetSampleSize || 1000,
+          trafficAllocation: exp.trafficAllocation ?? 50,
+          targetSampleSize: exp.targetSampleSize ?? 1000,
         }));
         setExperiments(exps);
       }
     } catch (err) {
       console.error('Failed to fetch experiment results:', err);
+      setFetchError(err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다.');
       setExperiments([]);
     } finally {
       setLoading(false);
@@ -291,6 +297,27 @@ export default function ExperimentsDashboard() {
               Supabase 공식 문서 확인하기
               <span className="material-symbols-outlined text-[16px]">open_in_new</span>
             </a>
+          </div>
+        ) : fetchError ? (
+          <div className="text-center py-16 bg-[#1a1a1a] rounded-2xl border border-orange-900/30 px-6">
+            <span className="material-symbols-outlined text-[48px] text-orange-500 mb-4">warning</span>
+            <h2 className="text-xl font-bold text-white mb-2">데이터를 불러오지 못했습니다</h2>
+            <p className="text-gray-400 text-sm mb-4 max-w-lg mx-auto">
+              Supabase 연결 또는 테이블 설정을 확인해주세요.
+            </p>
+            <pre className="text-orange-400 text-xs font-mono bg-black/40 px-4 py-3 rounded-lg mb-4 max-w-lg mx-auto text-left whitespace-pre-wrap break-all">
+              {fetchError}
+            </pre>
+            <p className="text-gray-600 text-xs mb-4">
+              <code className="bg-black/50 px-1.5 py-0.5 rounded">ab_experiments</code> 및 <code className="bg-black/50 px-1.5 py-0.5 rounded">ab_events</code> 테이블이 Supabase에 존재하고 RLS 정책이 올바른지 확인하세요.
+            </p>
+            <button
+              onClick={fetchResults}
+              className="inline-flex items-center gap-2 text-[#00D4D4] hover:underline text-sm font-medium"
+            >
+              <span className="material-symbols-outlined text-[16px]">refresh</span>
+              다시 시도
+            </button>
           </div>
         ) : experiments.length === 0 ? (
           <div className="text-center py-20 bg-[#1a1a1a] rounded-2xl border border-[#222]">
