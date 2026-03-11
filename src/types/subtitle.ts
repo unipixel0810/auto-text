@@ -7,12 +7,13 @@
 // 자막 타입 정의
 // ============================================
 
-export type SubtitleType = 'ENTERTAINMENT' | 'SITUATION' | 'EXPLANATION' | 'TRANSCRIPT';
+export type SubtitleType = 'ENTERTAINMENT' | 'SITUATION' | 'EXPLANATION' | 'CONTEXT' | 'TRANSCRIPT';
 
 export const SUBTITLE_TYPES = {
   ENTERTAINMENT: 'ENTERTAINMENT',
   SITUATION: 'SITUATION',
   EXPLANATION: 'EXPLANATION',
+  CONTEXT: 'CONTEXT',
   TRANSCRIPT: 'TRANSCRIPT',
 } as const;
 
@@ -20,6 +21,7 @@ export const SUBTITLE_TYPE_LABELS: Record<SubtitleType, string> = {
   ENTERTAINMENT: '예능',
   SITUATION: '상황',
   EXPLANATION: '설명',
+  CONTEXT: '맥락',
   TRANSCRIPT: '말자막',
 };
 
@@ -27,6 +29,7 @@ export const SUBTITLE_TYPE_DESCRIPTIONS: Record<SubtitleType, string> = {
   ENTERTAINMENT: '시청자의 웃음이나 흥미를 유발하는 콘텐츠',
   SITUATION: '현재 상황이나 맥락을 설명하는 콘텐츠',
   EXPLANATION: '정보나 지식을 전달하는 교육적 콘텐츠',
+  CONTEXT: '앞뒤 상황을 이어주는 배경 지식 및 맥락 정보',
   TRANSCRIPT: '음성을 그대로 텍스트로 표시하는 대본형 자막',
 };
 
@@ -107,6 +110,13 @@ export const TYPE_STYLE_PRESETS: Record<SubtitleType, Partial<SubtitleStyle>> = 
     fontWeight: 600,
     strokeColor: '#0066CC',
   },
+  CONTEXT: {
+    color: '#C9A0FF',
+    fontSize: 42,
+    fontWeight: 600,
+    strokeColor: '#6B21A8',
+    backgroundColor: 'rgba(107,33,168,0.3)',
+  },
   TRANSCRIPT: {
     color: '#FFFFFF',
     fontSize: 42,
@@ -118,6 +128,48 @@ export const TYPE_STYLE_PRESETS: Record<SubtitleType, Partial<SubtitleStyle>> = 
 // 자막 아이템 인터페이스
 // ============================================
 
+// ============================================
+// 자막 애니메이션 타입
+// ============================================
+
+export type AnimationPreset =
+  | 'none'
+  | 'fade-in' | 'fade-out'
+  | 'slide-up' | 'slide-down'
+  | 'pop' | 'typewriter'
+  | 'bounce' | 'shake';
+
+export interface SubtitleAnimation {
+  /** 등장 애니메이션 */
+  inPreset: AnimationPreset;
+  /** 퇴장 애니메이션 */
+  outPreset: AnimationPreset;
+  /** 애니메이션 지속 시간 (초, 0.1 ~ 1.0) */
+  duration: number;
+}
+
+export const DEFAULT_SUBTITLE_ANIMATION: SubtitleAnimation = {
+  inPreset: 'none',
+  outPreset: 'none',
+  duration: 0.3,
+};
+
+/** 무료 사용자에게 허용된 프리셋 */
+export const FREE_ANIMATION_PRESETS: AnimationPreset[] = ['none', 'fade-in', 'fade-out', 'slide-up'];
+
+/** 프리셋 메타데이터 */
+export const ANIMATION_PRESET_META: Record<AnimationPreset, { label: string; icon: string; isPro: boolean }> = {
+  'none':       { label: '없음',       icon: '⊘',  isPro: false },
+  'fade-in':    { label: '페이드 인',   icon: '🌅', isPro: false },
+  'fade-out':   { label: '페이드 아웃', icon: '🌇', isPro: false },
+  'slide-up':   { label: '슬라이드 업', icon: '⬆️', isPro: false },
+  'slide-down': { label: '슬라이드 다운', icon: '⬇️', isPro: true },
+  'pop':        { label: '팝',         icon: '💥', isPro: true },
+  'typewriter': { label: '타이핑',     icon: '⌨️', isPro: true },
+  'bounce':     { label: '바운스',     icon: '🏀', isPro: true },
+  'shake':      { label: '쉐이크',     icon: '〰️', isPro: true },
+};
+
 export interface SubtitleItem {
   id: string;
   startTime: number;
@@ -127,6 +179,8 @@ export interface SubtitleItem {
   confidence: number;
   /** 개별 스타일 (없으면 기본 스타일 사용) */
   style?: Partial<SubtitleStyle>;
+  /** 애니메이션 설정 */
+  animation?: SubtitleAnimation;
   metadata?: RecommendationMetadata;
 }
 
@@ -210,6 +264,12 @@ export interface ExplanationMetadata extends BaseRecommendationReason {
   keyConcepts?: string[];
 }
 
+export interface ContextMetadata extends BaseRecommendationReason {
+  type: 'CONTEXT';
+  backgroundInfo?: string;
+  relatedTopics?: string[];
+}
+
 export interface TranscriptMetadata extends BaseRecommendationReason {
   type: 'TRANSCRIPT';
   speaker?: string;
@@ -221,6 +281,7 @@ export type RecommendationMetadata =
   | EntertainmentMetadata
   | SituationMetadata
   | ExplanationMetadata
+  | ContextMetadata
   | TranscriptMetadata;
 
 // ============================================
@@ -240,6 +301,6 @@ export type SubtitleItemUpdate = Partial<Omit<SubtitleItem, 'id'>> & {
 export function isValidSubtitleType(value: unknown): value is SubtitleType {
   return (
     typeof value === 'string' &&
-    ['ENTERTAINMENT', 'SITUATION', 'EXPLANATION', 'TRANSCRIPT'].includes(value)
+    Object.values(SUBTITLE_TYPES).includes(value as SubtitleType)
   );
 }

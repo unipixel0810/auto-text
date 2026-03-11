@@ -36,7 +36,7 @@ export default function Header({
   onUndo, onRedo, onSplit, onDelete, onCopy, onPaste, onDuplicate, onSelectAll,
   onExport, onImport, onFitToScreen, onToggleSnap, onOpenShortcuts,
 }: HeaderProps) {
-  const { user, isAuthenticated, isAdmin: rawIsAdmin, signIn, signOut } = useAuth();
+  const { isAdmin: rawIsAdmin } = useAuth();
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
@@ -44,9 +44,7 @@ export default function Header({
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState('');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const [showProfileMenu, setShowProfileMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const profileRef = useRef<HTMLDivElement>(null);
 
   const formatDuration = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
@@ -78,9 +76,6 @@ export default function Header({
     const handleClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setOpenMenu(null);
-      }
-      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
-        setShowProfileMenu(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -290,66 +285,7 @@ export default function Header({
           <span className="text-xs font-semibold">Export</span>
         </button>
 
-        {/* Profile / Auth */}
-        <div className="relative" ref={profileRef}>
-          {mounted && isAuthenticated && user ? (
-            <>
-              <button
-                onClick={() => setShowProfileMenu(!showProfileMenu)}
-                className="flex items-center gap-2 ml-1 hover:opacity-80 transition-opacity"
-              >
-                {user.image ? (
-                  <img
-                    src={user.image}
-                    alt={user.name || ''}
-                    className="w-8 h-8 rounded-full ring-2 ring-cyan-500/40 hover:ring-4 transition-all"
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <div className="w-8 h-8 bg-gradient-to-tr from-cyan-500 to-blue-600 rounded-full ring-2 ring-cyan-500/40 flex items-center justify-center text-white text-xs font-bold">
-                    {user.name?.charAt(0) || '?'}
-                  </div>
-                )}
-              </button>
-              {showProfileMenu && (
-                <div className="absolute top-full right-0 mt-2 w-64 bg-[#1a1a24] border border-white/10 rounded-xl shadow-2xl py-2 z-[100]">
-                  <div className="px-4 py-3 border-b border-white/10">
-                    <p className="text-sm font-medium text-white truncate">{user.name}</p>
-                    <p className="text-xs text-gray-400 truncate">{user.email}</p>
-                    {isAdmin && (
-                      <span className="inline-block mt-1 text-[9px] bg-cyan-500/20 text-cyan-400 px-1.5 py-0.5 rounded font-semibold">ADMIN</span>
-                    )}
-                  </div>
-                  {isAdmin && (
-                    <a
-                      href="/admin/analytics"
-                      className="w-full flex items-center gap-2 px-4 py-2.5 text-xs text-gray-300 hover:text-white hover:bg-white/10 transition-colors"
-                      onClick={() => setShowProfileMenu(false)}
-                    >
-                      <span className="material-icons text-sm">admin_panel_settings</span>
-                      관리자 대시보드
-                    </a>
-                  )}
-                  <button
-                    onClick={() => { setShowProfileMenu(false); signOut(); }}
-                    className="w-full flex items-center gap-2 px-4 py-2.5 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
-                  >
-                    <span className="material-icons text-sm">logout</span>
-                    로그아웃
-                  </button>
-                </div>
-              )}
-            </>
-          ) : (
-            <button
-              onClick={signIn}
-              className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 text-white px-3 py-1.5 rounded-lg transition-all text-xs font-medium ml-1"
-            >
-              <span className="material-icons text-sm">login</span>
-              로그인
-            </button>
-          )}
-        </div>
+        {/* Profile area - auth removed */}
       </div>
     </header>
   );

@@ -1,12 +1,9 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { signIn } from 'next-auth/react';
-
 export default function LandingPage() {
     const router = useRouter();
-    const [showAuthModal, setShowAuthModal] = useState(false);
 
     // 랜딩 페이지에서 body 스크롤 강제 활성화
     useEffect(() => {
@@ -45,7 +42,7 @@ export default function LandingPage() {
                     </div>
                     <div className="flex items-center gap-3">
                         <button
-                            onClick={() => setShowAuthModal(true)}
+                            onClick={() => router.push('/')}
                             className="px-5 py-2 text-sm font-semibold bg-gradient-to-r from-cyan-500 to-blue-600 text-white rounded-lg hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-cyan-500/20"
                         >
                             무료로 시작하기
@@ -89,7 +86,7 @@ export default function LandingPage() {
                     {/* ========== CTA 버튼: 로그인 / 회원가입 ========== */}
                     <div className="flex flex-col md:flex-row items-center justify-center gap-4 mb-8">
                         <button
-                            onClick={() => setShowAuthModal(true)}
+                            onClick={() => router.push('/')}
                             className="px-10 py-4 bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-bold rounded-xl shadow-lg shadow-cyan-500/30 hover:scale-105 active:scale-95 transition-all w-full md:w-auto text-lg"
                             data-ab-test="cta-button-test"
                             data-ab-event="signup-click"
@@ -207,15 +204,15 @@ export default function LandingPage() {
                         준비되셨나요? 지금 시작하세요.
                     </h2>
                     <p className="text-gray-400 mb-8">
-                        Google 계정 하나로 바로 시작할 수 있습니다.
+                        클릭 한 번으로 바로 편집을 시작할 수 있습니다.
                     </p>
                     <button
-                        onClick={() => setShowAuthModal(true)}
+                        onClick={() => router.push('/')}
                         className="px-10 py-5 bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-extrabold text-lg rounded-2xl shadow-2xl shadow-cyan-500/40 hover:scale-105 active:scale-95 transition-all"
                     >
                         무료로 시작하기 🚀
                     </button>
-                    <p className="mt-4 text-xs text-gray-600">가입 후 30초 이내에 첫 자막을 만들 수 있습니다</p>
+                    <p className="mt-4 text-xs text-gray-600">30초 이내에 첫 자막을 만들 수 있습니다</p>
                 </div>
             </section>
 
@@ -231,69 +228,6 @@ export default function LandingPage() {
                 </div>
             </footer>
 
-            {/* Auth Modal: 로그인 / 회원가입 선택 */}
-            {showAuthModal && (
-                <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[200] flex items-center justify-center" onClick={() => setShowAuthModal(false)}>
-                    <div
-                        className="bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl p-8 w-[420px] max-w-[90vw] animate-in"
-                        onClick={(e) => e.stopPropagation()}
-                        style={{ animation: 'fadeInUp 0.3s ease-out' }}
-                    >
-                        {/* Logo */}
-                        <div className="text-center mb-8">
-                            <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 shadow-lg shadow-cyan-500/30 mb-4">
-                                <span className="material-icons text-2xl text-white">auto_awesome</span>
-                            </div>
-                            <h2 className="text-2xl font-bold text-white">AutoText</h2>
-                            <p className="text-gray-400 text-sm mt-1">AI 자막 추천 · 영상 편집 시스템</p>
-                        </div>
-
-                        {/* 기존 가입자 - 로그인 */}
-                        <button
-                            onClick={() => signIn('google', { callbackUrl: '/' })}
-                            className="w-full flex items-center justify-center gap-3 py-3.5 mb-3 bg-white text-gray-800 font-semibold rounded-xl hover:bg-gray-100 active:scale-[0.98] transition-all shadow-lg"
-                        >
-                            <svg className="w-5 h-5" viewBox="0 0 24 24">
-                                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" />
-                                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
-                                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
-                            </svg>
-                            기존 가입자 로그인
-                        </button>
-
-                        {/* 구분선 */}
-                        <div className="flex items-center gap-3 my-4">
-                            <div className="flex-1 h-px bg-gray-700"></div>
-                            <span className="text-[11px] text-gray-500 font-medium">또는</span>
-                            <div className="flex-1 h-px bg-gray-700"></div>
-                        </div>
-
-                        {/* 신규 회원가입 */}
-                        <button
-                            onClick={() => signIn('google', { callbackUrl: '/' })}
-                            className="w-full flex items-center justify-center gap-3 py-3.5 bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-semibold rounded-xl hover:brightness-110 active:scale-[0.98] transition-all shadow-lg shadow-cyan-500/20"
-                        >
-                            <span className="material-icons text-xl">person_add</span>
-                            회원가입 (Google 계정)
-                        </button>
-
-                        {/* 약관 */}
-                        <p className="text-center text-[10px] text-gray-600 mt-5 leading-relaxed">
-                            계속하면 <span className="text-gray-400 underline cursor-pointer">이용약관</span> 및{' '}
-                            <span className="text-gray-400 underline cursor-pointer">개인정보처리방침</span>에 동의하는 것으로 간주합니다.
-                        </p>
-                    </div>
-                </div>
-            )}
-
-            {/* Animation keyframes */}
-            <style jsx>{`
-                @keyframes fadeInUp {
-                    from { opacity: 0; transform: translateY(20px); }
-                    to { opacity: 1; transform: translateY(0); }
-                }
-            `}</style>
         </div>
     );
 }

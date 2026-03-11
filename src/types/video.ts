@@ -42,6 +42,10 @@ export interface VideoClip {
   fontStyle?: 'normal' | 'italic';
   textDecoration?: 'none' | 'underline';
   disabled?: boolean;
+  /** 자막 애니메이션 설정 (trackIndex 0,5~8 자막 클립에 사용) */
+  subtitleAnimationPreset?: string;   // AnimationPreset: 'none' | 'fade-in' | ...
+  subtitleOutPreset?: string;          // OUT 애니메이션 프리셋
+  subtitleAnimationDuration?: number;  // 0.1 ~ 1.0s
 }
 
 export interface LibraryItem {

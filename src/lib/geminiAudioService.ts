@@ -7,7 +7,7 @@ export interface GeminiSubtitleResult {
   start_time: number;
   end_time: number;
   text: string;
-  style_type: '요약자막' | '예능자막' | '설명자막' | '상황자막';
+  style_type: '예능자막' | '설명자막' | '상황자막' | '예능' | '상황' | '설명' | '맥락';
 }
 
 export interface TranscriptDataForAI {
@@ -177,7 +177,13 @@ export async function generateSubtitlesFromAudio(
     throw new Error(data.error);
   }
 
-  const subtitles: GeminiSubtitleResult[] = data;
+  // Normalize: creative mode returns {start, end, type} instead of {start_time, end_time, style_type}
+  const subtitles: GeminiSubtitleResult[] = (data as any[]).map((item: any) => ({
+    start_time: item.start_time ?? item.start ?? 0,
+    end_time: item.end_time ?? item.end ?? 0,
+    text: item.text ?? '',
+    style_type: item.style_type ?? item.type ?? '상황',
+  }));
 
   onProgress?.(100, '자막 생성 완료!');
 

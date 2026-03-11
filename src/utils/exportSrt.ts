@@ -46,6 +46,7 @@ const DEFAULT_LABELS: Record<SubtitleType, string> = {
   ENTERTAINMENT: '예능',
   SITUATION: '상황',
   EXPLANATION: '설명',
+  CONTEXT: '맥락',
   TRANSCRIPT: '말',
 };
 
@@ -54,6 +55,7 @@ const EMOJI_LABELS: Record<SubtitleType, string> = {
   ENTERTAINMENT: '🎭',
   SITUATION: '📍',
   EXPLANATION: '📚',
+  CONTEXT: '🔗',
   TRANSCRIPT: '💬',
 };
 

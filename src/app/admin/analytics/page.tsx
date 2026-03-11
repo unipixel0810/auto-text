@@ -301,7 +301,7 @@ const DemographicsTab = memo(function DemographicsTab({ days }: { days: number }
           {ageGroups.some(a => a.value > 0) ? (
             <ResponsiveContainer width="100%" height={280}>
               <PieChart>
-                <Pie data={ageGroups} cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={3} dataKey="value" nameKey="name" label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
+                <Pie data={ageGroups} cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={3} dataKey="value" nameKey="name" label={(props) => `${props.name} ${(((props.percent as number) ?? 0) * 100).toFixed(0)}%`}>
                   {ageGroups.map((_, i) => <Cell key={i} fill={AGE_COLORS[i % AGE_COLORS.length]} />)}
                 </Pie>
                 <RechartsTooltip content={<CustomTooltip />} />
@@ -315,7 +315,7 @@ const DemographicsTab = memo(function DemographicsTab({ days }: { days: number }
           {genderData.some(g => g.value > 0) ? (
             <ResponsiveContainer width="100%" height={280}>
               <PieChart>
-                <Pie data={genderData} cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={3} dataKey="value" nameKey="name" label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
+                <Pie data={genderData} cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={3} dataKey="value" nameKey="name" label={(props) => `${props.name} ${(((props.percent as number) ?? 0) * 100).toFixed(0)}%`}>
                   {genderData.map((_, i) => <Cell key={i} fill={GENDER_COLORS[i % GENDER_COLORS.length]} />)}
                 </Pie>
                 <RechartsTooltip content={<CustomTooltip />} />
@@ -407,8 +407,8 @@ const HeatmapTab = memo(function HeatmapTab({
 }: {
   selectedPage: string;
   clickEvents: AnalyticsEvent[];
-  canvasRef: React.RefObject<HTMLCanvasElement | null>;
-  iframeRef: React.RefObject<HTMLIFrameElement | null>;
+  canvasRef: React.RefObject<HTMLCanvasElement>;
+  iframeRef: React.RefObject<HTMLIFrameElement>;
   iframeLoaded: boolean;
   setIframeLoaded: (v: boolean) => void;
   iframeUrl: string;

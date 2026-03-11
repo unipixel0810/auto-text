@@ -3,10 +3,10 @@ import { getSupabase } from '@/lib/analytics/supabase';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const recordingId = params.id;
+    const { id: recordingId } = await params;
 
     const supabase = getSupabase();
     if (!supabase) {

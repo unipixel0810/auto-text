@@ -302,3 +302,88 @@ button:hover:not(:disabled) {
 .animate-fade-in {
   animation: fade-in 0.3s ease-out;
 }
+
+/* ============================================
+   자막 애니메이션 프리셋 Keyframes
+   Frontend Dev — 2026-03-11
+   ============================================ */
+
+/* fade-in */
+@keyframes subtitle-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.subtitle-anim-fade-in {
+  animation: subtitle-fade-in var(--anim-duration, 0.3s) ease-out forwards;
+}
+
+/* fade-out */
+@keyframes subtitle-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+.subtitle-anim-fade-out {
+  animation: subtitle-fade-out var(--anim-duration, 0.3s) ease-in forwards;
+}
+
+/* slide-up */
+@keyframes subtitle-slide-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.subtitle-anim-slide-up {
+  animation: subtitle-slide-up var(--anim-duration, 0.3s) ease-out forwards;
+}
+
+/* slide-down */
+@keyframes subtitle-slide-down {
+  from { opacity: 0; transform: translateY(-20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.subtitle-anim-slide-down {
+  animation: subtitle-slide-down var(--anim-duration, 0.3s) ease-out forwards;
+}
+
+/* pop */
+@keyframes subtitle-pop {
+  0%   { opacity: 0; transform: scale(0.5); }
+  70%  { transform: scale(1.1); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.subtitle-anim-pop {
+  animation: subtitle-pop var(--anim-duration, 0.3s) cubic-bezier(0.34,1.56,0.64,1) forwards;
+}
+
+/* bounce */
+@keyframes subtitle-bounce {
+  0%   { opacity: 0; transform: translateY(-30px); }
+  60%  { transform: translateY(6px); }
+  80%  { transform: translateY(-4px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.subtitle-anim-bounce {
+  animation: subtitle-bounce var(--anim-duration, 0.3s) ease-out forwards;
+}
+
+/* shake — 첫 프레임 fade-in 후 흔들림 (opacity 누락 버그 수정) */
+@keyframes subtitle-shake {
+  0%   { opacity: 0; transform: translateX(0); }
+  10%  { opacity: 1; transform: translateX(0); }
+  25%  { transform: translateX(-6px); }
+  45%  { transform: translateX(6px); }
+  65%  { transform: translateX(-4px); }
+  80%  { transform: translateX(4px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+.subtitle-anim-shake {
+  animation: subtitle-shake var(--anim-duration, 0.3s) ease-in-out forwards;
+}
+
+/* typewriter — JS로 글자 수 기반 처리 (CSS clip 방식) */
+@keyframes subtitle-typewriter {
+  from { clip-path: inset(0 100% 0 0); }
+  to   { clip-path: inset(0 0% 0 0); }
+}
+.subtitle-anim-typewriter {
+  animation: subtitle-typewriter var(--anim-duration, 0.3s) steps(20, end) forwards;
+}

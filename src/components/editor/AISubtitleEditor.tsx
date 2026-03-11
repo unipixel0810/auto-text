@@ -21,6 +21,7 @@ const TYPE_CONFIG: Record<SubtitleType, { color: string; label: string; icon: st
   ENTERTAINMENT: { color: 'hsl(330 80% 60%)', label: '예능', icon: '🎭' },
   SITUATION: { color: 'hsl(210 80% 60%)', label: '상황', icon: '📍' },
   EXPLANATION: { color: 'hsl(150 80% 50%)', label: '설명', icon: '📚' },
+  CONTEXT: { color: 'hsl(270 70% 60%)', label: '맥락', icon: '🔗' },
   TRANSCRIPT: { color: 'hsl(45 80% 60%)', label: '말자막', icon: '💬' },
 };
 
