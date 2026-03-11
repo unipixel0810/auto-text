@@ -58,7 +58,7 @@ export async function POST(req: Request) {
         }
 
         const body = await req.json();
-        const { base64Audio, mimeType, duration, mode, transcriptData } = body;
+        const { base64Audio, mimeType, duration, chunkStartTime = 0, totalDuration, mode, transcriptData } = body;
 
         if (!base64Audio || !mimeType) {
             return NextResponse.json({ error: 'Missing audio data' }, { status: 400 });
@@ -217,7 +217,19 @@ type 값은 반드시 "예능", "상황", "설명", "맥락" 중 하나:
                 .eq('email', email);
         }
 
-        return NextResponse.json(parsedResult);
+        // chunkStartTime 오프셋 적용: 각 청크 응답의 타임스탬프를 전체 영상 기준으로 보정
+        const offsetSeconds = typeof chunkStartTime === 'number' ? chunkStartTime : 0;
+        const corrected = offsetSeconds === 0
+            ? parsedResult
+            : parsedResult.map((item: any) => ({
+                ...item,
+                start_time: (item.start_time ?? item.start ?? 0) + offsetSeconds,
+                end_time: (item.end_time ?? item.end ?? 0) + offsetSeconds,
+                start: (item.start ?? item.start_time ?? 0) + offsetSeconds,
+                end: (item.end ?? item.end_time ?? 0) + offsetSeconds,
+            }));
+
+        return NextResponse.json(corrected);
     } catch (error: any) {
         console.error('Gemini API Error Detail:', {
             message: error.message,

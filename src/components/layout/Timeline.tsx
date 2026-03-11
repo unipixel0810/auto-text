@@ -20,6 +20,7 @@ interface TimelineProps {
   onPlayheadChange?: (position: number) => void;
   onHoverTimeChange?: (time: number | null) => void;
   onClipAdd?: (file: File, trackIndex: number, startTime: number) => void;
+  onFilesAdd?: (files: File[], trackIndex: number, startTime: number) => void;
   onClipUpdate?: (clipId: string, updates: Partial<VideoClip>) => void;
   onClipSelect?: (clipIds: string[]) => void;
   onClipDelete?: (clipId: string) => void;
@@ -354,7 +355,7 @@ const TRACK_COLORS: Record<number, { bg: string; bgSel: string; border: string; 
 
 const Timeline = React.memo(({
   clips, playheadPosition, playbackPosition = 0, isPlaying = false, currentTool = 'selection', onToolChange, selectedClipIds = [], zoom, onZoomChange, snapEnabled = true, onSnapToggle,
-  onPlayheadChange, onHoverTimeChange, onClipAdd, onSubtitleAdd, onClipUpdate, onClipSelect, onClipDelete,
+  onPlayheadChange, onHoverTimeChange, onClipAdd, onFilesAdd, onSubtitleAdd, onClipUpdate, onClipSelect, onClipDelete,
   onSplit, onUndo, onRedo, onSpeedChange, onFitToScreen, onTrimLeft, onTrimRight, rippleMode, onRippleToggle, onResizeEnd, onInteractionStart, onInteractionEnd, isTimelineHovered, onHoverChange, onPlayheadDragChange,
 }: TimelineProps) => {
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
@@ -370,6 +371,8 @@ const Timeline = React.memo(({
   const [resizePreview, setResizePreview] = useState<{ clipId: string; newDuration: number } | null>(null);
   const [draggingClip, setDraggingClip] = useState<{
     clipId: string; initialMouseX: number; initialStartTime: number; initialMouseY: number;
+    /** 함께 이동할 다른 클립들의 초기 정보 (clipId → { initialStartTime, trackIndex }) */
+    companions: { id: string; initialStartTime: number; trackIndex: number }[];
   } | null>(null);
   const pendingDragRef = useRef<{
     clipId: string; initialMouseX: number; initialStartTime: number; initialMouseY: number;
@@ -378,6 +381,8 @@ const Timeline = React.memo(({
   draggingClipRef.current = draggingClip;
   const clipsRef = useRef(clips);
   clipsRef.current = clips;
+  const selectedClipIdsRef = useRef(selectedClipIds);
+  selectedClipIdsRef.current = selectedClipIds;
   const onClipUpdateRef = useRef(onClipUpdate);
   onClipUpdateRef.current = onClipUpdate;
   const findSnapTimeRef = useRef<((time: number, excludeClipId: string, trackIndex: number) => number) | null>(null);
@@ -513,9 +518,8 @@ const Timeline = React.memo(({
     if (x > TRACK_CONTROLS_WIDTH) {
       setLassoStart({ x, y });
       setLassoCurrent({ x, y });
-      if (!e.metaKey && !e.ctrlKey && !e.shiftKey) {
-        onClipSelect?.([]);
-      }
+      // 선택 해제는 라소 드래그가 없는 단순 클릭일 때만 (pointerup에서 판단)
+      // 여기서는 해제하지 않음 — handleMouseUp에서 tiny drag 감지 후 해제
     } else {
       // Just moving playhead if clicking track controls
       onPlayheadChange?.(Math.max(0, (x - TRACK_CONTROLS_WIDTH) / pixelsPerSecond));
@@ -583,9 +587,14 @@ const Timeline = React.memo(({
     const scrollLeft = tracksRef.current?.parentElement?.scrollLeft || 0;
     const startTime = Math.max(0, (e.clientX - rect.left + scrollLeft - TRACK_CONTROLS_WIDTH) / pixelsPerSecond);
     
-    // Support file drop
+    // Support file drop — 여러 파일은 onFilesAdd로 한 번에 전달해 겹침 방지
     if (e.dataTransfer.files.length > 0) {
-      Array.from(e.dataTransfer.files).forEach(file => onClipAdd?.(file, trackIndex, startTime));
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length === 1) {
+        onClipAdd?.(files[0], trackIndex, startTime);
+      } else {
+        onFilesAdd?.(files, trackIndex, startTime);
+      }
     }
     
     // Support library item drop
@@ -609,7 +618,7 @@ const Timeline = React.memo(({
         console.error('Failed to parse subtitle drop data', err);
       }
     }
-  }, [pixelsPerSecond, onClipAdd, onSubtitleAdd]);
+  }, [pixelsPerSecond, onClipAdd, onFilesAdd, onSubtitleAdd]);
 
   useEffect(() => {
     if (!lassoStart) return;
@@ -642,9 +651,10 @@ const Timeline = React.memo(({
       const yMin = Math.min(lassoStart.y, lassoCurrent.y);
       const yMax = Math.max(lassoStart.y, lassoCurrent.y);
 
-      // If just a click (or tiny drag), move playhead
+      // If just a click (or tiny drag), move playhead + 빈 영역 클릭이므로 선택 해제
       if (Math.abs(xMax - xMin) < 5 && Math.abs(yMax - yMin) < 5) {
         onPlayheadChange?.(Math.max(0, (lassoStart.x - TRACK_CONTROLS_WIDTH) / pixelsPerSecond));
+        onClipSelect?.([]);
       } else {
         const newlySelected: string[] = [];
 
@@ -894,7 +904,16 @@ const Timeline = React.memo(({
         return;
       }
       if (Math.hypot(e.clientX - pd.initialMouseX, e.clientY - pd.initialMouseY) >= CLIP_DRAG_THRESHOLD) {
-        setDraggingClip(pd);
+        // 선택된 다른 클립들의 초기 위치 수집
+        const currentClips = clipsRef.current;
+        const companions = selectedClipIdsRef.current
+          .filter(id => id !== pd.clipId)
+          .map(id => {
+            const c = currentClips.find(cl => cl.id === id);
+            return c ? { id, initialStartTime: c.startTime, trackIndex: c.trackIndex } : null;
+          })
+          .filter(Boolean) as { id: string; initialStartTime: number; trackIndex: number }[];
+        setDraggingClip({ ...pd, companions });
         pendingDragRef.current = null;
         document.body.style.cursor = 'grabbing';
         document.body.style.userSelect = 'none';
@@ -931,67 +950,106 @@ const Timeline = React.memo(({
   useEffect(() => {
     if (!draggingClip) return;
     const dragInfo = draggingClip; // capture once
+    let rafId: number | null = null;
+
     const move = (e: PointerEvent) => {
       // 마우스 버튼이 이미 놓인 상태에서 move가 오면 → 강제 종료 (고착 방지)
       if (e.pointerType === 'mouse' && e.buttons === 0) { up(); return; }
 
-      const currentClips = clipsRef.current;
-      const pps = pixelsPerSecondRef.current;
-      const clip = currentClips.find(c => c.id === dragInfo.clipId);
-      if (!clip) return;
+      const clientX = e.clientX;
+      const clientY = e.clientY;
 
-      const deltaX = e.clientX - dragInfo.initialMouseX;
-      const deltaTime = deltaX / pps;
-      let newStart = Math.max(0, dragInfo.initialStartTime + deltaTime);
+      // rAF으로 60fps 제한 — 중복 이벤트 건너뜀
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const currentClips = clipsRef.current;
+        const pps = pixelsPerSecondRef.current;
+        const clip = currentClips.find(c => c.id === dragInfo.clipId);
+        if (!clip) return;
 
-      // Track Index Calculation (Vertical Dragging) — only change track if mouse moved 20px+ vertically
-      let newTrackIndex = clip.trackIndex;
-      const deltaY = Math.abs(e.clientY - dragInfo.initialMouseY);
-      if (deltaY >= 20) {
-        const trackRows = Array.from(tracksRef.current?.children || []).filter(c => c.classList.contains('flex'));
-        const currentTrackEl = trackRows.find(row => {
-          const rect = row.getBoundingClientRect();
-          return e.clientY >= rect.top && e.clientY <= rect.bottom;
-        });
+        const deltaX = clientX - dragInfo.initialMouseX;
+        const deltaTime = deltaX / pps;
+        let newStart = Math.max(0, dragInfo.initialStartTime + deltaTime);
 
-        if (currentTrackEl) {
-          const trackIdxIdx = trackRows.indexOf(currentTrackEl);
-          const vt = visibleTracksRef.current;
-          if (trackIdxIdx !== -1 && vt[trackIdxIdx]) {
-            const potentialTrack = vt[trackIdxIdx].trackIndex;
-            const isSubtitle = (idx: number) => idx === 0 || idx === 5;
-            const isAudio = (idx: number) => idx >= 20;
-            const isVisual = (idx: number) => idx === 1 || (idx >= 10 && idx <= 14);
-            // Prevent cross-type moves: audio stays in audio, visual stays in visual
-            const origIsAudio = isAudio(clip.trackIndex);
-            const origIsVisual = isVisual(clip.trackIndex);
-            if (!isSubtitle(potentialTrack) &&
-                !(origIsAudio && !isAudio(potentialTrack)) &&
-                !(origIsVisual && !isVisual(potentialTrack))) {
-              newTrackIndex = potentialTrack;
+        // Track Index Calculation (Vertical Dragging) — only change track if mouse moved 20px+ vertically
+        let newTrackIndex = clip.trackIndex;
+        const deltaY = Math.abs(clientY - dragInfo.initialMouseY);
+        if (deltaY >= 20) {
+          const trackRows = Array.from(tracksRef.current?.children || []).filter(c => c.classList.contains('flex'));
+          const currentTrackEl = trackRows.find(row => {
+            const rect = row.getBoundingClientRect();
+            return clientY >= rect.top && clientY <= rect.bottom;
+          });
+
+          if (currentTrackEl) {
+            const trackIdxIdx = trackRows.indexOf(currentTrackEl);
+            const vt = visibleTracksRef.current;
+            if (trackIdxIdx !== -1 && vt[trackIdxIdx]) {
+              const potentialTrack = vt[trackIdxIdx].trackIndex;
+              const isSubtitle = (idx: number) => idx === 0 || idx === 5;
+              const isAudio = (idx: number) => idx >= 20;
+              const isVisual = (idx: number) => idx === 1 || (idx >= 10 && idx <= 14);
+              // Prevent cross-type moves: audio stays in audio, visual stays in visual
+              const origIsAudio = isAudio(clip.trackIndex);
+              const origIsVisual = isVisual(clip.trackIndex);
+              if (!isSubtitle(potentialTrack) &&
+                  !(origIsAudio && !isAudio(potentialTrack)) &&
+                  !(origIsVisual && !isVisual(potentialTrack))) {
+                newTrackIndex = potentialTrack;
+              }
             }
           }
         }
-      }
 
-      const snap = findSnapTimeRef.current;
-      if (snap) {
-        newStart = snap(newStart, dragInfo.clipId, newTrackIndex);
-        const endSnap = snap(newStart + clip.duration, dragInfo.clipId, newTrackIndex);
-        if (endSnap !== newStart + clip.duration) newStart = endSnap - clip.duration;
-      }
-      if (newStart < 0) newStart = 0;
+        const snap = findSnapTimeRef.current;
+        if (snap) {
+          newStart = snap(newStart, dragInfo.clipId, newTrackIndex);
+          const endSnap = snap(newStart + clip.duration, dragInfo.clipId, newTrackIndex);
+          if (endSnap !== newStart + clip.duration) newStart = endSnap - clip.duration;
+        }
+        if (newStart < 0) newStart = 0;
 
-      onClipUpdateRef.current?.(dragInfo.clipId, { startTime: newStart, trackIndex: newTrackIndex });
+        onClipUpdateRef.current?.(dragInfo.clipId, { startTime: newStart, trackIndex: newTrackIndex });
+
+        // 함께 선택된 클립들도 같은 deltaTime만큼 이동
+        if (dragInfo.companions.length > 0) {
+          const trackDeltaY = newTrackIndex - clip.trackIndex; // 수직 이동 방향
+          for (const companion of dragInfo.companions) {
+            const companionClip = currentClips.find(c => c.id === companion.id);
+            if (!companionClip || trackLocked[companionClip.trackIndex]) continue;
+            let companionStart = Math.max(0, companion.initialStartTime + deltaTime);
+            // 트랙 변경: 드래그한 클립과 같은 방향으로
+            let companionTrack = companion.trackIndex;
+            if (trackDeltaY !== 0) {
+              const targetTrack = companion.trackIndex + trackDeltaY;
+              // 같은 타입 트랙 내에서만 이동 허용
+              const isSubtitle = (idx: number) => idx === 0 || idx === 5;
+              const isAudio = (idx: number) => idx >= 20;
+              const isVisual = (idx: number) => idx === 1 || (idx >= 10 && idx <= 14);
+              const origIsAudio = isAudio(companion.trackIndex);
+              const origIsVisual = isVisual(companion.trackIndex);
+              if (!isSubtitle(targetTrack) && targetTrack >= 0 &&
+                  !(origIsAudio && !isAudio(targetTrack)) &&
+                  !(origIsVisual && !isVisual(targetTrack))) {
+                companionTrack = targetTrack;
+              }
+            }
+            onClipUpdateRef.current?.(companion.id, { startTime: companionStart, trackIndex: companionTrack });
+          }
+        }
+      });
     };
     const up = () => {
+      if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
       setDraggingClip(null);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-      onClipSelect?.([]); // 드래그 종료 시 선택 해제
+      // 선택 유지 — 빈 영역 클릭 시에만 해제 (handleTimelineMouseDown에서 처리)
       onInteractionEnd?.();
     };
     const forceEnd = () => {
+      if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
       setDraggingClip(null);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
@@ -1249,33 +1307,27 @@ const Timeline = React.memo(({
             </button>
           </Tooltip>
 
-          {/* Link/Unlink — no shortcut */}
-          <Tooltip label="Link/Unlink">
-            <div className="relative">
-              <button onClick={() => setShowLinkMenu(!showLinkMenu)} className={`${cyanBtn(showLinkMenu)} flex items-center`}>
-                <span className="material-symbols-outlined text-[18px]">link</span>
-                <span className="material-icons text-[10px] -ml-0.5">arrow_drop_down</span>
-              </button>
-              {showLinkMenu && (
-                <div className="absolute bottom-full left-0 mb-1 bg-gray-900 border border-gray-700 rounded shadow-xl z-50 py-1 w-36">
-                  <button className="w-full text-left px-3 py-1.5 text-[10px] text-white hover:bg-white/10 transition-colors flex items-center"
-                    onClick={() => {
-                      selectedClipIds.forEach(id => onClipUpdate?.(id, { linked: true }));
-                      setShowLinkMenu(false);
-                    }}>
-                    <span className="material-icons text-xs mr-2 relative top-[0.5px]">link</span>Link Audio+Video
-                  </button>
-                  <button className="w-full text-left px-3 py-1.5 text-[10px] text-white hover:bg-white/10 transition-colors flex items-center"
-                    onClick={() => {
-                      selectedClipIds.forEach(id => onClipUpdate?.(id, { linked: false }));
-                      setShowLinkMenu(false);
-                    }}>
-                    <span className="material-icons text-xs mr-2 relative top-[0.5px]">link_off</span>Unlink Audio+Video
-                  </button>
-                </div>
-              )}
-            </div>
-          </Tooltip>
+          {/* Link/Unlink — 선택된 클립이 모두 linked면 활성화, 클릭으로 토글 */}
+          {(() => {
+            const isLinked = selectedClipIds.length > 0 &&
+              selectedClipIds.every(id => clips.find(c => c.id === id)?.linked === true);
+            return (
+              <Tooltip label={isLinked ? '연결 해제 (Unlink)' : '연결 (Link Audio+Video)'}>
+                <button
+                  onClick={() => {
+                    const nextLinked = !isLinked;
+                    selectedClipIds.forEach(id => onClipUpdate?.(id, { linked: nextLinked }));
+                  }}
+                  disabled={selectedClipIds.length === 0}
+                  className={`${cyanBtn(isLinked)} flex items-center disabled:opacity-30 disabled:cursor-not-allowed`}
+                >
+                  <span className="material-symbols-outlined text-[18px]">
+                    {isLinked ? 'link' : 'link_off'}
+                  </span>
+                </button>
+              </Tooltip>
+            );
+          })()}
 
           {/* Snap — no shortcut */}
           <Tooltip label={`Snap ${snapEnabled ? 'ON' : 'OFF'}`}>
@@ -1525,21 +1577,36 @@ const Timeline = React.memo(({
             <div ref={hoverTooltip2Ref} className="hidden" />
           </div>
 
-          {/* Lasso Box */}
-          {isLassoing && lassoStart && lassoCurrent && (
-            <div
-              className="absolute z-50 pointer-events-none rounded-sm"
-              style={{
-                left: Math.min(lassoStart.x, lassoCurrent.x),
-                top: Math.min(lassoStart.y, lassoCurrent.y),
-                width: Math.abs(lassoCurrent.x - lassoStart.x),
-                height: Math.abs(lassoCurrent.y - lassoStart.y),
-                background: 'rgba(255, 165, 0, 0.2)',
-                border: '1px solid orange',
-                boxShadow: '0 0 8px rgba(255, 165, 0, 0.3), inset 0 0 12px rgba(255, 165, 0, 0.08)',
-              }}
-            />
-          )}
+          {/* Lasso Box — fixed position으로 뷰포트 기준 렌더링 (스크롤 무관하게 마우스와 정확히 일치) */}
+          {isLassoing && lassoStart && lassoCurrent && (() => {
+            const tracksRect = tracksRef.current?.getBoundingClientRect();
+            const scrollLeft = tracksRef.current?.parentElement?.scrollLeft || 0;
+            const scrollTop = tracksRef.current?.parentElement?.scrollTop || 0;
+            if (!tracksRect) return null;
+            // 콘텐츠 절대좌표 → 뷰포트 픽셀 좌표로 역변환
+            const toVpX = (cx: number) => cx - scrollLeft + tracksRect.left;
+            const toVpY = (cy: number) => cy - scrollTop + tracksRect.top;
+            const x1 = toVpX(Math.min(lassoStart.x, lassoCurrent.x));
+            const y1 = toVpY(Math.min(lassoStart.y, lassoCurrent.y));
+            const x2 = toVpX(Math.max(lassoStart.x, lassoCurrent.x));
+            const y2 = toVpY(Math.max(lassoStart.y, lassoCurrent.y));
+            return (
+              <div
+                className="pointer-events-none rounded-sm"
+                style={{
+                  position: 'fixed',
+                  left: x1,
+                  top: y1,
+                  width: x2 - x1,
+                  height: y2 - y1,
+                  zIndex: 9999,
+                  background: 'rgba(255, 255, 255, 0.08)',
+                  border: '1px solid rgba(255, 255, 255, 0.75)',
+                  boxShadow: '0 0 8px rgba(255, 255, 255, 0.15), inset 0 0 12px rgba(255, 255, 255, 0.04)',
+                }}
+              />
+            );
+          })()}
         </div>
       </div>
       {/* ... speed popup and tooltips etc remain below */}

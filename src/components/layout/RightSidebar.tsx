@@ -17,6 +17,7 @@ interface RightSidebarProps {
   selectedClip?: VideoClip | null;
   selectedClipIds?: string[];
   videoFile?: File | null;
+  videoDuration?: number;
   clips?: VideoClip[];
   onTranscriptsUpdate?: (transcripts: TranscriptItem[]) => void;
   onSubtitlesUpdate?: (subtitles: SubtitleItem[]) => void;
@@ -91,7 +92,7 @@ const TranscriptItem = React.memo(({ t, isActive, isSelected, onSelect, onEdit, 
 });
 
 const RightSidebar = React.memo(({
-  transcripts = [], subtitles = [], currentTime = 0, selectedClip = null, selectedClipIds = [], videoFile = null, clips = [],
+  transcripts = [], subtitles = [], currentTime = 0, selectedClip = null, selectedClipIds = [], videoFile = null, videoDuration, clips = [],
   onTranscriptsUpdate, onSubtitlesUpdate, onSeek, onClipUpdate, onClipsBatchUpdate, onAddSubtitleClips, onAddTextClip, onExport,
 }: RightSidebarProps) => {
   const [activeTab, setActiveTab] = useState<'details' | 'export' | 'caption'>('details');
@@ -238,7 +239,15 @@ const RightSidebar = React.memo(({
   const handleTranscriptEdit = useCallback((id: string, newText: string) => {
     const updated = transcripts.map(t => t.id === id ? { ...t, editedText: newText, isEdited: true } : t);
     onTranscriptsUpdate?.(updated);
-  }, [transcripts, onTranscriptsUpdate]);
+    // 타임라인 자막 클립도 동기화: transcript id 또는 같은 텍스트를 가진 클립 name 업데이트
+    const original = transcripts.find(t => t.id === id);
+    if (original && clips && onClipUpdate) {
+      const originalText = original.editedText || original.originalText;
+      clips
+        .filter(c => !c.url && c.name === originalText)
+        .forEach(c => onClipUpdate(c.id, { name: newText }));
+    }
+  }, [transcripts, onTranscriptsUpdate, clips, onClipUpdate]);
 
   const handleMergeWithPrevious = useCallback((id: string) => {
     const idx = transcripts.findIndex(t => t.id === id);
@@ -372,8 +381,9 @@ const RightSidebar = React.memo(({
               endTime: t.endTime,
               text: t.editedText || t.originalText,
             })),
+            duration: videoDuration,
           }
-        : undefined;
+        : { duration: videoDuration };
 
       const rawResults = await generateSubtitlesFromAudio(videoFile, 'backend-proxy', (pct, msg) => {
         setGeminiProgress(pct);
@@ -469,7 +479,7 @@ const RightSidebar = React.memo(({
       }
       setIsGeminiGenerating(false); setGeminiProgress(0); setGeminiStatus('');
     }
-  }, [videoFile, transcripts, subtitles, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges]);
+  }, [videoFile, videoDuration, transcripts, subtitles, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges]);
 
   const filteredTranscripts = React.useMemo(() => {
     if (!searchQuery) return transcripts;
@@ -537,7 +547,7 @@ const RightSidebar = React.memo(({
       const rawGeminiResults = await generateSubtitlesFromAudio(videoFile, 'backend-proxy', (pct, msg) => {
         setIntegratedStatus(`AI 연출 중: ${msg}`);
         setIntegratedProgress(50 + (pct * 0.5));
-      }, undefined, { mode: 'creative', transcriptData: transcriptForAI });
+      }, undefined, { mode: 'creative', transcriptData: transcriptForAI, duration: videoDuration });
 
       // 트림된 클립 범위에 맞게 Gemini 결과 필터링
       const mappedGemini = filterResultsToClipRanges(
@@ -626,7 +636,7 @@ const RightSidebar = React.memo(({
       setIntegratedProgress(0);
       setIntegratedStatus('');
     }
-  }, [videoFile, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges]);
+  }, [videoFile, videoDuration, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges]);
 
   // Auto Pipeline feature removed so STT does not run automatically on video load
 
@@ -928,7 +938,7 @@ const RightSidebar = React.memo(({
                   <div className="space-y-1">
                     <label className="text-[10px] text-gray-400">서체</label>
                     <select
-                      value={selectedClip?.fontFamily || 'sans-serif'}
+                      value={selectedClip?.fontFamily || 'PaperlogyExtraBold'}
                       onChange={(e) => {
                         const val = e.target.value;
                         if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
@@ -1085,6 +1095,38 @@ const RightSidebar = React.memo(({
                       }}
                       className="w-full h-1 bg-gray-700 rounded appearance-none cursor-pointer accent-primary"
                     />
+                  </div>
+
+                  {/* 줄간격 / 자간 */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-gray-400">줄간격 ({((selectedClip?.lineHeight ?? 1.3) * 10 | 0) / 10})</label>
+                      <input type="range" min="0.5" max="3.0" step="0.05"
+                        value={selectedClip?.lineHeight ?? 1.3}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
+                            const ids = applyToAllOnTrack ? clips.filter(c => clips.filter(cc => selectedClipIds.includes(cc.id)).some(s => s.trackIndex === c.trackIndex)).map(c => c.id) : selectedClipIds;
+                            onClipsBatchUpdate(ids, { lineHeight: val });
+                          } else if (selectedClip) onClipUpdate?.(selectedClip.id, { lineHeight: val });
+                        }}
+                        className="w-full h-1 bg-gray-700 rounded appearance-none cursor-pointer accent-primary"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-gray-400">자간 ({((selectedClip?.letterSpacing ?? 0) * 100 | 0) / 100}em)</label>
+                      <input type="range" min="-0.1" max="0.5" step="0.01"
+                        value={selectedClip?.letterSpacing ?? 0}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
+                            const ids = applyToAllOnTrack ? clips.filter(c => clips.filter(cc => selectedClipIds.includes(cc.id)).some(s => s.trackIndex === c.trackIndex)).map(c => c.id) : selectedClipIds;
+                            onClipsBatchUpdate(ids, { letterSpacing: val });
+                          } else if (selectedClip) onClipUpdate?.(selectedClip.id, { letterSpacing: val });
+                        }}
+                        className="w-full h-1 bg-gray-700 rounded appearance-none cursor-pointer accent-primary"
+                      />
+                    </div>
                   </div>
                 </div>
 

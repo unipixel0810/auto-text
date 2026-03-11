@@ -41,6 +41,8 @@ export interface VideoClip {
   fontWeight?: number;
   fontStyle?: 'normal' | 'italic';
   textDecoration?: 'none' | 'underline';
+  lineHeight?: number;     // 줄간격, 기본 1.3
+  letterSpacing?: number;  // 자간(em), 기본 0
   disabled?: boolean;
   /** 자막 애니메이션 설정 (trackIndex 0,5~8 자막 클립에 사용) */
   subtitleAnimationPreset?: string;   // AnimationPreset: 'none' | 'fade-in' | ...

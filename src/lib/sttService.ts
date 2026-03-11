@@ -53,14 +53,14 @@ export interface STTOptions {
 // 상수
 // ============================================
 
-/** Vercel 서버리스 함수 제한 (20MB — Next.js body 기본 파싱 한도) */
-const VERCEL_MAX_SIZE = 20 * 1024 * 1024;
+/** Vercel 서버리스 함수 payload 하드 제한 (4.5MB) — 여유 확보 위해 4MB 사용 */
+const VERCEL_MAX_SIZE = 4 * 1024 * 1024;
 
 /** Whisper API 최대 파일 크기 (25MB) */
-const WHISPER_MAX_SIZE = 24 * 1024 * 1024; // 24MB로 여유 확보
+const WHISPER_MAX_SIZE = 24 * 1024 * 1024;
 
-/** 청크 크기 — 20MB (Vercel 업로드 한도 이하) */
-const CHUNK_SIZE_BYTES = 20 * 1024 * 1024;
+/** 청크 크기 — 4MB (Vercel FUNCTION_PAYLOAD_TOO_LARGE 방지) */
+const CHUNK_SIZE_BYTES = 4 * 1024 * 1024;
 
 /** 오디오 청크 길이 (30초) */
 const CHUNK_DURATION_SECONDS = 30;
@@ -148,11 +148,9 @@ function writeString(view: DataView, offset: number, string: string) {
 // ============================================
 
 /**
- * 오디오 Blob을 청크로 분할 (시간 기반)
- */
-/**
- * 파일을 크기 기반으로 청크 분할 (메모리 효율 — 전체 디코딩 없음)
- * Whisper는 원본 비디오/오디오 파일도 처리 가능하므로 파일 슬라이스로 분할
+ * 파일을 WebAudio API로 디코딩 후 시간 기반 WAV 청크로 분할
+ * - 4MB 이하면 원본 파일 그대로 사용 (Vercel payload 한도 내)
+ * - 초과 시 AudioContext로 디코딩 → 시간 구간별 WAV 슬라이스 → 각 청크 전송
  */
 export async function splitAudioIntoChunks(
   audioBlob: Blob,
@@ -161,38 +159,58 @@ export async function splitAudioIntoChunks(
 ): Promise<{ blob: Blob; startTime: number; index: number; total: number }[]> {
   const totalSize = audioBlob.size;
 
-  // 20MB 이하면 분할 없이 그대로 사용
+  // 4MB 이하면 분할 없이 그대로 사용
   if (totalSize <= CHUNK_SIZE_BYTES) {
     return [{ blob: audioBlob, startTime: 0, index: 0, total: 1 }];
   }
 
-  onProgress?.('대용량 파일 청크 분할 중...');
+  onProgress?.('🎵 오디오 디코딩 중... (대용량 파일은 시간이 걸릴 수 있습니다)');
 
-  // 파일을 20MB 단위로 슬라이스 (메모리에 전체 올리지 않음)
+  // WebAudio API로 전체 디코딩
+  const arrayBuffer = await audioBlob.arrayBuffer();
+  const audioCtx = new AudioContext();
+  let audioBuffer: AudioBuffer;
+  try {
+    audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  } catch {
+    // 디코딩 실패 시 원본 파일 그대로 1개 청크로 시도 (Whisper가 직접 처리하도록)
+    onProgress?.('⚠️ 오디오 디코딩 실패 — 원본 파일로 시도합니다');
+    audioCtx.close();
+    return [{ blob: audioBlob, startTime: 0, index: 0, total: 1 }];
+  }
+  audioCtx.close();
+
+  const totalDuration = audioBuffer.duration;
+  const sampleRate = audioBuffer.sampleRate;
+  const numChannels = 1; // 모노로 다운믹스
+  const totalChunks = Math.ceil(totalDuration / chunkDurationSeconds);
+
+  onProgress?.(`📦 ${totalChunks}개 청크로 분할 중...`);
+
   const chunks: { blob: Blob; startTime: number; index: number; total: number }[] = [];
-  let offset = 0;
-  let chunkIndex = 0;
-  const totalChunks = Math.ceil(totalSize / CHUNK_SIZE_BYTES);
 
-  // 파일 1MB당 약 1분 오디오로 추정 (mp4 기준 ~1Mbps)
-  const estimatedTotalSeconds = (totalSize / (1024 * 1024)) * 60;
-  const secondsPerByte = estimatedTotalSeconds / totalSize;
+  for (let i = 0; i < totalChunks; i++) {
+    const chunkStart = i * chunkDurationSeconds;
+    const chunkEnd = Math.min(chunkStart + chunkDurationSeconds, totalDuration);
+    const chunkDur = chunkEnd - chunkStart;
+    const startSample = Math.floor(chunkStart * sampleRate);
+    const endSample = Math.floor(chunkEnd * sampleRate);
+    const numSamples = endSample - startSample;
 
-  while (offset < totalSize) {
-    const chunkSize = Math.min(CHUNK_SIZE_BYTES, totalSize - offset);
-    const chunkBlob = audioBlob.slice(offset, offset + chunkSize);
-    const estimatedStartTime = offset * secondsPerByte;
-    chunks.push({
-      blob: chunkBlob,
-      startTime: estimatedStartTime,
-      index: chunkIndex,
-      total: totalChunks,
-    });
-    offset += chunkSize;
-    chunkIndex++;
+    // 오프라인 컨텍스트로 구간 추출
+    const offlineCtx = new OfflineAudioContext(numChannels, numSamples, sampleRate);
+    const bufferSource = offlineCtx.createBufferSource();
+    bufferSource.buffer = audioBuffer;
+    bufferSource.connect(offlineCtx.destination);
+    bufferSource.start(0, chunkStart, chunkDur);
+    const renderedBuffer = await offlineCtx.startRendering();
+
+    // WAV 인코딩
+    const wavBlob = audioBufferToWav(renderedBuffer);
+    chunks.push({ blob: wavBlob, startTime: chunkStart, index: i, total: totalChunks });
   }
 
-  onProgress?.(`총 ${totalChunks}개 청크로 분할 완료`);
+  onProgress?.(`✅ ${totalChunks}개 WAV 청크 준비 완료`);
   return chunks;
 }
 
@@ -230,16 +248,39 @@ export async function transcribeWithWhisper(
     if (response.status === 402) {
       throw new Error('PAYMENT_REQUIRED');
     }
-    const error = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(`음성 인식 오류: ${error.error || response.statusText}`);
+    // 상태 코드별 친절한 메시지
+    const statusMessages: Record<number, string> = {
+      413: '파일 크기가 너무 큽니다 (20MB 이하로 시도해주세요)',
+      504: '서버 응답 시간 초과 — 영상을 짧게 잘라 다시 시도해주세요',
+      503: '서버가 일시적으로 과부하 상태입니다. 잠시 후 다시 시도해주세요',
+      500: '서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해주세요',
+    };
+    const bodyText = await response.text().catch(() => '');
+    console.error('[STT] 응답 오류:', response.status, bodyText);
+    let detail = '';
+    try {
+      const parsed = JSON.parse(bodyText);
+      detail = parsed.error || parsed.message || '';
+    } catch {
+      detail = bodyText;
+    }
+    const fallback = statusMessages[response.status] || `HTTP ${response.status} 오류`;
+    throw new Error(`음성 인식 오류: ${detail || fallback}`);
   }
 
-  const data = await response.json();
+  const bodyText2 = await response.text();
+  console.log('[STT] 응답 본문 (앞 200자):', bodyText2.slice(0, 200));
+  let data: any;
+  try {
+    data = JSON.parse(bodyText2);
+  } catch {
+    throw new Error(`음성 인식 오류: 서버 응답을 파싱할 수 없습니다 (${bodyText2.slice(0, 100)})`);
+  }
   if (data.error) {
-    if (response.status === 402 || data.error.includes('Payment Required')) {
+    if (data.error.includes('Payment Required')) {
       throw new Error('PAYMENT_REQUIRED');
     }
-    throw new Error(data.error);
+    throw new Error(`음성 인식 오류: ${data.error}`);
   }
 
   return data;

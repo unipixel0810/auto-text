@@ -730,6 +730,26 @@ export default function Home() {
     }
   }, [libraryItems, currentVideoUrl]);
 
+  // 여러 파일을 타임라인에 드롭할 때 겹치지 않도록 순차 배치
+  const handleFilesDropToTimeline = useCallback(async (files: File[], trackIndex: number, startTime: number) => {
+    // 각 파일의 duration을 순차적으로 읽기
+    let cursor = startTime;
+    for (const file of files) {
+      const isImage = file.type.startsWith('image/');
+      const url = URL.createObjectURL(file);
+      const duration = isImage ? 10 : await new Promise<number>(resolve => {
+        const el = document.createElement('video');
+        el.preload = 'metadata';
+        el.src = url;
+        el.onloadedmetadata = () => { resolve(el.duration || 10); el.src = ''; };
+        el.onerror = () => { resolve(10); el.src = ''; };
+      });
+      // 각 파일을 개별로 handleClipAdd에 전달 (cursor로 순차 배치)
+      handleClipAdd(file, trackIndex, cursor);
+      cursor += duration;
+    }
+  }, [handleClipAdd]);
+
   // Video add handler (now adds to Media Library)
   const handleVideoAdd = useCallback((file: File): string => {
     const id = genId();
@@ -777,18 +797,14 @@ export default function Home() {
    * - handleVideoAdd(라이브러리+상태) + handleClipAdd(타임라인) 분리 호출로 thumbnails/waveform 포함
    */
   const handlePlayerFileDrop = useCallback(async (files: File[]) => {
-    // 현재 main 트랙 끝 시간 (스냅샷) — clipsRef로 최신값 읽기
-    let insertAt = clipsRef.current
-      .filter(c => c.trackIndex === 1)
-      .reduce((maxEnd, c) => Math.max(maxEnd, c.startTime + c.duration), 0);
-
+    // 1. 모든 파일의 duration을 먼저 순차적으로 읽기
+    type FileInfo = { file: File; url: string; type: 'video' | 'audio' | 'image'; duration: number; libId: string; clipId: string; };
+    const infos: FileInfo[] = [];
     for (const file of files) {
       const isAudio = file.type.startsWith('audio/') || /\.(m4a|aac|wav)$/i.test(file.name);
       const isImage = file.type.startsWith('image/');
       const type: 'video' | 'audio' | 'image' = isImage ? 'image' : isAudio ? 'audio' : 'video';
       const url = URL.createObjectURL(file);
-
-      // duration을 먼저 읽기
       const duration = isImage ? 10 : await new Promise<number>(resolve => {
         const el = document.createElement('video');
         el.preload = 'metadata';
@@ -796,29 +812,38 @@ export default function Home() {
         el.onloadedmetadata = () => resolve(el.duration || 10);
         el.onerror = () => resolve(10);
       });
+      infos.push({ file, url, type, duration, libId: genId(), clipId: genId() });
+    }
 
-      const libId = genId();
-      const clipId = genId();
-      const capturedInsertAt = insertAt;
+    // 2. 현재 main 트랙 끝 시간 (모든 duration 수집 후 한 번만 읽기)
+    let insertAt = clipsRef.current
+      .filter(c => c.trackIndex === 1)
+      .reduce((maxEnd, c) => Math.max(maxEnd, c.startTime + c.duration), 0);
 
-      // 1. 라이브러리에 추가
-      setLibraryItems(prev => [...prev, { id: libId, name: file.name, url, type, duration, file }]);
+    // 3. 라이브러리 일괄 추가
+    setLibraryItems(prev => [...prev, ...infos.map(({ libId, file, url, type, duration }) =>
+      ({ id: libId, name: file.name, url, type, duration, file })
+    )]);
 
-      // 2. 첫 번째 비디오만 currentVideoUrl 세팅 — ref로 최신값 읽어 stale closure 방지
-      if (type === 'video' && !currentVideoUrlRef.current) {
-        currentVideoUrlRef.current = url; // 즉시 업데이트해서 다음 파일이 덮어쓰지 않도록
-        setCurrentVideoUrl(url);
-        setCurrentVideoFile(file);
-        setActiveFileName(file.name);
-        setActiveFileDuration(duration);
-      }
+    // 4. 첫 번째 비디오만 currentVideoUrl 세팅
+    const firstVideo = infos.find(i => i.type === 'video');
+    if (firstVideo && !currentVideoUrlRef.current) {
+      currentVideoUrlRef.current = firstVideo.url;
+      setCurrentVideoUrl(firstVideo.url);
+      setCurrentVideoFile(firstVideo.file);
+      setActiveFileName(firstVideo.file.name);
+      setActiveFileDuration(firstVideo.duration);
+    }
 
-      // 3. 타임라인에 직접 추가
-      setClipsSynced(prev => [...prev, {
+    // 5. 타임라인에 모든 클립 한 번에 추가 (겹침 방지)
+    const newClips = infos.map(({ clipId, file, url, duration }) => {
+      const startTime = insertAt;
+      insertAt += duration;
+      return {
         id: clipId,
         name: file.name,
         url,
-        startTime: capturedInsertAt,
+        startTime,
         duration,
         originalDuration: duration,
         trackIndex: 1,
@@ -831,10 +856,9 @@ export default function Home() {
         speed: 1,
         linked: true,
         volume: 100,
-      }]);
-
-      insertAt += duration;
-    }
+      };
+    });
+    setClipsSynced(prev => [...prev, ...newClips]);
 
     setImportToast(`${files.length}개 파일 타임라인에 추가됨`);
     setTimeout(() => setImportToast(null), 3000);
@@ -1086,42 +1110,49 @@ export default function Home() {
     // Sort items by startTime to ensure orderly placement
     const sortedItems = [...items].sort((a, b) => a.startTime - b.startTime);
 
-    // ── 대본(0) / AI자막(5~8) 균등 분포 로직 ──────────────────────────────
-    // 같은 트랙 내에서 겹침 방지 + 너무 긴 공백(>5s)이 있으면 자막을 당겨서 분산
+    const MIN_GAP = 0.05; // 자막 사이 최소 간격 (50ms)
+
+    // 1단계: 각 자막의 startTime 결정 (겹침 방지)
+    const resolved: { startTime: number; duration: number; item: TranscriptItem }[] = [];
     let lastEndTime = 0;
-    const GAP_THRESHOLD = 5; // 5초 이상 빈 구간은 자막을 앞으로 당김
-    const MIN_GAP = 0.1;     // 자막 사이 최소 간격
 
-    const newClips: VideoClip[] = sortedItems.map((item) => {
+    for (let i = 0; i < sortedItems.length; i++) {
+      const item = sortedItems[i];
       let startTime = item.startTime;
-      let duration = Math.max(0.5, item.endTime - item.startTime);
+      const rawDuration = Math.max(0.5, item.endTime - item.startTime);
 
-      // 1) 이전 자막과 겹치면 밀어냄
+      // 이전 자막과 겹치면 밀어냄
       if (startTime < lastEndTime + MIN_GAP) {
         startTime = lastEndTime + MIN_GAP;
       }
 
-      // 2) 너무 큰 공백(GAP_THRESHOLD 초 이상)이 생기면 원래 시간 유지
-      //    (AI 자막은 의도적으로 빈 공간을 채우므로 당기지 않음)
-      // → 대본(trackIndex=0)은 STT 타임코드를 최대한 존중
+      resolved.push({ startTime, duration: rawDuration, item });
+      lastEndTime = startTime + rawDuration;
+    }
 
-      // 3) 최대 지속 시간 cap: 6초 (너무 긴 자막은 읽기 어려움)
-      if (duration > 6) duration = 6;
+    // 2단계: 다음 자막 startTime까지 duration 늘려서 빈 공간 채우기
+    const newClips: VideoClip[] = resolved.map(({ startTime, duration, item }, i) => {
+      let finalDuration = duration;
+      if (i + 1 < resolved.length) {
+        const nextStart = resolved[i + 1].startTime;
+        // 다음 자막 시작 직전까지 늘림 (MIN_GAP 여유)
+        const stretched = nextStart - startTime - MIN_GAP;
+        if (stretched > finalDuration) {
+          finalDuration = stretched;
+        }
+      }
 
-      const clip: VideoClip = {
+      return {
         id: genId(),
         name: item.editedText || item.originalText,
-        url: '', // Text clips have no URL
-        startTime: startTime,
-        duration: duration,
-        trackIndex: trackIndex, // 0: 대본, 5~8: AI자막
+        url: '',
+        startTime,
+        duration: finalDuration,
+        trackIndex,
         scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: false,
         fontFamily: 'PaperlogyExtraBold, sans-serif', fontSize: 47,
         color: item.color || '#FFFFFF', strokeColor: item.strokeColor || '#000000', strokeWidth: 2, fontWeight: 800, shadowColor: 'rgba(0,0,0,0.8)', shadowBlur: 4, shadowOffsetX: 2, shadowOffsetY: 2,
       };
-
-      lastEndTime = startTime + duration;
-      return clip;
     });
 
     if (replaceTrack) {
@@ -2097,6 +2128,7 @@ export default function Home() {
               selectedClip={selectedClipIds.length === 1 ? selectedClip : null}
               selectedClipIds={selectedClipIds}
               videoFile={currentVideoFile}
+              videoDuration={activeFileDuration}
               clips={clips}
               onTranscriptsUpdate={handleTranscriptsUpdate}
               onSubtitlesUpdate={handleSubtitlesUpdate}
@@ -2144,6 +2176,7 @@ export default function Home() {
             onPlayheadDragChange={setIsDraggingPlayhead}
             onHoverTimeChange={setHoverTimeSynced}
             onClipAdd={handleClipAdd}
+            onFilesAdd={handleFilesDropToTimeline}
             onClipUpdate={handleClipUpdate}
             onClipSelect={handleClipSelect}
             onClipDelete={handleClipDelete}

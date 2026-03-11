@@ -22,6 +22,8 @@ export interface SubtitlePreset {
 
 // Available font families
 export const FONT_FAMILIES = [
+  { value: 'PaperlogyExtraBold', label: '페이퍼로지 8 (기본)' },
+  { value: 'PaperlogyBold', label: '페이퍼로지 7 (Bold)' },
   { value: 'sans-serif', label: '고딕 (Sans-serif)' },
   { value: 'serif', label: '명조 (Serif)' },
   { value: '"Noto Sans KR", sans-serif', label: 'Noto Sans KR' },

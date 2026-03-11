@@ -607,6 +607,68 @@ export async function getABExperimentResults(): Promise<any[] | { error: string 
 }
 
 /**
+ * Rage Click 목록 집계 (같은 좌표 ±30px 반경으로 그루핑)
+ */
+export async function getRageClicks(params: {
+  page_url?: string;
+  days?: number;
+}): Promise<import('./types').RageClickEntry[]> {
+  const events = await queryEvents({ ...params, event_type: 'rage_click', limit: 5000 });
+  const groups: import('./types').RageClickEntry[] = [];
+
+  for (const e of events) {
+    if (e.x_pos == null || e.y_pos == null) continue;
+    const existing = groups.find(
+      g => Math.abs(g.x_pos - e.x_pos!) < 30 && Math.abs(g.y_pos - e.y_pos!) < 30
+        && g.page_url === e.page_url
+    );
+    if (existing) {
+      existing.count++;
+      if (e.created_at && e.created_at > existing.last_occurred) {
+        existing.last_occurred = e.created_at;
+      }
+    } else {
+      groups.push({
+        x_pos: e.x_pos,
+        y_pos: e.y_pos,
+        element_info: [e.element_tag, e.element_text?.slice(0, 30)].filter(Boolean).join(' '),
+        page_url: e.page_url,
+        count: 1,
+        last_occurred: e.created_at || '',
+      });
+    }
+  }
+
+  return groups.sort((a, b) => b.count - a.count).slice(0, 50);
+}
+
+/**
+ * 스크롤 깊이 분포 (25/50/75/100% 각 도달 세션 수)
+ */
+export async function getScrollDepthStats(params: {
+  page_url?: string;
+  days?: number;
+}): Promise<import('./types').ScrollDepthData[]> {
+  const events = await queryEvents({ ...params, event_type: 'scroll', limit: 10000 });
+
+  // 세션별 최대 스크롤 깊이 집계
+  const sessionDepths = new Map<string, number>();
+  for (const e of events) {
+    const cur = sessionDepths.get(e.session_id) ?? 0;
+    if ((e.scroll_depth ?? 0) > cur) {
+      sessionDepths.set(e.session_id, e.scroll_depth ?? 0);
+    }
+  }
+
+  const total = sessionDepths.size || 1;
+
+  return [25, 50, 75, 100].map(depth => {
+    const count = [...sessionDepths.values()].filter(d => d >= depth).length;
+    return { depth, count, percentage: Math.round((count / total) * 100) };
+  });
+}
+
+/**
  * Simple Chi-squared test for 2x2 table
  */
 function calculateChiSquared(n1: number, x1: number, n2: number, x2: number): number {

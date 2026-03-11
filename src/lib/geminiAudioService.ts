@@ -1,6 +1,9 @@
 /**
  * Gemini API - Audio-based Korean subtitle generation
  * Extracts audio from video, sends to Gemini 2.0 Flash for subtitle generation
+ *
+ * 대용량 파일 지원: 오디오를 90초 WAV 청크로 분할 후 순차 전송
+ * Vercel payload 한도 4.5MB → 90s × 16kHz × 16bit mono ≈ 2.88MB raw → base64 ≈ 3.84MB ✅
  */
 
 export interface GeminiSubtitleResult {
@@ -16,54 +19,32 @@ export interface TranscriptDataForAI {
   text: string;
 }
 
-/**
- * Extract audio from a video file as base64
- */
-async function extractAudioBase64(videoFile: File): Promise<{ base64: string; mimeType: string }> {
-  return new Promise((resolve, reject) => {
-    const video = document.createElement('video');
-    video.preload = 'metadata';
-    video.src = URL.createObjectURL(videoFile);
+/** 청크 단위: 90초 */
+const CHUNK_DURATION_SECONDS = 90;
 
-    video.onloadedmetadata = async () => {
-      try {
-        const audioContext = new AudioContext();
-        const arrayBuffer = await videoFile.arrayBuffer();
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+/** WAV 다운샘플 레이트: 16kHz (90s → ~2.88MB raw) */
+const TARGET_SAMPLE_RATE = 16000;
 
-        // Encode to WAV
-        const wavBuffer = audioBufferToWav(audioBuffer);
-        const base64 = arrayBufferToBase64(wavBuffer);
+// ============================================
+// WAV 유틸리티
+// ============================================
 
-        URL.revokeObjectURL(video.src);
-        audioContext.close();
-        resolve({ base64, mimeType: 'audio/wav' });
-      } catch (err) {
-        // Fallback: send the raw file as-is
-        const arrayBuffer = await videoFile.arrayBuffer();
-        const base64 = arrayBufferToBase64(arrayBuffer);
-        URL.revokeObjectURL(video.src);
-        resolve({ base64, mimeType: videoFile.type || 'video/mp4' });
-      }
-    };
-
-    video.onerror = () => {
-      URL.revokeObjectURL(video.src);
-      // Fallback: send raw file
-      videoFile.arrayBuffer().then(buf => {
-        resolve({ base64: arrayBufferToBase64(buf), mimeType: videoFile.type || 'video/mp4' });
-      }).catch(reject);
-    };
-  });
+function writeString(view: DataView, offset: number, str: string) {
+  for (let i = 0; i < str.length; i++) {
+    view.setUint8(offset + i, str.charCodeAt(i));
+  }
 }
 
+/**
+ * AudioBuffer → PCM 16bit mono WAV ArrayBuffer
+ * sampleRate를 TARGET_SAMPLE_RATE로 다운샘플
+ */
 function audioBufferToWav(buffer: AudioBuffer): ArrayBuffer {
   const numChannels = 1; // mono
-  const sampleRate = Math.min(buffer.sampleRate, 16000); // downsample for smaller size
+  const sampleRate = Math.min(buffer.sampleRate, TARGET_SAMPLE_RATE);
   const format = 1; // PCM
   const bitsPerSample = 16;
 
-  // Get mono channel data
   const channelData = buffer.getChannelData(0);
   const ratio = buffer.sampleRate / sampleRate;
   const newLength = Math.floor(channelData.length / ratio);
@@ -81,10 +62,9 @@ function audioBufferToWav(buffer: AudioBuffer): ArrayBuffer {
   const headerSize = 44;
   const totalSize = headerSize + dataSize;
 
-  const buffer2 = new ArrayBuffer(totalSize);
-  const view = new DataView(buffer2);
+  const wavBuf = new ArrayBuffer(totalSize);
+  const view = new DataView(wavBuf);
 
-  // WAV header
   writeString(view, 0, 'RIFF');
   view.setUint32(4, totalSize - 8, true);
   writeString(view, 8, 'WAVE');
@@ -99,20 +79,13 @@ function audioBufferToWav(buffer: AudioBuffer): ArrayBuffer {
   writeString(view, 36, 'data');
   view.setUint32(40, dataSize, true);
 
-  // Write samples
   let offset = 44;
   for (let i = 0; i < samples.length; i++) {
     view.setInt16(offset, samples[i], true);
     offset += 2;
   }
 
-  return buffer2;
-}
-
-function writeString(view: DataView, offset: number, str: string) {
-  for (let i = 0; i < str.length; i++) {
-    view.setUint8(offset + i, str.charCodeAt(i));
-  }
+  return wavBuf;
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -126,46 +99,144 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
+// ============================================
+// 오디오 청크 분할
+// ============================================
+
+interface AudioChunk {
+  base64: string;
+  mimeType: string;
+  startTime: number;
+  endTime: number;
+}
+
 /**
- * Generate Korean subtitles from video audio using Gemini API
+ * 비디오 파일의 오디오를 CHUNK_DURATION_SECONDS 단위 WAV 청크 배열로 추출
+ * 각 청크는 base64 인코딩 + startTime/endTime 포함
  */
-export async function generateSubtitlesFromAudio(
+async function extractAudioChunks(
   videoFile: File,
-  _apiKey: string, // No longer used directly here
-  onProgress?: (percent: number, message: string) => void,
-  signal?: AbortSignal,
-  options?: { mode?: 'default' | 'creative'; transcriptData?: TranscriptDataForAI[] },
+  onProgress?: (percent: number, message: string) => void
+): Promise<{ chunks: AudioChunk[]; totalDuration: number }> {
+  // 1. 전체 오디오 디코딩
+  onProgress?.(5, '오디오 디코딩 중...');
+  const arrayBuffer = await videoFile.arrayBuffer();
+
+  let audioBuffer: AudioBuffer;
+  let totalDuration: number;
+
+  try {
+    const audioContext = new AudioContext();
+    try {
+      audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      totalDuration = audioBuffer.duration;
+    } finally {
+      audioContext.close();
+    }
+  } catch (decodeErr) {
+    // 디코딩 실패 → 원본 파일을 단일 청크로 fallback
+    console.warn('[Gemini] AudioContext 디코딩 실패, 원본 파일로 fallback:', decodeErr);
+    const base64 = arrayBufferToBase64(arrayBuffer);
+    return {
+      chunks: [{
+        base64,
+        mimeType: videoFile.type || 'video/mp4',
+        startTime: 0,
+        endTime: 60,
+      }],
+      totalDuration: 60,
+    };
+  }
+
+  const totalChunks = Math.ceil(totalDuration / CHUNK_DURATION_SECONDS);
+  const sampleRate = audioBuffer.sampleRate;
+
+  onProgress?.(10, `${totalChunks}개 청크로 분할 중...`);
+
+  const chunks: AudioChunk[] = [];
+
+  for (let i = 0; i < totalChunks; i++) {
+    const chunkStart = i * CHUNK_DURATION_SECONDS;
+    const chunkEnd = Math.min(chunkStart + CHUNK_DURATION_SECONDS, totalDuration);
+    const chunkDur = chunkEnd - chunkStart;
+
+    const startSample = Math.floor(chunkStart * sampleRate);
+    const endSample = Math.floor(chunkEnd * sampleRate);
+    const numSamples = endSample - startSample;
+
+    // OfflineAudioContext로 구간 렌더링
+    const offlineCtx = new OfflineAudioContext(1, numSamples, sampleRate);
+    const bufferSource = offlineCtx.createBufferSource();
+    bufferSource.buffer = audioBuffer;
+    bufferSource.connect(offlineCtx.destination);
+    bufferSource.start(0, chunkStart, chunkDur);
+    const rendered = await offlineCtx.startRendering();
+
+    // WAV 인코딩 (16kHz 다운샘플 포함)
+    const wavBuf = audioBufferToWav(rendered);
+    const base64 = arrayBufferToBase64(wavBuf);
+
+    chunks.push({
+      base64,
+      mimeType: 'audio/wav',
+      startTime: chunkStart,
+      endTime: chunkEnd,
+    });
+
+    // 분할 진행률: 10% ~ 25%
+    const splitPct = 10 + Math.round(((i + 1) / totalChunks) * 15);
+    onProgress?.(splitPct, `청크 ${i + 1}/${totalChunks} 준비 완료`);
+  }
+
+  return { chunks, totalDuration };
+}
+
+// ============================================
+// Gemini API 호출 (단일 청크)
+// ============================================
+
+async function callGeminiForChunk(
+  chunk: AudioChunk,
+  totalDuration: number,
+  mode: 'default' | 'creative',
+  transcriptData: TranscriptDataForAI[] | undefined,
+  signal?: AbortSignal
 ): Promise<GeminiSubtitleResult[]> {
-  onProgress?.(5, '오디오 추출 중...');
+  const chunkDuration = chunk.endTime - chunk.startTime;
 
-  const { base64, mimeType } = await extractAudioBase64(videoFile);
-
-  // Approximate duration. In a real app we'd get this from the video element metadata.
-  const duration = 60;
-
-  onProgress?.(30, '서버로 전송 중...');
+  // creative 모드에서는 해당 청크 구간의 transcriptData만 필터링
+  let filteredTranscript = transcriptData;
+  if (transcriptData && mode === 'creative') {
+    filteredTranscript = transcriptData.filter(
+      t => t.endTime > chunk.startTime && t.startTime < chunk.endTime
+    ).map(t => ({
+      ...t,
+      startTime: t.startTime - chunk.startTime,
+      endTime: t.endTime - chunk.startTime,
+    }));
+  }
 
   const response = await fetch('/api/ai/gemini', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      base64Audio: base64,
-      mimeType,
-      duration,
-      mode: options?.mode || 'default',
-      transcriptData: options?.transcriptData,
+      base64Audio: chunk.base64,
+      mimeType: chunk.mimeType,
+      duration: chunkDuration,
+      chunkStartTime: chunk.startTime,
+      totalDuration,
+      mode,
+      transcriptData: filteredTranscript,
     }),
     signal,
   });
-
-  onProgress?.(70, '응답 처리 중...');
 
   if (!response.ok) {
     if (response.status === 402) {
       throw new Error('PAYMENT_REQUIRED');
     }
     const err = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(err?.error || 'Gemini API 호출 실패.');
+    throw new Error(err?.error || `Gemini API 호출 실패 (${response.status})`);
   }
 
   const data = await response.json();
@@ -177,7 +248,7 @@ export async function generateSubtitlesFromAudio(
     throw new Error(data.error);
   }
 
-  // Normalize: creative mode returns {start, end, type} instead of {start_time, end_time, style_type}
+  // route.ts에서 이미 chunkStartTime 오프셋을 적용한 타임스탬프가 반환됨
   const subtitles: GeminiSubtitleResult[] = (data as any[]).map((item: any) => ({
     start_time: item.start_time ?? item.start ?? 0,
     end_time: item.end_time ?? item.end ?? 0,
@@ -185,7 +256,69 @@ export async function generateSubtitlesFromAudio(
     style_type: item.style_type ?? item.type ?? '상황',
   }));
 
+  return subtitles;
+}
+
+// ============================================
+// 메인 함수
+// ============================================
+
+/**
+ * Generate Korean subtitles from video audio using Gemini API
+ * 10분+ 영상 지원: 90초 청크로 분할 → 순차 호출 → 타임스탬프 병합
+ */
+export async function generateSubtitlesFromAudio(
+  videoFile: File,
+  _apiKey: string, // No longer used directly here
+  onProgress?: (percent: number, message: string) => void,
+  signal?: AbortSignal,
+  options?: { mode?: 'default' | 'creative'; transcriptData?: TranscriptDataForAI[]; duration?: number },
+): Promise<GeminiSubtitleResult[]> {
+
+  // 1. 오디오 청크 추출
+  const { chunks, totalDuration } = await extractAudioChunks(videoFile, onProgress);
+
+  const mode = options?.mode || 'default';
+  const transcriptData = options?.transcriptData;
+
+  const allResults: GeminiSubtitleResult[] = [];
+  const totalChunks = chunks.length;
+
+  // 2. 각 청크 순차 처리
+  for (let i = 0; i < totalChunks; i++) {
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    const chunk = chunks[i];
+    // 진행률: 25% ~ 90% 구간을 청크 수로 균등 분배
+    const pctStart = 25 + Math.round((i / totalChunks) * 65);
+    const pctEnd = 25 + Math.round(((i + 1) / totalChunks) * 65);
+
+    onProgress?.(
+      pctStart,
+      totalChunks === 1
+        ? '서버로 전송 중...'
+        : `구간 ${i + 1}/${totalChunks} 처리 중... (${Math.round(chunk.startTime / 60)}분 ~ ${Math.round(chunk.endTime / 60)}분)`
+    );
+
+    const chunkResults = await callGeminiForChunk(
+      chunk,
+      totalDuration,
+      mode,
+      transcriptData,
+      signal
+    );
+
+    allResults.push(...chunkResults);
+
+    onProgress?.(pctEnd, `구간 ${i + 1}/${totalChunks} 완료`);
+  }
+
+  // 3. 시간순 정렬
+  allResults.sort((a, b) => a.start_time - b.start_time);
+
   onProgress?.(100, '자막 생성 완료!');
 
-  return subtitles;
+  return allResults;
 }

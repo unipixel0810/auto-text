@@ -443,7 +443,7 @@ const SubtitleOverlay = React.memo(({
           <div
             key={clip.id}
             data-subtitle-box
-            className={`absolute left-1/2 -translate-x-1/2 bottom-[12%] z-[110] max-w-[80%] text-center transition-none select-none${animClass ? ` ${animClass}` : ''}`}
+            className={`absolute left-1/2 -translate-x-1/2 bottom-[6%] z-[110] max-w-[80%] text-center transition-none select-none${animClass ? ` ${animClass}` : ''}`}
             style={{
               transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
               left: '50%',
@@ -540,7 +540,8 @@ const SubtitleOverlay = React.memo(({
                   fontFamily: clip.fontFamily || 'PaperlogyExtraBold, sans-serif',
                   fontWeight: clip.fontWeight || 800,
                   fontSize: `${Math.round((clip.fontSize || 47) * aspectScale)}px`,
-                  lineHeight: 1.3,
+                  lineHeight: clip.lineHeight ?? 1.3,
+                  letterSpacing: clip.letterSpacing !== undefined ? `${clip.letterSpacing}em` : undefined,
                   whiteSpace: 'pre-wrap',
                   textShadow: clip.glowColor
                     ? `0 0 ${clip.shadowBlur || 0}px ${clip.glowColor}, 0 0 ${(clip.shadowBlur || 0) * 2}px ${clip.glowColor}`
@@ -595,6 +596,125 @@ interface PlayerProps {
   isDraggingPlayhead?: boolean;
 }
 
+// Safe Zone definitions for vertical (9:16) content
+type SafeZonePlatform = 'tiktok' | 'instagram' | 'youtube';
+
+const SAFE_ZONE_CONFIG: Record<SafeZonePlatform, {
+  label: string;
+  color: string;
+  icon: string;
+  // % from edges: top, bottom, left, right
+  top: number; bottom: number; left: number; right: number;
+}> = {
+  tiktok: {
+    label: 'TikTok',
+    color: '#69C9D0',
+    icon: 'T',
+    top: 10,    // 상단 UI (프로필, 제목)
+    bottom: 20, // 하단 UI (댓글, 버튼)
+    left: 5,
+    right: 20,  // 오른쪽 버튼
+  },
+  instagram: {
+    label: 'Instagram',
+    color: '#E1306C',
+    icon: 'I',
+    top: 12,
+    bottom: 18,
+    left: 5,
+    right: 5,
+  },
+  youtube: {
+    label: 'YouTube',
+    color: '#FF0000',
+    icon: 'Y',
+    top: 8,
+    bottom: 22, // 하단 UI 버튼
+    left: 5,
+    right: 12,  // 우측 액션 버튼
+  },
+};
+
+const SafeZoneOverlay = React.memo(({ activePlatforms }: { activePlatforms: Set<SafeZonePlatform> }) => {
+  if (activePlatforms.size === 0) return null;
+  return (
+    <div className="absolute inset-0 pointer-events-none z-[115]">
+      {Array.from(activePlatforms).map((platform) => {
+        const cfg = SAFE_ZONE_CONFIG[platform];
+        return (
+          <React.Fragment key={platform}>
+            {/* Safe zone border */}
+            <div
+              className="absolute"
+              style={{
+                top: `${cfg.top}%`,
+                bottom: `${cfg.bottom}%`,
+                left: `${cfg.left}%`,
+                right: `${cfg.right}%`,
+                border: `1.5px dashed ${cfg.color}`,
+                borderRadius: 4,
+                opacity: 0.7,
+              }}
+            />
+            {/* Platform label */}
+            <div
+              className="absolute text-[9px] font-bold px-1 py-0.5 rounded"
+              style={{
+                top: `${cfg.top}%`,
+                left: `${cfg.left}%`,
+                transform: 'translateY(-100%) translateY(-2px)',
+                color: cfg.color,
+                background: 'rgba(0,0,0,0.55)',
+                lineHeight: 1.2,
+              }}
+            >
+              {cfg.label}
+            </div>
+            {/* Top unsafe zone */}
+            <div
+              className="absolute left-0 right-0 top-0"
+              style={{
+                height: `${cfg.top}%`,
+                background: `${cfg.color}18`,
+                borderBottom: `1px solid ${cfg.color}40`,
+              }}
+            />
+            {/* Bottom unsafe zone */}
+            <div
+              className="absolute left-0 right-0 bottom-0"
+              style={{
+                height: `${cfg.bottom}%`,
+                background: `${cfg.color}18`,
+                borderTop: `1px solid ${cfg.color}40`,
+              }}
+            />
+            {/* Right unsafe zone */}
+            <div
+              className="absolute top-0 bottom-0 right-0"
+              style={{
+                width: `${cfg.right}%`,
+                background: `${cfg.color}12`,
+                borderLeft: `1px solid ${cfg.color}30`,
+              }}
+            />
+            {/* Left unsafe zone */}
+            {cfg.left > 0 && (
+              <div
+                className="absolute top-0 bottom-0 left-0"
+                style={{
+                  width: `${cfg.left}%`,
+                  background: `${cfg.color}12`,
+                  borderRight: `1px solid ${cfg.color}30`,
+                }}
+              />
+            )}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+});
+
 const Player = React.memo(({
   videoUrl,
   currentTime: externalCurrentTime,
@@ -624,6 +744,8 @@ const Player = React.memo(({
   const [internalCurrentTime, setInternalCurrentTime] = useState(0);
   const [totalTime, setTotalTime] = useState(0);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; clipIds: string[] } | null>(null);
+  const [activeSafeZones, setActiveSafeZones] = useState<Set<SafeZonePlatform>>(new Set());
+  const [showSafeZoneMenu, setShowSafeZoneMenu] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerAreaRef = useRef<HTMLDivElement>(null);
@@ -1108,6 +1230,10 @@ const Player = React.memo(({
             onInteractionEnd={onInteractionEnd}
           />
 
+          {/* Safe Zone Overlay */}
+          {canvasAspectRatio === '9:16' && activeSafeZones.size > 0 && (
+            <SafeZoneOverlay activePlatforms={activeSafeZones} />
+          )}
 
           {isPresetDragOver && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none z-30">
@@ -1265,6 +1391,61 @@ const Player = React.memo(({
               </div>
             )}
           </div>
+          <div className="w-px h-3 bg-gray-700" />
+          {/* Safe Zone Toggle — 9:16 세로 비율일 때만 표시 */}
+          {canvasAspectRatio === '9:16' && (
+            <div className="relative">
+              <button
+                onClick={() => setShowSafeZoneMenu(prev => !prev)}
+                className={`flex items-center gap-0.5 transition-all ${activeSafeZones.size > 0 ? 'text-[#00D4D4]' : 'text-gray-400 hover:text-white'}`}
+                title="세이프존 가이드"
+              >
+                <span className="material-icons text-sm">grid_on</span>
+                <span className="text-[9px] font-medium">Safe</span>
+              </button>
+              {showSafeZoneMenu && (
+                <div className="absolute bottom-full right-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 py-1 w-40">
+                  <div className="px-3 py-1 text-[10px] text-gray-500 font-semibold">세이프존 가이드</div>
+                  {(Object.entries(SAFE_ZONE_CONFIG) as [SafeZonePlatform, typeof SAFE_ZONE_CONFIG[SafeZonePlatform]][]).map(([platform, cfg]) => {
+                    const isActive = activeSafeZones.has(platform);
+                    return (
+                      <button
+                        key={platform}
+                        className="w-full text-left px-3 py-1.5 text-xs hover:bg-white/5 flex items-center justify-between"
+                        onClick={() => {
+                          setActiveSafeZones(prev => {
+                            const next = new Set(prev);
+                            if (next.has(platform)) next.delete(platform);
+                            else next.add(platform);
+                            return next;
+                          });
+                        }}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="w-3.5 h-3.5 rounded-sm flex items-center justify-center text-[8px] font-black"
+                            style={{ background: cfg.color, color: '#fff' }}
+                          >
+                            {cfg.icon}
+                          </span>
+                          <span style={{ color: isActive ? cfg.color : '#fff' }}>{cfg.label}</span>
+                        </div>
+                        {isActive && <span className="material-icons text-xs" style={{ color: cfg.color }}>check</span>}
+                      </button>
+                    );
+                  })}
+                  <div className="border-t border-gray-700 mt-1 pt-1">
+                    <button
+                      className="w-full text-left px-3 py-1 text-[10px] text-gray-500 hover:text-white"
+                      onClick={() => setActiveSafeZones(new Set())}
+                    >
+                      전체 해제
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <div className="w-px h-3 bg-gray-700" />
           <button className="text-white hover:text-primary transition-all" title="Fullscreen"
             onClick={() => { if (document.fullscreenElement) document.exitFullscreen(); else containerRef.current?.closest('main')?.requestFullscreen(); }}>

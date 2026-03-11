@@ -96,12 +96,18 @@ export async function POST(req: Request) {
         if (!response.ok) {
             const errText = await response.text();
             console.error("OpenAI STT Full Error Response:", errText);
+            let errMsg = errText;
             try {
                 const parsedErr = JSON.parse(errText);
-                throw new Error(`OpenAI STT error: ${parsedErr.error?.message || errText}`);
+                errMsg = parsedErr.error?.message || parsedErr.error || errText;
             } catch {
-                throw new Error(`OpenAI STT error: ${errText}`);
+                // errText가 JSON이 아니면 그대로 사용
             }
+            // OpenAI 413: 파일 크기 초과
+            if (response.status === 413) {
+                return NextResponse.json({ error: '파일이 너무 큽니다. 25MB 이하로 분할해 다시 시도해주세요.' }, { status: 413 });
+            }
+            throw new Error(`OpenAI STT 오류 (${response.status}): ${errMsg}`);
         }
 
         const data = await response.json();

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { queryEvents, getDistinctPages, getStats, getChartData, getABExperimentResults } from '@/lib/analytics/store';
+import { queryEvents, getDistinctPages, getStats, getChartData, getABExperimentResults, getRageClicks, getScrollDepthStats } from '@/lib/analytics/store';
 import { getSupabase } from '@/lib/analytics/supabase';
 
 export async function GET(req: NextRequest) {
@@ -593,6 +593,30 @@ export async function GET(req: NextRequest) {
         templates,
         daily_trend,
       });
+    }
+
+    // ===== action=rage-clicks =====
+    if (action === 'rage-clicks') {
+      const page_url = searchParams.get('page_url') || undefined;
+      const days = parseInt(searchParams.get('days') || '30');
+      const data = await getRageClicks({ page_url, days });
+      return NextResponse.json({ rageClicks: data });
+    }
+
+    // ===== action=dead-clicks =====
+    if (action === 'dead-clicks') {
+      const page_url = searchParams.get('page_url') || undefined;
+      const days = parseInt(searchParams.get('days') || '30');
+      const events = await queryEvents({ page_url, event_type: 'dead_click', days, limit: 200 });
+      return NextResponse.json({ deadClicks: events });
+    }
+
+    // ===== action=scroll-depth =====
+    if (action === 'scroll-depth') {
+      const page_url = searchParams.get('page_url') || undefined;
+      const days = parseInt(searchParams.get('days') || '30');
+      const data = await getScrollDepthStats({ page_url, days });
+      return NextResponse.json({ scrollDepth: data });
     }
 
     const page_url = searchParams.get('page_url') || undefined;
