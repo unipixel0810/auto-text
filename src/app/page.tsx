@@ -770,29 +770,41 @@ export default function Home() {
 
   /**
    * 프리뷰 화면 드래그앤드롭 핸들러
-   * 라이브러리 추가(currentVideoUrl 등 상태 세팅 포함) + main 트랙(trackIndex=1) 끝에 바로 배치
-   * libraryItemId를 사용해 URL 중복 생성 방지
+   * - 파일 순서대로 duration을 먼저 읽어 누적 offset 계산 후 main 트랙에 겹침 없이 순차 배치
+   * - handleVideoAdd(라이브러리+상태) + handleClipAdd(타임라인) 분리 호출로 thumbnails/waveform 포함
    */
-  const handlePlayerFileDrop = useCallback((files: File[]) => {
-    files.forEach(file => {
-      // 1. 라이브러리에 추가 → id 반환 (currentVideoUrl/activeFileName/currentVideoFile 세팅도 여기서 처리)
-      const libraryItemId = handleVideoAdd(file);
+  const handlePlayerFileDrop = useCallback(async (files: File[]) => {
+    // 현재 main 트랙 끝 시간 (1회 스냅샷)
+    let insertAt = clipsRef.current
+      .filter(c => c.trackIndex === 1)
+      .reduce((maxEnd, c) => Math.max(maxEnd, c.startTime + c.duration), 0);
 
-      // 2. main 트랙 현재 끝 시간 계산
-      const mainTrackEnd = clipsRef.current
-        .filter(c => c.trackIndex === 1)
-        .reduce((maxEnd, c) => Math.max(maxEnd, c.startTime + c.duration), 0);
+    for (const file of files) {
+      const isImage = file.type.startsWith('image/');
 
-      // 3. 라이브러리 아이템 기반으로 타임라인 main 트랙에 바로 배치 (URL 중복 없음)
-      //    duration이 아직 0일 수 있어서 onloadedmetadata 이후 setLibraryItems가 업데이트됨을 감안,
-      //    짧게 딜레이 후 호출
+      // duration을 먼저 읽기 (handleVideoAdd의 비동기 onloadedmetadata 대기)
+      const duration = isImage ? 10 : await new Promise<number>(resolve => {
+        const el = document.createElement('video');
+        el.preload = 'metadata';
+        el.src = URL.createObjectURL(file);
+        el.onloadedmetadata = () => { resolve(el.duration || 10); el.src = ''; };
+        el.onerror = () => resolve(10);
+      });
+
+      // 1. 라이브러리 추가 + currentVideoUrl 등 상태 세팅
+      handleVideoAdd(file);
+
+      // 2. clipsRef 기반이 아닌 직접 계산한 insertAt으로 클립 배치 (겹침 방지)
+      const capturedInsertAt = insertAt;
       setTimeout(() => {
-        handleClipAdd(null, 1, mainTrackEnd, libraryItemId);
-      }, 100);
+        handleClipAdd(file, 1, capturedInsertAt);
+      }, 50);
 
-      setImportToast(`${file.name} 타임라인에 추가됨`);
-      setTimeout(() => setImportToast(null), 3000);
-    });
+      insertAt += duration;
+    }
+
+    setImportToast(`${files.length}개 파일 타임라인에 추가됨`);
+    setTimeout(() => setImportToast(null), 3000);
   }, [handleVideoAdd, handleClipAdd]);
 
   const handleClipUpdate = useCallback((clipId: string, updates: Partial<VideoClip>) => {
