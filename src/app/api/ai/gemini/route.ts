@@ -84,21 +84,24 @@ export async function POST(req: Request) {
         if (mode === 'creative' && transcriptData) {
             // Creative subtitle mode: generate 4 types of dynamic subtitles
             const transcriptJson = JSON.stringify(transcriptData, null, 2);
-            const targetCount = Math.max(20, Math.round(duration / 2.5));
-            const targetSeconds = Math.round(duration * 0.6);
-            // 영상 구간을 5등분하여 각 구간에서 고루 배치하도록 안내
+            // 밀도 조절: 7~12초에 1개 → 분당 약 5~8개
+            const targetCount = Math.max(8, Math.round(duration / 10));
+            // 영상 구간을 5등분
             const segmentSize = Math.round(duration / 5);
             const segments = Array.from({ length: 5 }, (_, i) => `  구간${i + 1}: ${i * segmentSize}초 ~ ${(i + 1) * segmentSize}초`).join('\n');
-            // 각 유형별 목표 개수 (예능40 상황20 설명20 맥락20)
-            const countEntertain = Math.round(targetCount * 0.4);
-            const countSituation = Math.round(targetCount * 0.2);
-            const countExplain = Math.round(targetCount * 0.2);
+            // 유형별 비율: 예능15 상황15 설명20 맥락10 (나머지 40%는 생성하지 않음 — 대본이 커버)
+            const countEntertain = Math.round(targetCount * 0.25);
+            const countSituation = Math.round(targetCount * 0.25);
+            const countExplain = Math.round(targetCount * 0.3);
             const countContext = targetCount - countEntertain - countSituation - countExplain;
-            prompt = `당신은 한국 최고의 유튜브 예능 편집자입니다. 나영석 PD 스타일의 자막 연출을 해주세요.
-첨부된 오디오를 분석하고, 아래 [기존 대본]을 참고하여 **대본에 없는** 연출 자막을 대량으로 만들어주세요.
+            prompt = `당신은 한국 최고의 유튜브 예능 편집자입니다.
+첨부된 오디오를 분석하고, 아래 [기존 대본]을 참고하여 **대본에 없는** 연출 자막을 만들어주세요.
+
+★★★ 핵심 원칙: 적게, 임팩트 있게! ★★★
+모든 말을 자막으로 만들지 마세요. 핵심 메시지와 결정적 순간에만 배치합니다.
 
 영상 길이: ${Math.round(duration)}초
-★★★ 필수 목표: 정확히 ${targetCount}개, 총 ${targetSeconds}초 이상 분량 ★★★
+목표: 약 ${targetCount}개 (과하게 많이 만들지 말 것!)
 
 [기존 대본] (이미 화면에 표시됨 — 이 시간대와 절대 겹치면 안 됨)
 ${transcriptJson}
@@ -106,53 +109,29 @@ ${transcriptJson}
 [규칙 — 반드시 지켜야 합니다]
 1. ★★★ 시간이 겹치면 안 됩니다! ★★★ AI 자막의 start~end가 기존 대본 구간과 절대 겹치면 안 됩니다.
 2. 대본 텍스트를 절대 반복하지 마세요.
-3. ★★★ 유형 비율을 정확히 지키세요 ★★★
-   - "예능" ${countEntertain}개 (40%): 감정·리액션·웃음 포인트
-   - "상황" ${countSituation}개 (20%): 행동묘사·BGM·효과음
-   - "설명" ${countExplain}개 (20%): 정보·팩트·수치 강조
-   - "맥락" ${countContext}개 (20%): 배경·전후 연결
+3. ★★★ 유형 비율 ★★★
+   - "예능" ${countEntertain}개 (25%): 감정 폭발, 반전 등 **결정적 순간에만** 크게 한 번
+   - "상황" ${countSituation}개 (25%): 분위기 전환, 씬 변화 시에만 은은하게
+   - "설명" ${countExplain}개 (30%): 정보 전달이 필요한 구간만 가독성 좋게
+   - "맥락" ${countContext}개 (20%): 배경·전후 연결이 필요한 곳만
 
-4. ★★★ 5개 구간에 고루 분산하세요 (각 구간에 최소 3개 이상) ★★★
+4. 5개 구간에 고루 분산 (각 구간 최소 1개):
 ${segments}
-   → 각 구간에 예능/상황/설명/맥락이 골고루 섞여야 합니다!
-   → 앞부분에만 몰리거나 뒷부분에만 몰리면 실패입니다.
 
-   ★ type "예능" — 감정·리액션·웃음 포인트 과장:
-   - 과장된 리액션: "앗! ㅋㅋㅋ", "헐 진심?!", "아니 이게 말이 돼?!"
-   - 감정 극대화: "멘붕 온 과일장수", "분노 게이지 MAX", "당황 x 100"
-   - 밈/효과음 텍스트: "띠용?!", "두둥!", "삐빅- 거짓말 탐지", "⚡충격⚡"
-   - 시청자 대변: "(시청자 심정) 그래서 결론이 뭔데...", "나만 이해 안 되는 건가?"
-   - 상황 비틀기: 반전, 아이러니, 츳코미
-
-   ★ type "상황" — 현재 벌어지는 행동/심각한 상태 묘사:
-   - 행동 묘사: "[다급하게 박스를 뒤지는 손길]", "[고개를 절레절레 흔드는 중]"
-   - BGM 묘사: "♪ 긴장감 폭발 BGM ♪", "♬ 슬픈 피아노 선율 ♬"
-   - 효과음 텍스트: "[ 적막 ]", "[ 웅성웅성 ]", "[ 심장 쿵쿵 ]"
-   - 분위기 전환: "[ 갑분싸 ]", "[ 훈훈 모드 ON ]"
-   - 시간/장소: "— 3시간 뒤 —", "그로부터 10초 후..."
-
-   ★ type "설명" — 정보 전달, 팩트 체크, 수치 강조:
-   - 수치/팩트: "💡 사과 가격 144% 폭등!", "참고: 국내 생산량 역대 최저"
-   - 전문용어 해설: "※ 여기서 '숏커버링'이란 공매도 청산을 뜻함"
-   - 핵심 요약: "요약: ~한 상황"
-
-   ★ type "맥락" — 앞뒤 상황을 이어주는 배경 지식:
-   - 배경 정보: "내년부터 미국산 감귤류 관세 철폐"
-   - 전후 연결: "사실 이 이야기는 3년 전부터 시작된 것"
-   - 숨은 의미: "이 말의 진짜 뜻은...", "업계에서는 이를 두고..."
-   - 비하인드: "참고로 이 장면 촬영에만 8시간 걸렸다고"
-
-5. 각 자막은 1~4초 길이로, 짧고 임팩트 있게 만드세요.
-6. 재미없으면 실패입니다. 시청자가 "ㅋㅋㅋ" 할 수 있도록 센스 있게 만드세요.
+5. ★★★ 가독성 규칙 ★★★
+   - 각 자막 최소 **2초 이상** 노출
+   - 자막끼리 시간이 겹치면 절대 안 됨 (동시 2줄 금지)
+   - 10~25자 적당한 길이, 너무 길면 끊어서 배치
+   - 이모지는 예능 자막에서만 가끔 사용
 
 [출력 형식]
 반드시 아래 JSON 배열만 출력하세요. 다른 설명/마크다운 금지.
 type 값은 반드시 "예능", "상황", "설명", "맥락" 중 하나:
 [
-  {"start": 0.5, "end": 2.5, "text": "ㅋㅋㅋ 이 표정 실화?!", "type": "예능"},
-  {"start": 3.0, "end": 5.0, "text": "[다급하게 뛰어가는 중]", "type": "상황"},
-  {"start": 6.0, "end": 8.5, "text": "💡 사과 가격 144% 폭등!", "type": "설명"},
-  {"start": 9.0, "end": 11.0, "text": "내년부터 미국산 감귤류 관세 철폐", "type": "맥락"}
+  {"start": 12.0, "end": 14.5, "text": "이 표정 실화?!", "type": "예능"},
+  {"start": 25.0, "end": 27.0, "text": "[분위기 급반전]", "type": "상황"},
+  {"start": 40.0, "end": 43.0, "text": "핵심: 가격이 144% 올랐다", "type": "설명"},
+  {"start": 55.0, "end": 57.5, "text": "사실 이건 3년 전부터 시작된 일", "type": "맥락"}
 ]`;
         } else {
             // Default mode: transcribe everything with style annotation

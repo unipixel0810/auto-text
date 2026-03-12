@@ -31,25 +31,28 @@ function buildPrompt(transcripts: TranscriptItem[]): string {
     .map(t => `[${t.startTime.toFixed(1)}s - ${t.endTime.toFixed(1)}s] ${t.editedText || t.originalText}`)
     .join('\n');
 
-  return `당신은 예능 PD입니다. 영상에 **재미있는 자막**을 촘촘하게 넣어주세요.
+  return `당신은 예능 PD입니다. 영상의 **핵심 메시지**에만 자막을 넣어 가독성을 높여주세요.
 
 ## 원본 대본
 ${transcriptText}
 
-## 핵심: 대본 그대로 X, 꾸며서 표현!
+## 핵심 원칙: 적게, 임팩트 있게!
+모든 음성을 자막으로 만들지 마세요. 추임새, 중복, 의미 없는 발화는 삭제합니다.
 
-## 자막 유형
-1. **ENTERTAINMENT** - 리액션 ("실화?? 🤯", "아니 ㅋㅋㅋ")
-2. **SITUATION** - 상황 ("(긴장 MAX)", "(멘붕)")  
-3. **EXPLANATION** - 포인트 ("⚡ 핵심!", "결론: ~")
+## 자막 유형 & 비율
+1. **ENTERTAINMENT** [15%] - 결정적 순간에만 크게 한 번 ("실화?? 🤯")
+2. **SITUATION** [15%] - 분위기 전환 시만 ("(분위기 급반전)")
+3. **EXPLANATION** [20%] - 정보 전달 구간만 ("⚡ 핵심 포인트!")
+4. **TRANSCRIPT** [50%] - 핵심 발언을 깔끔하게 정리
 
 ## ⚠️ 필수 규칙
-- **3~5초마다 하나씩** 자막 생성
-- **재미있고 임팩트 있게!** (예능처럼)
-- 10-20자 적당한 길이
+- **7~12초에 하나씩** 자막 생성 (과하게 X)
+- 각 자막 최소 **2초 이상** 노출
+- **자막끼리 시간 겹침 금지** (동시 2줄 이상 X)
+- 10~25자 적당한 길이
 - ⛔ 텍스트에 시간 넣지 말 것!
 
-출력: [{"startTime": 0.0, "endTime": 2.5, "text": "자막", "type": "ENTERTAINMENT", "reason": "이유"}]`;
+출력: [{"startTime": 0.0, "endTime": 2.5, "text": "자막", "type": "TRANSCRIPT", "reason": "이유"}]`;
 }
 
 // ============================================
