@@ -29,7 +29,7 @@ function useVideoThumbnail(url: string, type: string): string | null {
     video.crossOrigin = 'anonymous';
     video.src = url;
     video.onloadeddata = () => {
-      video.currentTime = 1; // seek to 1s for a meaningful frame
+      video.currentTime = 1;
     };
     video.onseeked = () => {
       try {
@@ -52,7 +52,15 @@ function useVideoThumbnail(url: string, type: string): string | null {
   return thumb;
 }
 
-function ThumbnailItem({ item, isSelected, onSelect }: { item: LibraryItem; isSelected: boolean; onSelect: () => void }) {
+interface ThumbnailItemProps {
+  item: LibraryItem;
+  isSelected: boolean;
+  selectedCount: number;
+  onSelect: (e: React.MouseEvent) => void;
+  onDragStart: (e: React.DragEvent, item: LibraryItem) => void;
+}
+
+function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart }: ThumbnailItemProps) {
   const thumbnail = useVideoThumbnail(item.url, item.type);
   const isVideo = item.type === 'video';
   const isAudio = item.type === 'audio';
@@ -64,22 +72,11 @@ function ThumbnailItem({ item, isSelected, onSelect }: { item: LibraryItem; isSe
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
-  const handleDragStart = (e: React.DragEvent) => {
-    e.dataTransfer.setData('application/library-item', JSON.stringify({
-      id: item.id,
-      name: item.name,
-      type: item.type,
-      duration: item.duration,
-      url: item.url
-    }));
-    e.dataTransfer.effectAllowed = 'copy';
-  };
-
   return (
     <button
       onClick={onSelect}
       draggable
-      onDragStart={handleDragStart}
+      onDragStart={(e) => onDragStart(e, item)}
       className={`relative group rounded-lg overflow-hidden border transition-all duration-150 hover:scale-[1.03] active:scale-95 cursor-grab active:cursor-grabbing ${isSelected ? 'border-primary ring-1 ring-primary' : 'border-transparent hover:border-gray-600'
         }`}
       title={item.name}
@@ -106,6 +103,20 @@ function ThumbnailItem({ item, isSelected, onSelect }: { item: LibraryItem; isSe
             {formatDuration(item.duration)}
           </span>
         )}
+
+        {/* Selection checkbox */}
+        {isSelected && (
+          <span className="absolute top-1 left-1 w-5 h-5 bg-primary rounded-full flex items-center justify-center">
+            <span className="material-icons text-black text-[14px]">check</span>
+          </span>
+        )}
+
+        {/* Multi-drag count badge */}
+        {isSelected && selectedCount > 1 && (
+          <span className="absolute top-1 right-1 min-w-[20px] h-5 bg-primary text-black text-[10px] font-bold rounded-full flex items-center justify-center px-1">
+            {selectedCount}
+          </span>
+        )}
       </div>
 
       {/* File name */}
@@ -119,6 +130,7 @@ function ThumbnailItem({ item, isSelected, onSelect }: { item: LibraryItem; isSe
 export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems = [], selectedLibraryIds = [], onLibrarySelect, onLibraryDelete }: LeftSidebarProps) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastClickedIndexRef = useRef<number>(-1);
 
   // Handle Delete key for selected library items
   useEffect(() => {
@@ -134,6 +146,86 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [selectedLibraryIds, onLibraryDelete]);
+
+  // Ctrl/Cmd+A to select all
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (libraryItems.length === 0) return;
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
+        e.preventDefault();
+        onLibrarySelect?.(libraryItems.map(i => i.id));
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [libraryItems, onLibrarySelect]);
+
+  // Multi-select handler: Click, Ctrl/Cmd+Click, Shift+Click
+  const handleItemSelect = useCallback((e: React.MouseEvent, index: number) => {
+    const item = libraryItems[index];
+    if (!item) return;
+
+    if (e.shiftKey && lastClickedIndexRef.current >= 0) {
+      // Shift+Click: range select
+      const start = Math.min(lastClickedIndexRef.current, index);
+      const end = Math.max(lastClickedIndexRef.current, index);
+      const rangeIds = libraryItems.slice(start, end + 1).map(i => i.id);
+      // Merge with existing selection if Ctrl is also held
+      if (e.metaKey || e.ctrlKey) {
+        const merged = new Set([...selectedLibraryIds, ...rangeIds]);
+        onLibrarySelect?.(Array.from(merged));
+      } else {
+        onLibrarySelect?.(rangeIds);
+      }
+    } else if (e.metaKey || e.ctrlKey) {
+      // Ctrl/Cmd+Click: toggle single item
+      if (selectedLibraryIds.includes(item.id)) {
+        onLibrarySelect?.(selectedLibraryIds.filter(id => id !== item.id));
+      } else {
+        onLibrarySelect?.([...selectedLibraryIds, item.id]);
+      }
+      lastClickedIndexRef.current = index;
+    } else {
+      // Normal click: select only this item
+      onLibrarySelect?.([item.id]);
+      lastClickedIndexRef.current = index;
+    }
+  }, [libraryItems, selectedLibraryIds, onLibrarySelect]);
+
+  // Drag start: carry all selected items (or just the dragged one)
+  const handleItemDragStart = useCallback((e: React.DragEvent, item: LibraryItem) => {
+    const isItemSelected = selectedLibraryIds.includes(item.id);
+    const dragIds = isItemSelected && selectedLibraryIds.length > 1
+      ? selectedLibraryIds
+      : [item.id];
+
+    const dragItems = dragIds
+      .map(id => libraryItems.find(li => li.id === id))
+      .filter(Boolean)
+      .map(li => ({
+        id: li!.id,
+        name: li!.name,
+        type: li!.type,
+        duration: li!.duration,
+        url: li!.url,
+      }));
+
+    // Set both singular (backward compat) and plural data
+    if (dragItems.length === 1) {
+      e.dataTransfer.setData('application/library-item', JSON.stringify(dragItems[0]));
+    } else {
+      e.dataTransfer.setData('application/library-items', JSON.stringify(dragItems));
+    }
+    e.dataTransfer.effectAllowed = 'copy';
+
+    // If dragging an unselected item, select it
+    if (!isItemSelected) {
+      onLibrarySelect?.([item.id]);
+      lastClickedIndexRef.current = libraryItems.indexOf(item);
+    }
+  }, [selectedLibraryIds, libraryItems, onLibrarySelect]);
 
   const routeFile = useCallback((file: File) => {
     if (isSubtitleFile(file)) {
@@ -188,12 +280,19 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
       <div className="flex-1 flex flex-col p-4 overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-semibold">Local</h2>
-          <button
-            className="text-primary hover:text-white transition-all duration-200 relative group active:scale-90 hover:scale-110"
-            title="Import History"
-          >
-            <span className="material-icons text-lg transition-transform duration-200 group-hover:rotate-180">history</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {selectedLibraryIds.length > 1 && (
+              <span className="text-[10px] text-primary font-medium">
+                {selectedLibraryIds.length}개 선택
+              </span>
+            )}
+            <button
+              className="text-primary hover:text-white transition-all duration-200 relative group active:scale-90 hover:scale-110"
+              title="Import History"
+            >
+              <span className="material-icons text-lg transition-transform duration-200 group-hover:rotate-180">history</span>
+            </button>
+          </div>
         </div>
 
         {/* Import Button */}
@@ -224,16 +323,25 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
 
         {/* Imported files thumbnail grid */}
         {libraryItems.length > 0 ? (
-          <div className="grid grid-cols-2 gap-2">
-            {libraryItems.map((item) => (
-              <ThumbnailItem
-                key={item.id}
-                item={item}
-                isSelected={selectedLibraryIds.includes(item.id)}
-                onSelect={() => onLibrarySelect?.([item.id])}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-2 gap-2">
+              {libraryItems.map((item, idx) => (
+                <ThumbnailItem
+                  key={item.id}
+                  item={item}
+                  isSelected={selectedLibraryIds.includes(item.id)}
+                  selectedCount={selectedLibraryIds.length}
+                  onSelect={(e) => handleItemSelect(e, idx)}
+                  onDragStart={handleItemDragStart}
+                />
+              ))}
+            </div>
+            {libraryItems.length > 1 && (
+              <p className="text-[9px] text-gray-600 mt-3 text-center">
+                Ctrl/Cmd+클릭: 다중선택 | Shift+클릭: 범위선택
+              </p>
+            )}
+          </>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center py-8">
             <span className="material-icons text-gray-600 text-4xl mb-2">video_library</span>

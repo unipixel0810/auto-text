@@ -603,7 +603,22 @@ const Timeline = React.memo(({
       }
     }
     
-    // Support library item drop
+    // Support multiple library items drop
+    const libraryItemsData = e.dataTransfer.getData('application/library-items');
+    if (libraryItemsData) {
+      try {
+        const items: { id: string; duration: number }[] = JSON.parse(libraryItemsData);
+        let offset = 0;
+        for (const item of items) {
+          (onClipAdd as any)?.(null, trackIndex, startTime + offset, item.id);
+          offset += item.duration || 5;
+        }
+      } catch (err) {
+        console.error('Failed to parse library items drop data', err);
+      }
+    }
+
+    // Support single library item drop
     const libraryData = e.dataTransfer.getData('application/library-item');
     if (libraryData) {
       try {

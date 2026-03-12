@@ -1,9 +1,23 @@
 'use client';
 
-import React, { useEffect, useState, useMemo } from 'react';
-import { FUNNEL_STEPS } from '@/lib/analytics/funnel';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 
 /* ───────── 타입 ───────── */
+
+interface FunnelStep {
+  name: string;
+  label: string;
+  order: number;
+}
+
+interface FunnelDefinition {
+  id: string;
+  name: string;
+  description: string;
+  steps: FunnelStep[];
+  is_active: boolean;
+  created_at: string;
+}
 
 interface FunnelEvent {
   step_name: string;
@@ -13,13 +27,49 @@ interface FunnelEvent {
 
 type DateRange = 1 | 7 | 30;
 
+/** 기본 퍼널 (기존 하드코딩) */
+const DEFAULT_STEPS: FunnelStep[] = [
+  { name: 'landing_visit', label: '랜딩페이지 방문', order: 1 },
+  { name: 'cta_click', label: 'CTA 버튼 클릭', order: 2 },
+  { name: 'signup_form_open', label: '가입 폼 열림', order: 3 },
+  { name: 'email_input', label: '이메일 입력', order: 4 },
+  { name: 'signup_complete', label: '가입 완료', order: 5 },
+];
+
+const DEFAULT_FUNNEL: FunnelDefinition = {
+  id: '__default__',
+  name: '기본 전환 퍼널',
+  description: '랜딩 → 가입 전환 흐름',
+  steps: DEFAULT_STEPS,
+  is_active: true,
+  created_at: '',
+};
+
 /* ───────── 메인 ───────── */
 
 export default function FunnelPage() {
+  const [funnels, setFunnels] = useState<FunnelDefinition[]>([DEFAULT_FUNNEL]);
+  const [selectedFunnelId, setSelectedFunnelId] = useState<string>('__default__');
   const [events, setEvents] = useState<FunnelEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState<DateRange>(30);
+  const [showBuilder, setShowBuilder] = useState(false);
+  const [editingFunnel, setEditingFunnel] = useState<FunnelDefinition | null>(null);
 
+  const selectedFunnel = funnels.find(f => f.id === selectedFunnelId) || DEFAULT_FUNNEL;
+
+  // 퍼널 목록 로드
+  const loadFunnels = useCallback(async () => {
+    try {
+      const res = await fetch('/api/funnels');
+      const data = await res.json();
+      setFunnels([DEFAULT_FUNNEL, ...(data.funnels || [])]);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { loadFunnels(); }, [loadFunnels]);
+
+  // 이벤트 로드
   useEffect(() => {
     setLoading(true);
     fetch(`/api/funnel?days=${days}`)
@@ -29,28 +79,28 @@ export default function FunnelPage() {
       .finally(() => setLoading(false));
   }, [days]);
 
+  // 퍼널 데이터 계산
   const funnelData = useMemo(() => {
-    // 세션별로 도달한 단계 수집
+    const steps = selectedFunnel.steps;
+    const stepNames = new Set(steps.map(s => s.name));
+
     const sessionSteps = new Map<string, Set<string>>();
     for (const e of events) {
+      if (!stepNames.has(e.step_name)) continue;
       if (!sessionSteps.has(e.session_id)) {
         sessionSteps.set(e.session_id, new Set());
       }
       sessionSteps.get(e.session_id)!.add(e.step_name);
     }
 
-    // 각 단계별 고유 세션 수 (해당 단계에 도달한 세션)
-    const stepCounts = FUNNEL_STEPS.map(step => {
+    const stepCounts = steps.map(step => {
       let count = 0;
-      sessionSteps.forEach(steps => {
-        if (steps.has(step.name)) count++;
-      });
+      sessionSteps.forEach(s => { if (s.has(step.name)) count++; });
       return { ...step, count };
     });
 
     const maxCount = stepCounts[0]?.count || 1;
 
-    // 이탈률 계산
     const withDropoff = stepCounts.map((step, idx) => {
       const prev = idx === 0 ? step.count : stepCounts[idx - 1].count;
       const dropoff = prev > 0 ? ((prev - step.count) / prev) * 100 : 0;
@@ -58,7 +108,6 @@ export default function FunnelPage() {
       return { ...step, dropoff, pct };
     });
 
-    // 가장 큰 이탈 구간 찾기
     let maxDropoffIdx = -1;
     let maxDropoffVal = 0;
     withDropoff.forEach((s, i) => {
@@ -69,11 +118,20 @@ export default function FunnelPage() {
     });
 
     return { steps: withDropoff, totalSessions: sessionSteps.size, maxDropoffIdx };
-  }, [events]);
+  }, [events, selectedFunnel]);
 
   const overallConversion = funnelData.steps.length >= 2 && funnelData.steps[0].count > 0
     ? ((funnelData.steps[funnelData.steps.length - 1].count / funnelData.steps[0].count) * 100).toFixed(1)
     : '0';
+
+  // 퍼널 삭제
+  const handleDeleteFunnel = async (id: string) => {
+    if (id === '__default__') return;
+    if (!confirm('이 퍼널을 삭제하시겠습니까?')) return;
+    await fetch(`/api/funnels/${id}`, { method: 'DELETE' });
+    if (selectedFunnelId === id) setSelectedFunnelId('__default__');
+    loadFunnels();
+  };
 
   if (loading) {
     return (
@@ -90,10 +148,9 @@ export default function FunnelPage() {
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div>
             <h1 className="text-2xl font-bold text-white">전환 퍼널</h1>
-            <p className="text-sm text-gray-500 mt-1">랜딩 → 가입 전환 흐름 분석</p>
+            <p className="text-sm text-gray-500 mt-1">{selectedFunnel.description || '퍼널 분석'}</p>
           </div>
           <div className="flex items-center gap-2">
-            {/* 날짜 필터 */}
             {([1, 7, 30] as DateRange[]).map(d => (
               <button
                 key={d}
@@ -113,6 +170,55 @@ export default function FunnelPage() {
             >
               대시보드
             </a>
+          </div>
+        </div>
+
+        {/* 퍼널 선택 + 생성 */}
+        <div className="bg-[#12121a] border border-[#2a2a3e] rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-white">퍼널 선택</h2>
+            <button
+              onClick={() => { setEditingFunnel(null); setShowBuilder(true); }}
+              className="flex items-center gap-1.5 px-4 py-2 bg-[#00D4D4]/10 text-[#00D4D4] border border-[#00D4D4]/30 rounded-lg text-sm font-medium hover:bg-[#00D4D4]/20 transition-all"
+            >
+              <span className="material-symbols-outlined text-[16px]">add</span>
+              새 퍼널
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {funnels.map(f => (
+              <div key={f.id} className="flex items-center gap-0">
+                <button
+                  onClick={() => setSelectedFunnelId(f.id)}
+                  className={`px-4 py-2.5 text-sm font-medium transition-all ${
+                    selectedFunnelId === f.id
+                      ? 'bg-[#00D4D4]/10 text-[#00D4D4] border border-[#00D4D4]/30'
+                      : 'text-gray-400 border border-[#2a2a3e] hover:text-gray-200 hover:bg-white/5'
+                  } ${f.id === '__default__' ? 'rounded-lg' : 'rounded-l-lg border-r-0'}`}
+                >
+                  {f.name}
+                  <span className="ml-2 text-[11px] text-gray-600">{f.steps.length}단계</span>
+                </button>
+                {f.id !== '__default__' && (
+                  <div className="flex">
+                    <button
+                      onClick={() => { setEditingFunnel(f); setShowBuilder(true); }}
+                      className="px-2 py-2.5 text-gray-500 border border-[#2a2a3e] hover:text-[#00D4D4] hover:bg-white/5 transition-all text-[13px]"
+                      title="편집"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">edit</span>
+                    </button>
+                    <button
+                      onClick={() => handleDeleteFunnel(f.id)}
+                      className="px-2 py-2.5 text-gray-500 border border-[#2a2a3e] border-l-0 rounded-r-lg hover:text-red-400 hover:bg-red-500/5 transition-all text-[13px]"
+                      title="삭제"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">delete</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
 
@@ -148,7 +254,6 @@ export default function FunnelPage() {
 
                   return (
                     <div key={step.name}>
-                      {/* 이탈률 표시 (두 번째 단계부터) */}
                       {idx > 0 && (
                         <div className="flex items-center justify-center py-1.5">
                           <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium ${
@@ -164,8 +269,6 @@ export default function FunnelPage() {
                           </div>
                         </div>
                       )}
-
-                      {/* 깔때기 바 */}
                       <div className="flex items-center gap-4">
                         <div className="w-28 sm:w-36 shrink-0 text-right">
                           <p className="text-[12px] text-gray-400 font-medium">{step.label}</p>
@@ -173,18 +276,11 @@ export default function FunnelPage() {
                         <div className="flex-1 relative">
                           <div
                             className="h-12 rounded-lg flex items-center transition-all duration-700 relative overflow-hidden"
-                            style={{
-                              width: `${widthPct}%`,
-                              backgroundColor: barBg,
-                              border: `1px solid ${barColor}30`,
-                            }}
+                            style={{ width: `${widthPct}%`, backgroundColor: barBg, border: `1px solid ${barColor}30` }}
                           >
-                            {/* 그라디언트 채움 */}
                             <div
                               className="absolute inset-0 rounded-lg opacity-30"
-                              style={{
-                                background: `linear-gradient(90deg, ${barColor}40, ${barColor}10)`,
-                              }}
+                              style={{ background: `linear-gradient(90deg, ${barColor}40, ${barColor}10)` }}
                             />
                             <span className="relative z-10 ml-3 text-sm font-bold" style={{ color: barColor }}>
                               {step.count}
@@ -225,10 +321,7 @@ export default function FunnelPage() {
                     const conversionFromPrev = prevCount > 0 ? ((step.count / prevCount) * 100).toFixed(1) : '-';
 
                     return (
-                      <tr
-                        key={step.name}
-                        className={`border-b border-[#1e1e2e]/50 ${isMaxDropoff ? 'bg-red-500/5' : ''}`}
-                      >
+                      <tr key={step.name} className={`border-b border-[#1e1e2e]/50 ${isMaxDropoff ? 'bg-red-500/5' : ''}`}>
                         <td className="px-6 py-3">
                           <div className="flex items-center gap-2">
                             <span className={`w-6 h-6 rounded-md flex items-center justify-center text-[11px] font-bold ${
@@ -265,6 +358,235 @@ export default function FunnelPage() {
             </div>
           </>
         )}
+      </div>
+
+      {/* 퍼널 빌더 모달 */}
+      {showBuilder && (
+        <FunnelBuilderModal
+          funnel={editingFunnel}
+          onClose={() => setShowBuilder(false)}
+          onSaved={() => { setShowBuilder(false); loadFunnels(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ───────── 퍼널 빌더 모달 ───────── */
+
+function FunnelBuilderModal({
+  funnel,
+  onClose,
+  onSaved,
+}: {
+  funnel: FunnelDefinition | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const isEditing = !!funnel;
+  const [name, setName] = useState(funnel?.name || '');
+  const [description, setDescription] = useState(funnel?.description || '');
+  const [steps, setSteps] = useState<FunnelStep[]>(
+    funnel?.steps || [
+      { name: '', label: '', order: 1 },
+      { name: '', label: '', order: 2 },
+    ]
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const addStep = () => {
+    setSteps(prev => [...prev, { name: '', label: '', order: prev.length + 1 }]);
+  };
+
+  const removeStep = (idx: number) => {
+    if (steps.length <= 2) return;
+    setSteps(prev => prev.filter((_, i) => i !== idx).map((s, i) => ({ ...s, order: i + 1 })));
+  };
+
+  const updateStep = (idx: number, field: 'name' | 'label', value: string) => {
+    setSteps(prev => prev.map((s, i) => i === idx ? { ...s, [field]: value } : s));
+  };
+
+  const moveStep = (idx: number, direction: -1 | 1) => {
+    const target = idx + direction;
+    if (target < 0 || target >= steps.length) return;
+    setSteps(prev => {
+      const next = [...prev];
+      [next[idx], next[target]] = [next[target], next[idx]];
+      return next.map((s, i) => ({ ...s, order: i + 1 }));
+    });
+  };
+
+  const handleSave = async () => {
+    if (!name.trim()) { setError('퍼널 이름을 입력하세요.'); return; }
+    const emptyStep = steps.find(s => !s.name.trim() || !s.label.trim());
+    if (emptyStep) { setError('모든 단계의 이벤트 키와 표시 이름을 입력하세요.'); return; }
+
+    setSaving(true);
+    setError('');
+
+    try {
+      const body = { name: name.trim(), description: description.trim(), steps };
+
+      if (isEditing) {
+        await fetch(`/api/funnels/${funnel.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } else {
+        await fetch('/api/funnels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
+      onSaved();
+    } catch {
+      setError('저장에 실패했습니다.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="bg-[#12121a] border border-[#2a2a3e] rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        {/* 헤더 */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#1e1e2e]">
+          <h2 className="text-lg font-bold text-white">
+            {isEditing ? '퍼널 편집' : '새 퍼널 만들기'}
+          </h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors">
+            <span className="material-symbols-outlined">close</span>
+          </button>
+        </div>
+
+        <div className="p-6 space-y-5">
+          {/* 기본 정보 */}
+          <div className="space-y-3">
+            <div>
+              <label className="block text-[11px] text-gray-500 uppercase tracking-wider mb-1.5">퍼널 이름</label>
+              <input
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="예: 구매 전환 퍼널"
+                className="w-full px-4 py-2.5 bg-[#0a0a12] border border-[#2a2a3e] rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-[#00D4D4]/50"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-gray-500 uppercase tracking-wider mb-1.5">설명 (선택)</label>
+              <input
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder="예: 랜딩 → 결제 전환 흐름"
+                className="w-full px-4 py-2.5 bg-[#0a0a12] border border-[#2a2a3e] rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-[#00D4D4]/50"
+              />
+            </div>
+          </div>
+
+          {/* 단계 목록 */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <label className="text-[11px] text-gray-500 uppercase tracking-wider">퍼널 단계</label>
+              <button
+                onClick={addStep}
+                className="text-[12px] text-[#00D4D4] hover:text-[#00D4D4]/80 font-medium flex items-center gap-1"
+              >
+                <span className="material-symbols-outlined text-[14px]">add</span>
+                단계 추가
+              </button>
+            </div>
+            <div className="space-y-2">
+              {steps.map((step, idx) => (
+                <div key={idx} className="flex items-center gap-2 group">
+                  <span className="w-6 h-6 shrink-0 rounded-md bg-[#00D4D4]/10 text-[#00D4D4] flex items-center justify-center text-[11px] font-bold">
+                    {idx + 1}
+                  </span>
+
+                  <div className="flex-1 flex gap-2">
+                    <input
+                      value={step.name}
+                      onChange={e => updateStep(idx, 'name', e.target.value)}
+                      placeholder="이벤트 키 (예: page_view)"
+                      className="flex-1 px-3 py-2 bg-[#0a0a12] border border-[#2a2a3e] rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-[#00D4D4]/50 font-mono text-[12px]"
+                    />
+                    <input
+                      value={step.label}
+                      onChange={e => updateStep(idx, 'label', e.target.value)}
+                      placeholder="표시 이름 (예: 페이지 방문)"
+                      className="flex-1 px-3 py-2 bg-[#0a0a12] border border-[#2a2a3e] rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-[#00D4D4]/50"
+                    />
+                  </div>
+
+                  {/* 순서 이동 + 삭제 */}
+                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={() => moveStep(idx, -1)}
+                      disabled={idx === 0}
+                      className="p-1 text-gray-500 hover:text-white disabled:opacity-20"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">arrow_upward</span>
+                    </button>
+                    <button
+                      onClick={() => moveStep(idx, 1)}
+                      disabled={idx === steps.length - 1}
+                      className="p-1 text-gray-500 hover:text-white disabled:opacity-20"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">arrow_downward</span>
+                    </button>
+                    <button
+                      onClick={() => removeStep(idx)}
+                      disabled={steps.length <= 2}
+                      className="p-1 text-gray-500 hover:text-red-400 disabled:opacity-20"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">close</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 미리보기 */}
+          {steps.filter(s => s.label).length >= 2 && (
+            <div className="bg-[#0a0a12] border border-[#1e1e2e] rounded-lg p-4">
+              <p className="text-[11px] text-gray-500 uppercase tracking-wider mb-2">미리보기</p>
+              <div className="flex items-center gap-1 flex-wrap">
+                {steps.filter(s => s.label).map((step, idx, arr) => (
+                  <React.Fragment key={idx}>
+                    <span className="text-sm text-gray-300">{step.label}</span>
+                    {idx < arr.length - 1 && (
+                      <span className="material-symbols-outlined text-[14px] text-gray-600">arrow_forward</span>
+                    )}
+                  </React.Fragment>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2">{error}</p>
+          )}
+        </div>
+
+        {/* 하단 버튼 */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[#1e1e2e]">
+          <button
+            onClick={onClose}
+            className="px-5 py-2.5 text-sm text-gray-400 border border-[#2a2a3e] rounded-lg hover:bg-white/5 transition-all"
+          >
+            취소
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-5 py-2.5 text-sm font-medium bg-[#00D4D4] text-black rounded-lg hover:bg-[#00D4D4]/90 transition-all disabled:opacity-50"
+          >
+            {saving ? '저장 중...' : isEditing ? '수정' : '생성'}
+          </button>
+        </div>
       </div>
     </div>
   );
