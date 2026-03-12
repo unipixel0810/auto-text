@@ -49,11 +49,10 @@ export default function CohortsPage() {
     setLoading(true);
     try {
       const res = await fetch('/api/cohorts');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json: Cohort[] = await res.json();
-      setCohorts(json);
+      const json = await res.json();
+      setCohorts(Array.isArray(json) ? json : []);
     } catch {
-      setError('코호트 목록을 불러올 수 없습니다');
+      setCohorts([]);
     } finally {
       setLoading(false);
     }
