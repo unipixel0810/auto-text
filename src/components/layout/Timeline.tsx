@@ -63,8 +63,8 @@ const ABOVE_TRACKS: TrackDef[] = [
   { trackIndex: 12, label: 'V3', icon: 'layers', color: 'cyan', height: 'h-16' },
   { trackIndex: 11, label: 'V2', icon: 'layers', color: 'cyan', height: 'h-16' },
   { trackIndex: 10, label: 'V1', icon: 'layers', color: 'cyan', height: 'h-16' },
-  { trackIndex: 5, label: 'AI 자막', icon: 'auto_awesome', color: 'pink', height: 'h-10' },
-  { trackIndex: 0, label: '대본', icon: 'subtitles', color: 'purple', height: 'h-10' },
+  { trackIndex: 5, label: 'AI 자막', icon: 'auto_awesome', color: 'pink', height: 'h-8' },
+  { trackIndex: 0, label: '대본', icon: 'subtitles', color: 'purple', height: 'h-8' },
 ];
 const BELOW_TRACKS: TrackDef[] = [
   { trackIndex: 20, label: 'A1', icon: 'audiotrack', color: 'green', height: 'h-16' },
@@ -239,10 +239,8 @@ const ClipItem = React.memo(({
       )}
 
       {/* Clip name label */}
-      <div className={`absolute top-0 left-0 right-0 px-1 py-0.5 min-w-0 pointer-events-none z-[3] ${isSubtitleTrack ? 'bottom-0 overflow-hidden' : 'flex items-center'}`}>
-        <span className={`text-[9px] font-medium leading-tight ${isSubtitleTrack ? 'block overflow-hidden' : 'truncate block'} ${isVideoTrack && clip.thumbnails?.length ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]' : colors.text}`}
-          style={isSubtitleTrack ? { wordBreak: 'break-all', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap', display: '-webkit-box', WebkitBoxOrient: 'vertical' as const, WebkitLineClamp: clipWidth < 40 ? 1 : clipWidth < 80 ? 2 : 4 } : undefined}
-        >
+      <div className={`absolute top-0 left-0 right-0 px-1 min-w-0 pointer-events-none z-[3] ${isSubtitleTrack ? 'bottom-0 flex items-center overflow-hidden py-0' : 'flex items-center py-0.5'}`}>
+        <span className={`text-[9px] font-medium leading-tight truncate block ${isVideoTrack && clip.thumbnails?.length ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]' : colors.text}`}>
           {isAboutToDelete ? '🗑️' : (isSubtitleTrack ? clip.name : clip.name.replace(/\.[^.]+$/, ''))}
         </span>
         {clip.speed && clip.speed !== 1 && (
@@ -250,17 +248,19 @@ const ClipItem = React.memo(({
         )}
       </div>
 
-      {/* Timecode labels (start — duration) */}
-      <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-1 py-px pointer-events-none z-[3]">
-        <span className={`text-[7px] font-mono ${isVideoTrack && clip.thumbnails?.length ? 'text-white/70 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]' : 'text-gray-400'}`}>
-          {formatTimecode(clip.startTime)}
-        </span>
-        {clipWidth > 60 && (
+      {/* Timecode labels (start — duration) — 자막 트랙에서는 숨김 */}
+      {!isSubtitleTrack && (
+        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-1 py-px pointer-events-none z-[3]">
           <span className={`text-[7px] font-mono ${isVideoTrack && clip.thumbnails?.length ? 'text-white/70 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]' : 'text-gray-400'}`}>
-            {formatTimecode(clip.duration)}
+            {formatTimecode(clip.startTime)}
           </span>
-        )}
-      </div>
+          {clipWidth > 60 && (
+            <span className={`text-[7px] font-mono ${isVideoTrack && clip.thumbnails?.length ? 'text-white/70 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]' : 'text-gray-400'}`}>
+              {formatTimecode(clip.duration)}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Resize handles — onPointerDown + e.buttons 체크로 드래그 고착 근본 해결 */}
       <div data-handle="resize-left" className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize hover:bg-white/30 active:bg-white/50 z-10"
