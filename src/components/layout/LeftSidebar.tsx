@@ -173,61 +173,51 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     return () => window.removeEventListener('keydown', onKey);
   }, [libraryItems, onLibrarySelect]);
 
-  // Lasso: pointer events (like Timeline) — completely separate from native drag
-  useEffect(() => {
-    if (!lassoStart) return;
+  // Lasso: pointer move/up handlers (pointer capture delivers events to gridRef)
+  const handleLassoPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!lassoStart || !gridRef.current) return;
+    const rect = gridRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    setLassoCurrent({ x, y });
 
-    const handlePointerMove = (e: PointerEvent) => {
-      if (!gridRef.current) return;
-      const rect = gridRef.current.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      setLassoCurrent({ x, y });
+    const lasso = {
+      left: Math.min(lassoStart.x, x),
+      top: Math.min(lassoStart.y, y),
+      right: Math.max(lassoStart.x, x),
+      bottom: Math.max(lassoStart.y, y),
+    };
 
-      const lassoRect = {
-        left: Math.min(lassoStart.x, x),
-        top: Math.min(lassoStart.y, y),
-        right: Math.max(lassoStart.x, x),
-        bottom: Math.max(lassoStart.y, y),
+    const hitIds: string[] = [];
+    itemRefs.current.forEach((el, id) => {
+      const elRect = el.getBoundingClientRect();
+      const itemBox = {
+        left: elRect.left - rect.left,
+        top: elRect.top - rect.top,
+        right: elRect.right - rect.left,
+        bottom: elRect.bottom - rect.top,
       };
+      if (rectsOverlap(lasso, itemBox)) {
+        hitIds.push(id);
+      }
+    });
 
-      const hitIds: string[] = [];
-      const gridRect = gridRef.current.getBoundingClientRect();
-      itemRefs.current.forEach((el, id) => {
-        const elRect = el.getBoundingClientRect();
-        const itemBox = {
-          left: elRect.left - gridRect.left,
-          top: elRect.top - gridRect.top,
-          right: elRect.right - gridRect.left,
-          bottom: elRect.bottom - gridRect.top,
-        };
-        if (rectsOverlap(lassoRect, itemBox)) {
-          hitIds.push(id);
-        }
-      });
+    const merged = new Set([...lassoBaseSelection.current, ...hitIds]);
+    onLibrarySelect?.(Array.from(merged));
+  }, [lassoStart, onLibrarySelect]);
 
-      const merged = new Set([...lassoBaseSelection.current, ...hitIds]);
-      onLibrarySelect?.(Array.from(merged));
-    };
-
-    const handlePointerUp = () => {
-      setLassoStart(null);
-      setLassoCurrent(null);
-    };
-
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', handlePointerUp);
-    return () => {
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', handlePointerUp);
-    };
-  }, [lassoStart, libraryItems, onLibrarySelect]);
+  const handleLassoPointerUp = useCallback(() => {
+    setLassoStart(null);
+    setLassoCurrent(null);
+  }, []);
 
   const handleGridPointerDown = useCallback((e: React.PointerEvent) => {
-    // Only start lasso on left click, on empty grid background
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest('[data-item-id]')) return;
     if (!gridRef.current) return;
+
+    e.preventDefault();
+    gridRef.current.setPointerCapture(e.pointerId);
 
     const rect = gridRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -412,12 +402,14 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
 
         {/* Imported files thumbnail grid with lasso selection */}
         {libraryItems.length > 0 ? (
-          <>
-            <div
-              ref={gridRef}
-              className="grid grid-cols-2 gap-2 relative select-none"
-              onPointerDown={handleGridPointerDown}
-            >
+          <div
+            ref={gridRef}
+            className="flex-1 relative select-none"
+            onPointerDown={handleGridPointerDown}
+            onPointerMove={handleLassoPointerMove}
+            onPointerUp={handleLassoPointerUp}
+          >
+            <div className="grid grid-cols-2 gap-2">
               {libraryItems.map((item, idx) => (
                 <ThumbnailItem
                   key={item.id}
@@ -432,36 +424,30 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
                   }}
                 />
               ))}
-
             </div>
 
             {/* Lasso rectangle overlay — fixed position (like Timeline) */}
             {lassoRect && lassoRect.width > 3 && lassoRect.height > 3 && (() => {
-              const gridRect = gridRef.current?.getBoundingClientRect();
-              if (!gridRect) return null;
+              const containerRect = gridRef.current?.getBoundingClientRect();
+              if (!containerRect) return null;
               return (
                 <div
                   className="pointer-events-none rounded-sm"
                   style={{
                     position: 'fixed',
-                    left: gridRect.left + lassoRect.left,
-                    top: gridRect.top + lassoRect.top,
+                    left: containerRect.left + lassoRect.left,
+                    top: containerRect.top + lassoRect.top,
                     width: lassoRect.width,
                     height: lassoRect.height,
                     zIndex: 9999,
-                    background: 'rgba(99, 102, 241, 0.12)',
-                    border: '1px solid rgba(99, 102, 241, 0.8)',
-                    boxShadow: '0 0 8px rgba(99, 102, 241, 0.15)',
+                    background: 'rgba(255, 255, 255, 0.08)',
+                    border: '1px solid rgba(255, 255, 255, 0.75)',
+                    boxShadow: '0 0 8px rgba(255, 255, 255, 0.15), inset 0 0 12px rgba(255, 255, 255, 0.04)',
                   }}
                 />
               );
             })()}
-            {libraryItems.length > 1 && (
-              <p className="text-[9px] text-gray-600 mt-3 text-center">
-                드래그: 범위선택 | Ctrl/Cmd+클릭: 다중선택
-              </p>
-            )}
-          </>
+          </div>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center py-8">
             <span className="material-icons text-gray-600 text-4xl mb-2">video_library</span>
