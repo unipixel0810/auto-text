@@ -53,7 +53,7 @@ interface ThumbnailItemProps {
   selectedCount: number;
   onSelect: (e: React.MouseEvent) => void;
   onDragStart: (e: React.DragEvent, item: LibraryItem) => void;
-  itemRef: (el: HTMLButtonElement | null) => void;
+  itemRef: (el: HTMLDivElement | null) => void;
 }
 
 function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart, itemRef }: ThumbnailItemProps) {
@@ -69,10 +69,13 @@ function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart,
   };
 
   return (
-    <button
+    <div
       ref={itemRef}
       data-item-id={item.id}
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onMouseDown={(e) => e.stopPropagation()}
       draggable
       onDragStart={(e) => onDragStart(e, item)}
       className={`relative group rounded-lg overflow-hidden border transition-all duration-150 hover:scale-[1.03] active:scale-95 cursor-grab active:cursor-grabbing ${isSelected ? 'border-primary ring-1 ring-primary' : 'border-transparent hover:border-gray-600'
@@ -116,7 +119,7 @@ function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart,
       <div className="px-1.5 py-1 bg-panel-bg">
         <p className="text-[10px] text-gray-300 truncate">{item.name}</p>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -135,7 +138,7 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
 
   // Lasso selection state
   const gridRef = useRef<HTMLDivElement>(null);
-  const itemRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const [lassoStart, setLassoStart] = useState<{ x: number; y: number } | null>(null);
   const [lassoCurrent, setLassoCurrent] = useState<{ x: number; y: number } | null>(null);
   const lassoBaseSelection = useRef<string[]>([]);
