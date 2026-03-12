@@ -54,6 +54,8 @@ export default function Home() {
   const [rightPct, setRightPct] = useState(18); // % of window width
   const [timelinePct, setTimelinePct] = useState(35); // % of window height
   const [viewerZoom, setViewerZoom] = useState(100);
+  const [libraryColumns, setLibraryColumns] = useState(2); // Local 패널 그리드 컬럼 수
+  const [timelineHeightScale, setTimelineHeightScale] = useState(1); // 타임라인 높이 배율
   const [playbackQuality, setPlaybackQuality] = useState<'auto' | 'high' | 'medium' | 'low'>('auto');
   const [canvasAspectRatio, setCanvasAspectRatio] = useState<'16:9' | '9:16' | '1:1' | '3:4'>('16:9');
   const [activeSection, setActiveSection] = useState<'library' | 'viewer' | 'inspector' | 'timeline'>('viewer');
@@ -1277,15 +1279,27 @@ export default function Home() {
         return;
       }
 
-      // --- TIMELINE ZOOM (always, Cmd+= / Cmd+- / Cmd+Shift+F) ---
-      if (cmd && (e.key === '=' || e.key === '+')) {
+      // --- Cmd+/- : activeSection에 따라 각 패널 줌 ---
+      if (cmd && !shift && (e.key === '=' || e.key === '+')) {
         e.preventDefault();
-        setTimelineZoom(prev => Math.min(MAX_ZOOM, prev * ZOOM_STEP));
+        if (activeSection === 'library') {
+          setLibraryColumns(prev => Math.max(1, prev - 1)); // 컬럼 줄임 = 확대
+        } else if (activeSection === 'viewer') {
+          setViewerZoom(prev => Math.min(200, prev + 25));
+        } else if (activeSection === 'timeline') {
+          setTimelineZoom(prev => Math.min(MAX_ZOOM, prev * ZOOM_STEP));
+        }
         return;
       }
-      if (cmd && e.key === '-' && !shift) {
+      if (cmd && !shift && e.key === '-') {
         e.preventDefault();
-        setTimelineZoom(prev => Math.max(MIN_ZOOM, prev / ZOOM_STEP));
+        if (activeSection === 'library') {
+          setLibraryColumns(prev => Math.min(5, prev + 1)); // 컬럼 늘림 = 축소
+        } else if (activeSection === 'viewer') {
+          setViewerZoom(prev => Math.max(25, prev - 25));
+        } else if (activeSection === 'timeline') {
+          setTimelineZoom(prev => Math.max(MIN_ZOOM, prev / ZOOM_STEP));
+        }
         return;
       }
       if (cmd && shift && e.code === 'KeyF') {
@@ -1294,7 +1308,7 @@ export default function Home() {
         return;
       }
 
-      // --- UNDO / REDO (always, even in inputs for consistency) ---
+      // --- UNDO / REDO ---
       if (cmd && !shift && e.code === 'KeyZ') {
         e.preventDefault();
         handleUndo();
@@ -1303,18 +1317,6 @@ export default function Home() {
       if (cmd && shift && e.code === 'KeyZ') {
         e.preventDefault();
         handleRedo();
-        return;
-      }
-
-      // --- VIEWER ZOOM (Alt+= / Alt+- — also match Mac special chars ≠/–) ---
-      if (e.altKey && !cmd && (e.key === '=' || e.key === '+' || e.key === '≠' || e.code === 'Equal')) {
-        e.preventDefault();
-        setViewerZoom(prev => Math.min(200, prev + 25));
-        return;
-      }
-      if (e.altKey && !cmd && (e.key === '-' || e.key === '–' || e.code === 'Minus')) {
-        e.preventDefault();
-        setViewerZoom(prev => Math.max(25, prev - 25));
         return;
       }
 
@@ -2084,6 +2086,7 @@ export default function Home() {
               selectedLibraryIds={selectedLibraryIds}
               onLibrarySelect={setSelectedLibraryIds}
               onLibraryDelete={handleLibraryDelete}
+              columns={libraryColumns}
             />
           </div>
           {/* Left Divider */}
@@ -2234,6 +2237,8 @@ export default function Home() {
             onSubtitleAdd={handleSubtitleAdd}
             isTimelineHovered={isTimelineHovered}
             onHoverChange={setIsTimelineHovered}
+            trackHeightScale={timelineHeightScale}
+            onTrackHeightScaleChange={setTimelineHeightScale}
           />
         </div>
       </div>

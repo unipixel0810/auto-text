@@ -40,6 +40,8 @@ interface TimelineProps {
   isTimelineHovered?: boolean;
   onHoverChange?: (hovered: boolean) => void;
   onPlayheadDragChange?: (isDragging: boolean) => void;
+  trackHeightScale?: number;
+  onTrackHeightScaleChange?: (scale: number) => void;
 }
 
 const TRACK_CONTROLS_WIDTH = 80;
@@ -357,6 +359,7 @@ const Timeline = React.memo(({
   clips, playheadPosition, playbackPosition = 0, isPlaying = false, currentTool = 'selection', onToolChange, selectedClipIds = [], zoom, onZoomChange, snapEnabled = true, onSnapToggle,
   onPlayheadChange, onHoverTimeChange, onClipAdd, onFilesAdd, onSubtitleAdd, onClipUpdate, onClipSelect, onClipDelete,
   onSplit, onUndo, onRedo, onSpeedChange, onFitToScreen, onTrimLeft, onTrimRight, rippleMode, onRippleToggle, onResizeEnd, onInteractionStart, onInteractionEnd, isTimelineHovered, onHoverChange, onPlayheadDragChange,
+  trackHeightScale: trackHeightScaleProp, onTrackHeightScaleChange,
 }: TimelineProps) => {
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; clipIds: string[] } | null>(null);
@@ -470,7 +473,11 @@ const Timeline = React.memo(({
   }, [groupedClips]);
 
   const pixelsPerSecond = useMemo(() => 50 * zoom, [zoom]);
-  const [trackHeightScale, setTrackHeightScale] = useState(1);
+  const trackHeightScale = trackHeightScaleProp ?? 1;
+  const setTrackHeightScale = useCallback((v: number | ((prev: number) => number)) => {
+    const next = typeof v === 'function' ? v(trackHeightScale) : v;
+    onTrackHeightScaleChange?.(next);
+  }, [trackHeightScale, onTrackHeightScaleChange]);
 
   const maxTime = useMemo(() => Math.max(clips.length > 0 ? Math.max(...clips.map(c => c.startTime + c.duration)) + 10 : 60, playheadPosition + 10), [clips, playheadPosition]);
   const playheadX = useMemo(() => TRACK_CONTROLS_WIDTH + (playheadPosition * pixelsPerSecond), [playheadPosition, pixelsPerSecond]);

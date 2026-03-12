@@ -11,6 +11,7 @@ interface LeftSidebarProps {
   selectedLibraryIds?: string[];
   onLibrarySelect?: (ids: string[]) => void;
   onLibraryDelete?: (ids: string[]) => void;
+  columns?: number;
 }
 
 function isSubtitleFile(file: File): boolean {
@@ -131,7 +132,7 @@ function rectsOverlap(
   return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
 
-export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems = [], selectedLibraryIds = [], onLibrarySelect, onLibraryDelete }: LeftSidebarProps) {
+export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems = [], selectedLibraryIds = [], onLibrarySelect, onLibraryDelete, columns = 2 }: LeftSidebarProps) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastClickedIndexRef = useRef<number>(-1);
@@ -409,7 +410,7 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
             onPointerMove={handleLassoPointerMove}
             onPointerUp={handleLassoPointerUp}
           >
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }}>
               {libraryItems.map((item, idx) => (
                 <ThumbnailItem
                   key={item.id}
