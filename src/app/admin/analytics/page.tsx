@@ -127,7 +127,7 @@ export default function AnalyticsOverview() {
                       <div key={i}>
                         <div className="flex justify-between text-xs mb-1">
                           <span className="text-gray-400 truncate max-w-[200px]">{p.name}</span>
-                          <span className="text-white font-bold">{p.value.toLocaleString()}</span>
+                          <span className="text-white font-bold">{(p.value ?? 0).toLocaleString()}</span>
                         </div>
                         <div className="h-1.5 bg-[#1a1a2e] rounded-full overflow-hidden">
                           <div className="h-full rounded-full bg-[#00D4D4]" style={{ width: `${(p.value / maxVal) * 100}%` }} />

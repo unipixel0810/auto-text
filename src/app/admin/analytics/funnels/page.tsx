@@ -84,7 +84,7 @@ export default function FunnelsPage() {
                             <div className="flex justify-between text-xs mb-1">
                               <span className="text-gray-300 font-medium truncate">{step.name}</span>
                               <div className="flex items-center gap-3 shrink-0">
-                                <span className="text-white font-bold">{step.count.toLocaleString()}</span>
+                                <span className="text-white font-bold">{(step.count ?? 0).toLocaleString()}</span>
                                 <span className="font-bold" style={{ color: barColor }}>{pct}%</span>
                                 {si > 0 && <span className="text-red-400 text-[11px]">-{dropOff}%</span>}
                               </div>
@@ -109,7 +109,7 @@ export default function FunnelsPage() {
                         전체 전환율: <span className="text-[#00D4D4] font-bold text-sm">{safePercent(steps[steps.length - 1].count, steps[0].count)}%</span>
                       </div>
                       <div className="text-xs text-gray-500">
-                        총 이탈: <span className="text-red-400 font-bold text-sm">{(steps[0].count - steps[steps.length - 1].count).toLocaleString()}</span>
+                        총 이탈: <span className="text-red-400 font-bold text-sm">{((steps[0]?.count ?? 0) - (steps[steps.length - 1]?.count ?? 0)).toLocaleString()}</span>
                       </div>
                     </div>
                   )}

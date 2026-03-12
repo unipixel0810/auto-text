@@ -6,7 +6,7 @@ import { getRetentionData } from '@/lib/analytics/retention';
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const action = searchParams.get('action');
+    const action = searchParams.get('action') || searchParams.get('type');
 
     if (action === 'pages') {
       const days = searchParams.get('days');

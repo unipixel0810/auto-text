@@ -178,7 +178,7 @@ export default function DemographicsPage() {
             {/* Connection type stats */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {connectionTypes.length > 0 && connectionTypes.map((ct, i) => (
-                <KPICard key={i} title={`연결: ${ct.name}`} value={ct.value.toLocaleString()} icon="wifi" color={COLORS[i % COLORS.length]} />
+                <KPICard key={i} title={`연결: ${ct.name}`} value={(ct.value ?? 0).toLocaleString()} icon="wifi" color={COLORS[i % COLORS.length]} />
               ))}
               <KPICard title="터치 지원" value={`${touchPct.toFixed(1)}%`} icon="touch_app" color="#EC4899" />
               <KPICard title="쿠키 허용" value={`${cookiePct.toFixed(1)}%`} icon="cookie" color="#10B981" />
