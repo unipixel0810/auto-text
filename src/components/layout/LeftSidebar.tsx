@@ -173,19 +173,17 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     return () => window.removeEventListener('keydown', onKey);
   }, [libraryItems, onLibrarySelect]);
 
-  // Lasso mouse events
+  // Lasso: pointer events (like Timeline) — completely separate from native drag
   useEffect(() => {
     if (!lassoStart) return;
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
       if (!gridRef.current) return;
       const rect = gridRef.current.getBoundingClientRect();
-      const scrollTop = gridRef.current.closest('[class*="overflow-y"]')?.scrollTop || 0;
       const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top + scrollTop;
+      const y = e.clientY - rect.top;
       setLassoCurrent({ x, y });
 
-      // Compute lasso rect
       const lassoRect = {
         left: Math.min(lassoStart.x, x),
         top: Math.min(lassoStart.y, y),
@@ -193,57 +191,52 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
         bottom: Math.max(lassoStart.y, y),
       };
 
-      // Find items that overlap with lasso
       const hitIds: string[] = [];
+      const gridRect = gridRef.current.getBoundingClientRect();
       itemRefs.current.forEach((el, id) => {
         const elRect = el.getBoundingClientRect();
-        const gridRect = gridRef.current!.getBoundingClientRect();
-        const scrollT = gridRef.current!.closest('[class*="overflow-y"]')?.scrollTop || 0;
         const itemBox = {
           left: elRect.left - gridRect.left,
-          top: elRect.top - gridRect.top + scrollT,
+          top: elRect.top - gridRect.top,
           right: elRect.right - gridRect.left,
-          bottom: elRect.bottom - gridRect.top + scrollT,
+          bottom: elRect.bottom - gridRect.top,
         };
         if (rectsOverlap(lassoRect, itemBox)) {
           hitIds.push(id);
         }
       });
 
-      // Merge with base selection
       const merged = new Set([...lassoBaseSelection.current, ...hitIds]);
       onLibrarySelect?.(Array.from(merged));
     };
 
-    const handleMouseUp = () => {
+    const handlePointerUp = () => {
       setLassoStart(null);
       setLassoCurrent(null);
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
     };
   }, [lassoStart, libraryItems, onLibrarySelect]);
 
-  const handleGridMouseDown = useCallback((e: React.MouseEvent) => {
-    // Only start lasso when clicking on the grid background (not on items)
+  const handleGridPointerDown = useCallback((e: React.PointerEvent) => {
+    // Only start lasso on left click, on empty grid background
+    if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest('[data-item-id]')) return;
     if (!gridRef.current) return;
 
     const rect = gridRef.current.getBoundingClientRect();
-    const scrollTop = gridRef.current.closest('[class*="overflow-y"]')?.scrollTop || 0;
     const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top + scrollTop;
+    const y = e.clientY - rect.top;
 
-    // Hold Ctrl/Cmd to add to existing selection
     lassoBaseSelection.current = (e.metaKey || e.ctrlKey) ? [...selectedLibraryIds] : [];
     setLassoStart({ x, y });
     setLassoCurrent({ x, y });
 
-    // If not holding modifier, clear selection
     if (!e.metaKey && !e.ctrlKey) {
       onLibrarySelect?.([]);
     }
@@ -423,7 +416,7 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
             <div
               ref={gridRef}
               className="grid grid-cols-2 gap-2 relative select-none"
-              onMouseDown={handleGridMouseDown}
+              onPointerDown={handleGridPointerDown}
             >
               {libraryItems.map((item, idx) => (
                 <ThumbnailItem
