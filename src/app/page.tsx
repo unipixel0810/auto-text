@@ -527,7 +527,13 @@ export default function Home() {
   }, []);
 
 
-  const handleClipAdd = useCallback((file: File | null, trackIndex: number, startTime: number, libraryItemId?: string) => {
+  // 클립 교체 확인 모달 상태
+  const [replaceConfirm, setReplaceConfirm] = useState<{
+    overlappingClipIds: string[];
+    pendingArgs: [File | null, number, number, string | undefined];
+  } | null>(null);
+
+  const handleClipAdd = useCallback((file: File | null, trackIndex: number, startTime: number, libraryItemId?: string, skipOverwriteCheck?: boolean) => {
     const clipId = genId();
     let url = '';
     let name = '';
@@ -552,48 +558,34 @@ export default function Home() {
       return;
     }
 
-    // Track logic:
-    // Main track (trackIndex 1) is the default for ALL media types (video, audio, image).
-    // Only subtitle tracks (0, 5-8) are strictly respected.
-    // If main track is occupied at that time, fall back to the drop target or overlay.
+    // Track logic
     let finalTrackIndex = trackIndex;
     if (trackIndex === 0 || (trackIndex >= 5 && trackIndex <= 8)) {
-      finalTrackIndex = trackIndex; // Subtitle tracks stay as-is
+      finalTrackIndex = trackIndex;
     } else if (trackIndex >= 10 && trackIndex <= 14) {
-      // Explicitly dropped on overlay track — respect it
       finalTrackIndex = trackIndex;
     } else if (trackIndex >= 20 && trackIndex <= 22) {
-      // Explicitly dropped on audio track — respect it
       finalTrackIndex = trackIndex;
     } else {
-      // Dropped on main track (1) or unknown
-      const hasClipInMainAtTime = clipsRef.current.some(c =>
-        c.trackIndex === 1 &&
-        ((startTime >= c.startTime && startTime < c.startTime + c.duration) ||
-         (startTime + duration > c.startTime && startTime + duration <= c.startTime + c.duration))
-      );
+      finalTrackIndex = 1;
+    }
 
-      if (!hasClipInMainAtTime) {
-        finalTrackIndex = 1;
-      } else {
-        // Main occupied — auto-find next free track
-        if (type === 'audio') {
-          finalTrackIndex = [20, 21, 22].find(ti =>
-            !clipsRef.current.some(c => c.trackIndex === ti &&
-              startTime < c.startTime + c.duration && startTime + duration > c.startTime)
-          ) ?? 20;
-        } else {
-          finalTrackIndex = [10, 11, 12, 13, 14].find(ti =>
-            !clipsRef.current.some(c => c.trackIndex === ti &&
-              startTime < c.startTime + c.duration && startTime + duration > c.startTime)
-          ) ?? 10;
-        }
+    // 같은 트랙, 드롭 지점에 기존 클립이 있으면 교체 확인
+    if (!skipOverwriteCheck) {
+      const overlapping = clipsRef.current.filter(c =>
+        c.trackIndex === finalTrackIndex &&
+        startTime >= c.startTime && startTime < c.startTime + c.duration
+      );
+      if (overlapping.length > 0) {
+        setReplaceConfirm({
+          overlappingClipIds: overlapping.map(c => c.id),
+          pendingArgs: [file, trackIndex, startTime, libraryItemId],
+        });
+        return;
       }
     }
 
     // Helper: generate lightweight proxy thumbnails with async queue (non-blocking)
-    // Phase 1: Extract 4 quick preview thumbnails immediately for instant visual feedback
-    // Phase 2: Remaining thumbnails generated lazily via requestAnimationFrame yielding
     const generateThumbnails = (videoEl: HTMLVideoElement, dur: number, cid: string) => {
       const THUMB_W = 160;  // small enough for timeline display
       const THUMB_H = 90;
@@ -1053,11 +1045,6 @@ export default function Home() {
     setSelectedClipIds(clipIds);
   }, []);
 
-  const handleLibraryDelete = useCallback((ids: string[]) => {
-    setLibraryItems(prev => prev.filter(item => !ids.includes(item.id)));
-    setSelectedLibraryIds([]);
-  }, []);
-
   // Close gaps on main track: sort by startTime, shift each to end of previous
   const rippleCloseGaps = useCallback((clips: VideoClip[]): VideoClip[] => {
     const mainClips = clips.filter(c => c.trackIndex === 1).sort((a, b) => a.startTime - b.startTime);
@@ -1070,6 +1057,29 @@ export default function Home() {
     });
     return [...others, ...adjusted];
   }, []);
+
+  const handleLibraryDelete = useCallback((ids: string[]) => {
+    // 삭제 대상 라이브러리 아이템의 URL 수집
+    const deletedUrls = new Set(
+      libraryItems.filter(item => ids.includes(item.id)).map(item => item.url)
+    );
+
+    setLibraryItems(prev => prev.filter(item => !ids.includes(item.id)));
+    setSelectedLibraryIds([]);
+
+    // 타임라인에서 해당 URL을 사용하는 클립도 함께 삭제
+    if (deletedUrls.size > 0) {
+      setClipsSynced(prev => {
+        const remaining = prev.filter(c => !c.url || !deletedUrls.has(c.url));
+        if (currentVideoUrl && deletedUrls.has(currentVideoUrl)) {
+          const next = remaining.find(c => c.trackIndex === 1 && c.url);
+          setCurrentVideoUrl(next?.url);
+        }
+        return rippleModeRef.current ? rippleCloseGaps(remaining) : remaining;
+      });
+      setSelectedClipIdsSynced([]);
+    }
+  }, [libraryItems, currentVideoUrl, rippleCloseGaps, setClipsSynced, setSelectedClipIdsSynced]);
 
   /**
    * 클립 삭제 — 모든 삭제 경로(키보드 Delete, 툴바 버튼, 우클릭, 리사이즈 임계값)의 단일 진입점
@@ -2227,6 +2237,36 @@ export default function Home() {
           />
         </div>
       </div>
+      {/* 클립 교체 확인 모달 */}
+      {replaceConfirm && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60">
+          <div className="bg-panel-bg border border-border-color rounded-xl p-6 max-w-sm w-full mx-4 shadow-2xl">
+            <h3 className="text-sm font-semibold text-white mb-2">클립 교체</h3>
+            <p className="text-xs text-gray-400 mb-5">
+              해당 위치에 이미 클립이 있습니다. 기존 클립을 삭제하고 새 클립으로 교체하시겠습니까?
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                className="px-4 py-1.5 text-xs rounded-lg border border-border-color text-gray-300 hover:bg-white/5 transition-colors"
+                onClick={() => setReplaceConfirm(null)}
+              >
+                취소
+              </button>
+              <button
+                className="px-4 py-1.5 text-xs rounded-lg bg-primary hover:bg-primary/80 text-black font-medium transition-colors"
+                onClick={() => {
+                  const { overlappingClipIds, pendingArgs } = replaceConfirm;
+                  setClipsSynced(prev => prev.filter(c => !overlappingClipIds.includes(c.id)));
+                  setReplaceConfirm(null);
+                  handleClipAdd(pendingArgs[0], pendingArgs[1], pendingArgs[2], pendingArgs[3], true);
+                }}
+              >
+                교체
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </ShortcutsProvider>
   );
 }

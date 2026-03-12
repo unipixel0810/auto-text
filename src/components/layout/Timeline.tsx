@@ -52,22 +52,22 @@ const MAX_ZOOM = 5;
 // Track definitions — dynamic tracks are built from clips
 type TrackDef = { trackIndex: number; label: string; icon: string; color: string; height: string };
 
-const MAIN_TRACK: TrackDef = { trackIndex: 1, label: 'Main', icon: 'movie', color: 'blue', height: 'h-16' };
+const MAIN_TRACK: TrackDef = { trackIndex: 1, label: 'Main', icon: 'movie', color: 'blue', height: 'h-20' };
 
 // All possible above/below tracks (used for lookups)
 const ABOVE_TRACKS: TrackDef[] = [
-  { trackIndex: 14, label: 'V5', icon: 'layers', color: 'cyan', height: 'h-12' },
-  { trackIndex: 13, label: 'V4', icon: 'layers', color: 'cyan', height: 'h-12' },
-  { trackIndex: 12, label: 'V3', icon: 'layers', color: 'cyan', height: 'h-12' },
-  { trackIndex: 11, label: 'V2', icon: 'layers', color: 'cyan', height: 'h-12' },
-  { trackIndex: 10, label: 'V1', icon: 'layers', color: 'cyan', height: 'h-12' },
-  { trackIndex: 5, label: 'AI 자막', icon: 'auto_awesome', color: 'pink', height: 'h-8' },
-  { trackIndex: 0, label: '대본', icon: 'subtitles', color: 'purple', height: 'h-8' },
+  { trackIndex: 14, label: 'V5', icon: 'layers', color: 'cyan', height: 'h-16' },
+  { trackIndex: 13, label: 'V4', icon: 'layers', color: 'cyan', height: 'h-16' },
+  { trackIndex: 12, label: 'V3', icon: 'layers', color: 'cyan', height: 'h-16' },
+  { trackIndex: 11, label: 'V2', icon: 'layers', color: 'cyan', height: 'h-16' },
+  { trackIndex: 10, label: 'V1', icon: 'layers', color: 'cyan', height: 'h-16' },
+  { trackIndex: 5, label: 'AI 자막', icon: 'auto_awesome', color: 'pink', height: 'h-10' },
+  { trackIndex: 0, label: '대본', icon: 'subtitles', color: 'purple', height: 'h-10' },
 ];
 const BELOW_TRACKS: TrackDef[] = [
-  { trackIndex: 20, label: 'A1', icon: 'audiotrack', color: 'green', height: 'h-12' },
-  { trackIndex: 21, label: 'A2', icon: 'audiotrack', color: 'green', height: 'h-12' },
-  { trackIndex: 22, label: 'A3', icon: 'audiotrack', color: 'green', height: 'h-12' },
+  { trackIndex: 20, label: 'A1', icon: 'audiotrack', color: 'green', height: 'h-16' },
+  { trackIndex: 21, label: 'A2', icon: 'audiotrack', color: 'green', height: 'h-16' },
+  { trackIndex: 22, label: 'A3', icon: 'audiotrack', color: 'green', height: 'h-16' },
 ];
 
 // Static fallback for init (visibility/lock state)
@@ -470,6 +470,7 @@ const Timeline = React.memo(({
   }, [groupedClips]);
 
   const pixelsPerSecond = useMemo(() => 50 * zoom, [zoom]);
+  const [trackHeightScale, setTrackHeightScale] = useState(1);
 
   const maxTime = useMemo(() => Math.max(clips.length > 0 ? Math.max(...clips.map(c => c.startTime + c.duration)) + 10 : 60, playheadPosition + 10), [clips, playheadPosition]);
   const playheadX = useMemo(() => TRACK_CONTROLS_WIDTH + (playheadPosition * pixelsPerSecond), [playheadPosition, pixelsPerSecond]);
@@ -1500,6 +1501,19 @@ const Timeline = React.memo(({
             </button>
           </Tooltip>
           <span className="text-[9px] text-gray-500 font-mono w-8 text-right">{(zoom * 100).toFixed(0)}%</span>
+          <div className="w-px h-4 bg-gray-700" />
+          <Tooltip label="Track Height">
+            <button
+              onClick={() => setTrackHeightScale(1)}
+              className="p-1 rounded text-gray-400 hover:text-white hover:bg-white/10 transition-all active:scale-90"
+            >
+              <span className="material-icons text-sm">unfold_more</span>
+            </button>
+          </Tooltip>
+          <input className="w-16 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#00D4D4]"
+            type="range" min={0.5} max={2.5} step={0.1} value={trackHeightScale}
+            onChange={(e) => setTrackHeightScale(Number(e.target.value))} />
+          <span className="text-[9px] text-gray-500 font-mono w-6 text-right">{(trackHeightScale * 100).toFixed(0)}%</span>
         </div>
       </div>
 
@@ -1732,20 +1746,22 @@ const Timeline = React.memo(({
                 {isFirstAudio && (
                   <div className="h-4 bg-black/30 border-y border-white/5 shrink-0" />
                 )}
-                <div className={`flex ${track.height} shrink-0`}>
+                <div className="flex shrink-0" style={{ height: `${parseFloat(track.height.replace('h-', '')) * 4 * trackHeightScale}px` }}>
                   <div className="w-20 bg-panel-bg border-r border-border-color flex flex-col justify-center items-center shrink-0 z-10 gap-0.5">
                     <span className={`material-icons text-sm text-${track.color}-400`} title={track.label}>{track.icon}</span>
                     <span className={`text-[9px] text-${track.color}-400/70`}>{track.label}</span>
                     {trackClips.length > 0 && track.trackIndex !== 1 && (
-                      <div className="flex space-x-1">
+                      <div className="flex items-center gap-1">
                         <span
-                          className={`material-icons text-[11px] cursor-pointer hover:text-white transition-all ${isVisible ? 'text-gray-500' : 'text-gray-700'}`}
+                          className={`material-icons cursor-pointer hover:text-white transition-all leading-none ${isVisible ? 'text-gray-500' : 'text-gray-700'}`}
+                          style={{ fontSize: '10px', width: '10px', height: '10px' }}
                           onClick={() => setTrackVisibility(prev => ({ ...prev, [track.trackIndex]: !prev[track.trackIndex] }))}
                         >
                           {isVisible ? 'visibility' : 'visibility_off'}
                         </span>
                         <span
-                          className={`material-icons text-[11px] cursor-pointer hover:text-white transition-all ${isLocked ? 'text-[#00D4D4]' : 'text-gray-500'}`}
+                          className={`material-icons cursor-pointer hover:text-white transition-all leading-none ${isLocked ? 'text-[#00D4D4]' : 'text-gray-500'}`}
+                          style={{ fontSize: '10px', width: '10px', height: '10px' }}
                           onClick={() => setTrackLocked(prev => ({ ...prev, [track.trackIndex]: !prev[track.trackIndex] }))}
                         >
                           {isLocked ? 'lock' : 'lock_open'}
