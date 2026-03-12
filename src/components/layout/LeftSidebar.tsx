@@ -433,19 +433,29 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
                 />
               ))}
 
-              {/* Lasso rectangle overlay */}
-              {lassoRect && lassoRect.width > 3 && lassoRect.height > 3 && (
+            </div>
+
+            {/* Lasso rectangle overlay — fixed position (like Timeline) */}
+            {lassoRect && lassoRect.width > 3 && lassoRect.height > 3 && (() => {
+              const gridRect = gridRef.current?.getBoundingClientRect();
+              if (!gridRect) return null;
+              return (
                 <div
-                  className="absolute pointer-events-none border border-primary bg-primary/10 rounded-sm z-50"
+                  className="pointer-events-none rounded-sm"
                   style={{
-                    left: lassoRect.left,
-                    top: lassoRect.top,
+                    position: 'fixed',
+                    left: gridRect.left + lassoRect.left,
+                    top: gridRect.top + lassoRect.top,
                     width: lassoRect.width,
                     height: lassoRect.height,
+                    zIndex: 9999,
+                    background: 'rgba(99, 102, 241, 0.12)',
+                    border: '1px solid rgba(99, 102, 241, 0.8)',
+                    boxShadow: '0 0 8px rgba(99, 102, 241, 0.15)',
                   }}
                 />
-              )}
-            </div>
+              );
+            })()}
             {libraryItems.length > 1 && (
               <p className="text-[9px] text-gray-600 mt-3 text-center">
                 드래그: 범위선택 | Ctrl/Cmd+클릭: 다중선택
