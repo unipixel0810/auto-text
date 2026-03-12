@@ -4,10 +4,15 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 
 /* ───────── 타입 ───────── */
 
+type TriggerType = 'page_view' | 'click' | 'custom';
+
 interface FunnelStep {
   name: string;
   label: string;
   order: number;
+  trigger?: TriggerType;
+  url_pattern?: string;   // page_view: URL 경로 (예: /landing, /pricing)
+  css_selector?: string;  // click: CSS 선택자 (예: #cta-button, .signup-btn)
 }
 
 interface FunnelDefinition {
@@ -388,15 +393,15 @@ function FunnelBuilderModal({
   const [description, setDescription] = useState(funnel?.description || '');
   const [steps, setSteps] = useState<FunnelStep[]>(
     funnel?.steps || [
-      { name: '', label: '', order: 1 },
-      { name: '', label: '', order: 2 },
+      { name: '', label: '', order: 1, trigger: 'page_view', url_pattern: '' },
+      { name: '', label: '', order: 2, trigger: 'page_view', url_pattern: '' },
     ]
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const addStep = () => {
-    setSteps(prev => [...prev, { name: '', label: '', order: prev.length + 1 }]);
+    setSteps(prev => [...prev, { name: '', label: '', order: prev.length + 1, trigger: 'page_view', url_pattern: '' }]);
   };
 
   const removeStep = (idx: number) => {
@@ -404,8 +409,23 @@ function FunnelBuilderModal({
     setSteps(prev => prev.filter((_, i) => i !== idx).map((s, i) => ({ ...s, order: i + 1 })));
   };
 
-  const updateStep = (idx: number, field: 'name' | 'label', value: string) => {
-    setSteps(prev => prev.map((s, i) => i === idx ? { ...s, [field]: value } : s));
+  const updateStep = (idx: number, field: keyof FunnelStep, value: string) => {
+    setSteps(prev => prev.map((s, i) => {
+      if (i !== idx) return s;
+      const updated = { ...s, [field]: value };
+      // trigger 변경 시 자동으로 name 생성
+      if (field === 'trigger') {
+        updated.url_pattern = '';
+        updated.css_selector = '';
+      }
+      if (field === 'url_pattern' && !s.name) {
+        updated.name = `pageview_${value.replace(/\//g, '_').replace(/^_/, '')}`;
+      }
+      if (field === 'css_selector' && !s.name) {
+        updated.name = `click_${value.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      }
+      return updated;
+    }));
   };
 
   const moveStep = (idx: number, direction: -1 | 1) => {
@@ -420,14 +440,34 @@ function FunnelBuilderModal({
 
   const handleSave = async () => {
     if (!name.trim()) { setError('퍼널 이름을 입력하세요.'); return; }
-    const emptyStep = steps.find(s => !s.name.trim() || !s.label.trim());
-    if (emptyStep) { setError('모든 단계의 이벤트 키와 표시 이름을 입력하세요.'); return; }
+
+    // Auto-generate name for page_view / click triggers
+    const finalSteps = steps.map(s => {
+      const trigger = s.trigger || 'custom';
+      let stepName = s.name;
+      if (trigger === 'page_view' && s.url_pattern) {
+        stepName = stepName || `pageview_${s.url_pattern.replace(/\//g, '_').replace(/^_/, '')}`;
+      } else if (trigger === 'click' && s.css_selector) {
+        stepName = stepName || `click_${s.css_selector.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      }
+      return { ...s, name: stepName };
+    });
+
+    const emptyStep = finalSteps.find(s => {
+      const trigger = s.trigger || 'custom';
+      if (!s.label.trim()) return true;
+      if (trigger === 'page_view' && !s.url_pattern?.trim()) return true;
+      if (trigger === 'click' && !s.css_selector?.trim()) return true;
+      if (trigger === 'custom' && !s.name.trim()) return true;
+      return false;
+    });
+    if (emptyStep) { setError('모든 단계의 필수 필드를 입력하세요.'); return; }
 
     setSaving(true);
     setError('');
 
     try {
-      const body = { name: name.trim(), description: description.trim(), steps };
+      const body = { name: name.trim(), description: description.trim(), steps: finalSteps };
 
       if (isEditing) {
         await fetch(`/api/funnels/${funnel.id}`, {
@@ -498,54 +538,94 @@ function FunnelBuilderModal({
                 단계 추가
               </button>
             </div>
-            <div className="space-y-2">
-              {steps.map((step, idx) => (
-                <div key={idx} className="flex items-center gap-2 group">
-                  <span className="w-6 h-6 shrink-0 rounded-md bg-[#00D4D4]/10 text-[#00D4D4] flex items-center justify-center text-[11px] font-bold">
-                    {idx + 1}
-                  </span>
+            <div className="space-y-3">
+              {steps.map((step, idx) => {
+                const trigger = step.trigger || 'custom';
+                return (
+                  <div key={idx} className="bg-[#0a0a12] border border-[#1e1e2e] rounded-lg p-3 group">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="w-6 h-6 shrink-0 rounded-md bg-[#00D4D4]/10 text-[#00D4D4] flex items-center justify-center text-[11px] font-bold">
+                        {idx + 1}
+                      </span>
 
-                  <div className="flex-1 flex gap-2">
-                    <input
-                      value={step.name}
-                      onChange={e => updateStep(idx, 'name', e.target.value)}
-                      placeholder="이벤트 키 (예: page_view)"
-                      className="flex-1 px-3 py-2 bg-[#0a0a12] border border-[#2a2a3e] rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-[#00D4D4]/50 font-mono text-[12px]"
-                    />
-                    <input
-                      value={step.label}
-                      onChange={e => updateStep(idx, 'label', e.target.value)}
-                      placeholder="표시 이름 (예: 페이지 방문)"
-                      className="flex-1 px-3 py-2 bg-[#0a0a12] border border-[#2a2a3e] rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-[#00D4D4]/50"
-                    />
-                  </div>
+                      {/* 트리거 타입 선택 */}
+                      <div className="flex gap-1">
+                        {([
+                          { key: 'page_view', icon: 'language', tip: '페이지 방문' },
+                          { key: 'click', icon: 'ads_click', tip: '요소 클릭' },
+                          { key: 'custom', icon: 'code', tip: '커스텀 이벤트' },
+                        ] as const).map(t => (
+                          <button
+                            key={t.key}
+                            onClick={() => updateStep(idx, 'trigger', t.key)}
+                            title={t.tip}
+                            className={`px-2 py-1 rounded text-[10px] font-medium flex items-center gap-1 transition-all ${
+                              trigger === t.key
+                                ? 'bg-[#00D4D4]/15 text-[#00D4D4] border border-[#00D4D4]/30'
+                                : 'text-gray-500 border border-transparent hover:text-gray-300'
+                            }`}
+                          >
+                            <span className="material-symbols-outlined text-[13px]">{t.icon}</span>
+                            {t.tip}
+                          </button>
+                        ))}
+                      </div>
 
-                  {/* 순서 이동 + 삭제 */}
-                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={() => moveStep(idx, -1)}
-                      disabled={idx === 0}
-                      className="p-1 text-gray-500 hover:text-white disabled:opacity-20"
-                    >
-                      <span className="material-symbols-outlined text-[14px]">arrow_upward</span>
-                    </button>
-                    <button
-                      onClick={() => moveStep(idx, 1)}
-                      disabled={idx === steps.length - 1}
-                      className="p-1 text-gray-500 hover:text-white disabled:opacity-20"
-                    >
-                      <span className="material-symbols-outlined text-[14px]">arrow_downward</span>
-                    </button>
-                    <button
-                      onClick={() => removeStep(idx)}
-                      disabled={steps.length <= 2}
-                      className="p-1 text-gray-500 hover:text-red-400 disabled:opacity-20"
-                    >
-                      <span className="material-symbols-outlined text-[14px]">close</span>
-                    </button>
+                      <div className="flex-1" />
+
+                      {/* 순서 이동 + 삭제 */}
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => moveStep(idx, -1)} disabled={idx === 0}
+                          className="p-1 text-gray-500 hover:text-white disabled:opacity-20">
+                          <span className="material-symbols-outlined text-[14px]">arrow_upward</span>
+                        </button>
+                        <button onClick={() => moveStep(idx, 1)} disabled={idx === steps.length - 1}
+                          className="p-1 text-gray-500 hover:text-white disabled:opacity-20">
+                          <span className="material-symbols-outlined text-[14px]">arrow_downward</span>
+                        </button>
+                        <button onClick={() => removeStep(idx)} disabled={steps.length <= 2}
+                          className="p-1 text-gray-500 hover:text-red-400 disabled:opacity-20">
+                          <span className="material-symbols-outlined text-[14px]">close</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 트리거별 입력 필드 */}
+                    <div className="flex gap-2">
+                      {trigger === 'page_view' && (
+                        <input
+                          value={step.url_pattern || ''}
+                          onChange={e => updateStep(idx, 'url_pattern', e.target.value)}
+                          placeholder="URL 경로 (예: /landing, /pricing)"
+                          className="flex-1 px-3 py-2 bg-[#12121a] border border-[#2a2a3e] rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-[#00D4D4]/50 font-mono text-[12px]"
+                        />
+                      )}
+                      {trigger === 'click' && (
+                        <input
+                          value={step.css_selector || ''}
+                          onChange={e => updateStep(idx, 'css_selector', e.target.value)}
+                          placeholder="CSS 선택자 (예: #cta-btn, .signup-btn)"
+                          className="flex-1 px-3 py-2 bg-[#12121a] border border-[#2a2a3e] rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-[#00D4D4]/50 font-mono text-[12px]"
+                        />
+                      )}
+                      {trigger === 'custom' && (
+                        <input
+                          value={step.name}
+                          onChange={e => updateStep(idx, 'name', e.target.value)}
+                          placeholder="이벤트 키 (예: signup_complete)"
+                          className="flex-1 px-3 py-2 bg-[#12121a] border border-[#2a2a3e] rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-[#00D4D4]/50 font-mono text-[12px]"
+                        />
+                      )}
+                      <input
+                        value={step.label}
+                        onChange={e => updateStep(idx, 'label', e.target.value)}
+                        placeholder="표시 이름"
+                        className="flex-1 px-3 py-2 bg-[#12121a] border border-[#2a2a3e] rounded-lg text-white text-sm placeholder-gray-600 focus:outline-none focus:border-[#00D4D4]/50"
+                      />
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 

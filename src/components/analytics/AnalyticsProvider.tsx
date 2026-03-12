@@ -7,6 +7,7 @@ import { initTracker, destroyTracker, resetPageTracking } from '@/lib/analytics/
 import { initABTests } from '@/lib/analytics/ab-test';
 import { getSessionRecorder } from '@/lib/analytics/recorder';
 import { trackFunnelStep } from '@/lib/analytics/funnel';
+import { loadActiveFunnels, checkPageViewTriggers, setupClickTriggers, cleanupClickTriggers } from '@/lib/analytics/funnel-auto';
 
 export default function AnalyticsProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -38,9 +39,16 @@ export default function AnalyticsProvider({ children }: { children: React.ReactN
       recorderRef.current.start();
     }
 
+    // 커스텀 퍼널 자동 추적: 활성 퍼널 로드 → 클릭 리스너 설정 + 첫 페이지 체크
+    loadActiveFunnels().then(() => {
+      setupClickTriggers();
+      checkPageViewTriggers(pathname);
+    });
+
     return () => {
       clearTimeout(abTimer);
       destroyTracker();
+      cleanupClickTriggers();
       if (recorderRef.current) {
         recorderRef.current.stop();
       }
@@ -52,6 +60,9 @@ export default function AnalyticsProvider({ children }: { children: React.ReactN
     if (prevPath.current !== pathname) {
       prevPath.current = pathname;
       resetPageTracking();
+
+      // 페이지 변경 시 커스텀 퍼널 page_view 트리거 체크
+      checkPageViewTriggers(pathname);
 
       // 페이지 변경 시 세션 녹화 재시작
       if (recorderRef.current) {
