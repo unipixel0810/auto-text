@@ -4,7 +4,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import type { VideoClip, LibraryItem } from '@/types/video';
 
 interface LeftSidebarProps {
-  onVideoAdd?: (file: File) => void;
+  onVideoAdd?: (file: File) => string | void;
   onSubtitleImport?: (file: File) => void;
   clips?: VideoClip[];
   libraryItems?: LibraryItem[];
@@ -227,13 +227,21 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     }
   }, [selectedLibraryIds, libraryItems, onLibrarySelect]);
 
-  const routeFile = useCallback((file: File) => {
-    if (isSubtitleFile(file)) {
-      onSubtitleImport?.(file);
-    } else {
-      onVideoAdd?.(file);
+  // Route files and collect added IDs to auto-select them
+  const addFilesAndSelect = useCallback((files: File[]) => {
+    const addedIds: string[] = [];
+    for (const file of files) {
+      if (isSubtitleFile(file)) {
+        onSubtitleImport?.(file);
+      } else {
+        const id = onVideoAdd?.(file);
+        if (id) addedIds.push(id);
+      }
     }
-  }, [onVideoAdd, onSubtitleImport]);
+    if (addedIds.length > 0) {
+      onLibrarySelect?.(addedIds);
+    }
+  }, [onVideoAdd, onSubtitleImport, onLibrarySelect]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -252,14 +260,14 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     e.stopPropagation();
     setIsDragging(false);
     const files = Array.from(e.dataTransfer.files);
-    files.forEach(routeFile);
-  }, [routeFile]);
+    addFilesAndSelect(files);
+  }, [addFilesAndSelect]);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    files.forEach(routeFile);
+    addFilesAndSelect(files);
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [routeFile]);
+  }, [addFilesAndSelect]);
 
   const handleImportClick = useCallback(() => {
     fileInputRef.current?.click();
