@@ -18,7 +18,6 @@ function isSubtitleFile(file: File): boolean {
   return ext === 'srt' || ext === 'ass' || ext === 'ssa';
 }
 
-// Generate a thumbnail from a video URL
 function useVideoThumbnail(url: string, type: string): string | null {
   const [thumb, setThumb] = useState<string | null>(null);
   useEffect(() => {
@@ -41,13 +40,9 @@ function useVideoThumbnail(url: string, type: string): string | null {
           ctx.drawImage(video, 0, 0, 160, 90);
           setThumb(canvas.toDataURL('image/jpeg', 0.7));
         }
-      } catch {
-        // cross-origin or other error, ignore
-      }
+      } catch { /* ignore */ }
     };
-    return () => {
-      video.src = '';
-    };
+    return () => { video.src = ''; };
   }, [url, type]);
   return thumb;
 }
@@ -58,9 +53,10 @@ interface ThumbnailItemProps {
   selectedCount: number;
   onSelect: (e: React.MouseEvent) => void;
   onDragStart: (e: React.DragEvent, item: LibraryItem) => void;
+  itemRef: (el: HTMLButtonElement | null) => void;
 }
 
-function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart }: ThumbnailItemProps) {
+function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart, itemRef }: ThumbnailItemProps) {
   const thumbnail = useVideoThumbnail(item.url, item.type);
   const isVideo = item.type === 'video';
   const isAudio = item.type === 'audio';
@@ -74,6 +70,8 @@ function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart 
 
   return (
     <button
+      ref={itemRef}
+      data-item-id={item.id}
       onClick={onSelect}
       draggable
       onDragStart={(e) => onDragStart(e, item)}
@@ -81,7 +79,6 @@ function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart 
         }`}
       title={item.name}
     >
-      {/* Thumbnail area */}
       <div className="aspect-video bg-gray-800 flex items-center justify-center">
         {isVideo && thumbnail ? (
           <img src={thumbnail} alt={item.name} className="w-full h-full object-cover" />
@@ -97,21 +94,18 @@ function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart 
           <span className="material-icons text-gray-500 text-3xl">insert_drive_file</span>
         )}
 
-        {/* Duration badge */}
         {item.duration > 0 && !isImage && (
           <span className="absolute bottom-1 right-1 bg-black/80 text-[9px] text-white px-1 rounded">
             {formatDuration(item.duration)}
           </span>
         )}
 
-        {/* Selection checkbox */}
         {isSelected && (
           <span className="absolute top-1 left-1 w-5 h-5 bg-primary rounded-full flex items-center justify-center">
             <span className="material-icons text-black text-[14px]">check</span>
           </span>
         )}
 
-        {/* Multi-drag count badge */}
         {isSelected && selectedCount > 1 && (
           <span className="absolute top-1 right-1 min-w-[20px] h-5 bg-primary text-black text-[10px] font-bold rounded-full flex items-center justify-center px-1">
             {selectedCount}
@@ -119,7 +113,6 @@ function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart 
         )}
       </div>
 
-      {/* File name */}
       <div className="px-1.5 py-1 bg-panel-bg">
         <p className="text-[10px] text-gray-300 truncate">{item.name}</p>
       </div>
@@ -127,12 +120,27 @@ function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart 
   );
 }
 
+/* ───── helper: 두 사각형이 겹치는지 ───── */
+function rectsOverlap(
+  a: { left: number; top: number; right: number; bottom: number },
+  b: { left: number; top: number; right: number; bottom: number },
+) {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+}
+
 export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems = [], selectedLibraryIds = [], onLibrarySelect, onLibraryDelete }: LeftSidebarProps) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastClickedIndexRef = useRef<number>(-1);
 
-  // Handle Delete key for selected library items
+  // Lasso selection state
+  const gridRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const [lassoStart, setLassoStart] = useState<{ x: number; y: number } | null>(null);
+  const [lassoCurrent, setLassoCurrent] = useState<{ x: number; y: number } | null>(null);
+  const lassoBaseSelection = useRef<string[]>([]);
+
+  // Handle Delete key
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (selectedLibraryIds.length === 0) return;
@@ -147,7 +155,7 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     return () => window.removeEventListener('keydown', onKey);
   }, [selectedLibraryIds, onLibraryDelete]);
 
-  // Ctrl/Cmd+A to select all
+  // Ctrl/Cmd+A select all
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (libraryItems.length === 0) return;
@@ -162,17 +170,91 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     return () => window.removeEventListener('keydown', onKey);
   }, [libraryItems, onLibrarySelect]);
 
-  // Multi-select handler: Click, Ctrl/Cmd+Click, Shift+Click
+  // Lasso mouse events
+  useEffect(() => {
+    if (!lassoStart) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!gridRef.current) return;
+      const rect = gridRef.current.getBoundingClientRect();
+      const scrollTop = gridRef.current.closest('[class*="overflow-y"]')?.scrollTop || 0;
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top + scrollTop;
+      setLassoCurrent({ x, y });
+
+      // Compute lasso rect
+      const lassoRect = {
+        left: Math.min(lassoStart.x, x),
+        top: Math.min(lassoStart.y, y),
+        right: Math.max(lassoStart.x, x),
+        bottom: Math.max(lassoStart.y, y),
+      };
+
+      // Find items that overlap with lasso
+      const hitIds: string[] = [];
+      itemRefs.current.forEach((el, id) => {
+        const elRect = el.getBoundingClientRect();
+        const gridRect = gridRef.current!.getBoundingClientRect();
+        const scrollT = gridRef.current!.closest('[class*="overflow-y"]')?.scrollTop || 0;
+        const itemBox = {
+          left: elRect.left - gridRect.left,
+          top: elRect.top - gridRect.top + scrollT,
+          right: elRect.right - gridRect.left,
+          bottom: elRect.bottom - gridRect.top + scrollT,
+        };
+        if (rectsOverlap(lassoRect, itemBox)) {
+          hitIds.push(id);
+        }
+      });
+
+      // Merge with base selection
+      const merged = new Set([...lassoBaseSelection.current, ...hitIds]);
+      onLibrarySelect?.(Array.from(merged));
+    };
+
+    const handleMouseUp = () => {
+      setLassoStart(null);
+      setLassoCurrent(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [lassoStart, libraryItems, onLibrarySelect]);
+
+  const handleGridMouseDown = useCallback((e: React.MouseEvent) => {
+    // Only start lasso when clicking on the grid background (not on items)
+    if ((e.target as HTMLElement).closest('[data-item-id]')) return;
+    if (!gridRef.current) return;
+
+    const rect = gridRef.current.getBoundingClientRect();
+    const scrollTop = gridRef.current.closest('[class*="overflow-y"]')?.scrollTop || 0;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top + scrollTop;
+
+    // Hold Ctrl/Cmd to add to existing selection
+    lassoBaseSelection.current = (e.metaKey || e.ctrlKey) ? [...selectedLibraryIds] : [];
+    setLassoStart({ x, y });
+    setLassoCurrent({ x, y });
+
+    // If not holding modifier, clear selection
+    if (!e.metaKey && !e.ctrlKey) {
+      onLibrarySelect?.([]);
+    }
+  }, [selectedLibraryIds, onLibrarySelect]);
+
+  // Multi-select handler
   const handleItemSelect = useCallback((e: React.MouseEvent, index: number) => {
     const item = libraryItems[index];
     if (!item) return;
 
     if (e.shiftKey && lastClickedIndexRef.current >= 0) {
-      // Shift+Click: range select
       const start = Math.min(lastClickedIndexRef.current, index);
       const end = Math.max(lastClickedIndexRef.current, index);
       const rangeIds = libraryItems.slice(start, end + 1).map(i => i.id);
-      // Merge with existing selection if Ctrl is also held
       if (e.metaKey || e.ctrlKey) {
         const merged = new Set([...selectedLibraryIds, ...rangeIds]);
         onLibrarySelect?.(Array.from(merged));
@@ -180,7 +262,6 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
         onLibrarySelect?.(rangeIds);
       }
     } else if (e.metaKey || e.ctrlKey) {
-      // Ctrl/Cmd+Click: toggle single item
       if (selectedLibraryIds.includes(item.id)) {
         onLibrarySelect?.(selectedLibraryIds.filter(id => id !== item.id));
       } else {
@@ -188,13 +269,12 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
       }
       lastClickedIndexRef.current = index;
     } else {
-      // Normal click: select only this item
       onLibrarySelect?.([item.id]);
       lastClickedIndexRef.current = index;
     }
   }, [libraryItems, selectedLibraryIds, onLibrarySelect]);
 
-  // Drag start: carry all selected items (or just the dragged one)
+  // Drag start: carry all selected items
   const handleItemDragStart = useCallback((e: React.DragEvent, item: LibraryItem) => {
     const isItemSelected = selectedLibraryIds.includes(item.id);
     const dragIds = isItemSelected && selectedLibraryIds.length > 1
@@ -212,7 +292,6 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
         url: li!.url,
       }));
 
-    // Set both singular (backward compat) and plural data
     if (dragItems.length === 1) {
       e.dataTransfer.setData('application/library-item', JSON.stringify(dragItems[0]));
     } else {
@@ -220,7 +299,6 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     }
     e.dataTransfer.effectAllowed = 'copy';
 
-    // If dragging an unselected item, select it
     if (!isItemSelected) {
       onLibrarySelect?.([item.id]);
       lastClickedIndexRef.current = libraryItems.indexOf(item);
@@ -273,9 +351,16 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     fileInputRef.current?.click();
   }, []);
 
+  // Compute lasso rectangle for rendering
+  const lassoRect = lassoStart && lassoCurrent ? {
+    left: Math.min(lassoStart.x, lassoCurrent.x),
+    top: Math.min(lassoStart.y, lassoCurrent.y),
+    width: Math.abs(lassoCurrent.x - lassoStart.x),
+    height: Math.abs(lassoCurrent.y - lassoStart.y),
+  } : null;
+
   return (
     <aside className="w-full h-full flex flex-col border-r border-border-color bg-editor-bg">
-      {/* Hidden file input */}
       <input
         ref={fileInputRef}
         type="file"
@@ -329,10 +414,14 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
           </span>
         </button>
 
-        {/* Imported files thumbnail grid */}
+        {/* Imported files thumbnail grid with lasso selection */}
         {libraryItems.length > 0 ? (
           <>
-            <div className="grid grid-cols-2 gap-2">
+            <div
+              ref={gridRef}
+              className="grid grid-cols-2 gap-2 relative select-none"
+              onMouseDown={handleGridMouseDown}
+            >
               {libraryItems.map((item, idx) => (
                 <ThumbnailItem
                   key={item.id}
@@ -341,12 +430,29 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
                   selectedCount={selectedLibraryIds.length}
                   onSelect={(e) => handleItemSelect(e, idx)}
                   onDragStart={handleItemDragStart}
+                  itemRef={(el) => {
+                    if (el) itemRefs.current.set(item.id, el);
+                    else itemRefs.current.delete(item.id);
+                  }}
                 />
               ))}
+
+              {/* Lasso rectangle overlay */}
+              {lassoRect && lassoRect.width > 3 && lassoRect.height > 3 && (
+                <div
+                  className="absolute pointer-events-none border border-primary bg-primary/10 rounded-sm z-50"
+                  style={{
+                    left: lassoRect.left,
+                    top: lassoRect.top,
+                    width: lassoRect.width,
+                    height: lassoRect.height,
+                  }}
+                />
+              )}
             </div>
             {libraryItems.length > 1 && (
               <p className="text-[9px] text-gray-600 mt-3 text-center">
-                Ctrl/Cmd+클릭: 다중선택 | Shift+클릭: 범위선택
+                드래그: 범위선택 | Ctrl/Cmd+클릭: 다중선택
               </p>
             )}
           </>
