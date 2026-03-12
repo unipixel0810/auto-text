@@ -41,3 +41,21 @@ export function getSession(): AnalyticsSession {
 export function getSessionId(): string {
   return getSession().session_id;
 }
+
+// ─── Persistent Visitor ID (survives session expiry) ─────────────────────
+const VISITOR_KEY = 'analytics_visitor_id';
+
+export function getVisitorId(): string {
+  if (typeof window === 'undefined') return 'ssr';
+
+  try {
+    const existing = localStorage.getItem(VISITOR_KEY);
+    if (existing) return existing;
+  } catch { /* ignore */ }
+
+  const visitorId = generateId();
+  try {
+    localStorage.setItem(VISITOR_KEY, visitorId);
+  } catch { /* ignore */ }
+  return visitorId;
+}

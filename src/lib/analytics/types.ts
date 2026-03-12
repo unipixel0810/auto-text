@@ -23,6 +23,7 @@ export interface AnalyticsEvent {
   y_pos?: number;
   scroll_depth?: number;
   session_id: string;
+  visitor_id?: string;
   user_agent?: string;
   referrer?: string;
   viewport_width?: number;

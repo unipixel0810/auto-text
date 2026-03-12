@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { queryEvents, getDistinctPages, getStats, getChartData, getRageClicks, getScrollDepthStats } from '@/lib/analytics/store';
 import { getSupabase } from '@/lib/analytics/supabase';
+import { getRetentionData } from '@/lib/analytics/retention';
 
 export async function GET(req: NextRequest) {
   try {
@@ -594,6 +595,194 @@ export async function GET(req: NextRequest) {
         templates,
         daily_trend,
       });
+    }
+
+    // ===== action=retention =====
+    if (action === 'retention') {
+      const days = parseInt(searchParams.get('days') || '90');
+      const granularity = (searchParams.get('granularity') || 'week') as 'day' | 'week' | 'month';
+      const result = await getRetentionData({ days, granularity });
+      return NextResponse.json(result);
+    }
+
+    // ===== action=users (user profiles list) =====
+    if (action === 'users') {
+      const supabase = getSupabase();
+      const page = parseInt(searchParams.get('page') || '1');
+      const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100);
+      const search = searchParams.get('search') || '';
+
+      if (!supabase) return NextResponse.json({ users: [], total: 0 });
+
+      try {
+        let query = supabase
+          .from('visitor_sessions')
+          .select('visitor_id, session_id, first_seen_at, created_at');
+
+        if (search) query = query.ilike('visitor_id', `%${search}%`);
+
+        const { data: allSessions } = await query.order('created_at', { ascending: false }).limit(5000);
+
+        if (!allSessions || allSessions.length === 0) {
+          return NextResponse.json({ users: [], total: 0 });
+        }
+
+        // Aggregate by visitor
+        const visitorAgg = new Map<string, { firstSeen: string; lastSeen: string; sessions: Set<string> }>();
+        for (const s of allSessions) {
+          if (!visitorAgg.has(s.visitor_id)) {
+            visitorAgg.set(s.visitor_id, { firstSeen: s.first_seen_at, lastSeen: s.created_at, sessions: new Set() });
+          }
+          const agg = visitorAgg.get(s.visitor_id)!;
+          agg.sessions.add(s.session_id);
+          if (s.first_seen_at < agg.firstSeen) agg.firstSeen = s.first_seen_at;
+          if (s.created_at > agg.lastSeen) agg.lastSeen = s.created_at;
+        }
+
+        const allUsers = Array.from(visitorAgg.entries())
+          .map(([visitor_id, agg]) => ({
+            visitor_id,
+            first_seen: agg.firstSeen,
+            last_seen: agg.lastSeen,
+            total_sessions: agg.sessions.size,
+            total_events: 0,
+          }))
+          .sort((a, b) => b.last_seen.localeCompare(a.last_seen));
+
+        const total = allUsers.length;
+        const offset = (page - 1) * limit;
+        const users = allUsers.slice(offset, offset + limit);
+
+        return NextResponse.json({ users, total });
+      } catch (err) {
+        console.error('[Users] error:', err);
+        return NextResponse.json({ users: [], total: 0 });
+      }
+    }
+
+    // ===== action=user_activity (single user activity feed) =====
+    if (action === 'user_activity') {
+      const supabase = getSupabase();
+      const visitorId = searchParams.get('visitor_id');
+
+      if (!supabase || !visitorId) return NextResponse.json({ events: [] });
+
+      try {
+        // Get all session_ids for this visitor
+        const { data: sessions } = await supabase
+          .from('visitor_sessions')
+          .select('session_id')
+          .eq('visitor_id', visitorId);
+
+        if (!sessions || sessions.length === 0) return NextResponse.json({ events: [] });
+
+        const sessionIds = sessions.map(s => s.session_id);
+        const { data: events } = await supabase
+          .from('analytics_events')
+          .select('event_type, page_url, created_at, element_text, element_tag, session_id')
+          .in('session_id', sessionIds.slice(0, 100))
+          .order('created_at', { ascending: false })
+          .limit(200);
+
+        return NextResponse.json({ events: events || [] });
+      } catch (err) {
+        console.error('[UserActivity] error:', err);
+        return NextResponse.json({ events: [] });
+      }
+    }
+
+    // ===== action=live (real-time event stream) =====
+    if (action === 'live') {
+      const supabase = getSupabase();
+      const since = searchParams.get('since') || new Date(Date.now() - 60000).toISOString();
+      const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100);
+
+      if (!supabase) return NextResponse.json({ events: [] });
+
+      try {
+        const { data } = await supabase
+          .from('analytics_events')
+          .select('event_type, page_url, page_title, element_text, session_id, created_at')
+          .gte('created_at', since)
+          .order('created_at', { ascending: false })
+          .limit(limit);
+
+        return NextResponse.json({ events: data || [] });
+      } catch (err) {
+        console.error('[Live] error:', err);
+        return NextResponse.json({ events: [] });
+      }
+    }
+
+    // ===== action=flows (user path analysis) =====
+    if (action === 'flows') {
+      const supabase = getSupabase();
+      const days = parseInt(searchParams.get('days') || '30');
+      const entryPage = searchParams.get('entry_page') || '/';
+      const depth = Math.min(parseInt(searchParams.get('depth') || '5'), 8);
+      const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+
+      if (!supabase) return NextResponse.json({ nodes: [], links: [] });
+
+      try {
+        const { data } = await supabase
+          .from('page_views')
+          .select('session_id, page_url, created_at')
+          .gte('created_at', cutoff)
+          .order('session_id')
+          .order('created_at', { ascending: true })
+          .limit(10000);
+
+        if (!data || data.length === 0) return NextResponse.json({ nodes: [], links: [] });
+
+        // Group by session and reconstruct paths
+        const sessionPaths = new Map<string, string[]>();
+        for (const row of data) {
+          if (!sessionPaths.has(row.session_id)) sessionPaths.set(row.session_id, []);
+          const path = sessionPaths.get(row.session_id)!;
+          // Deduplicate consecutive same page
+          if (path.length === 0 || path[path.length - 1] !== row.page_url) {
+            path.push(row.page_url);
+          }
+        }
+
+        // Count transitions
+        const linkMap = new Map<string, number>();
+        const nodeSet = new Set<string>();
+        for (const [, path] of sessionPaths) {
+          const startIdx = path.indexOf(entryPage);
+          if (startIdx === -1) continue;
+          const subPath = path.slice(startIdx, startIdx + depth);
+          for (let i = 0; i < subPath.length - 1; i++) {
+            const from = `${i}:${subPath[i]}`;
+            const to = `${i + 1}:${subPath[i + 1]}`;
+            nodeSet.add(from);
+            nodeSet.add(to);
+            const key = `${from}→${to}`;
+            linkMap.set(key, (linkMap.get(key) || 0) + 1);
+          }
+          // Add entry node
+          if (subPath.length > 0) nodeSet.add(`0:${subPath[0]}`);
+        }
+
+        const nodes = Array.from(nodeSet).map(n => {
+          const [step, page] = n.split(':');
+          return { id: n, label: page, step: parseInt(step) };
+        });
+
+        const links = Array.from(linkMap.entries())
+          .map(([key, value]) => {
+            const [from, to] = key.split('→');
+            return { source: from, target: to, value };
+          })
+          .sort((a, b) => b.value - a.value)
+          .slice(0, 50);
+
+        return NextResponse.json({ nodes, links, totalSessions: sessionPaths.size });
+      } catch (err) {
+        console.error('[Flows] error:', err);
+        return NextResponse.json({ nodes: [], links: [] });
+      }
     }
 
     // ===== action=rage-clicks =====

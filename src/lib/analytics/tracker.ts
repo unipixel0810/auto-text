@@ -1,5 +1,5 @@
 import type { AnalyticsEvent, AnalyticsEventType, DemographicData, PageView } from './types';
-import { getSessionId } from './session';
+import { getSessionId, getVisitorId } from './session';
 import { UAParser } from 'ua-parser-js';
 
 const BATCH_INTERVAL = 3000;
@@ -55,6 +55,7 @@ function buildEvent(
     page_url: window.location.pathname + window.location.search,
     page_title: document.title,
     session_id: getSessionId(),
+    visitor_id: getVisitorId(),
     user_agent: navigator.userAgent,
     referrer: document.referrer || undefined,
     viewport_width: window.innerWidth,

@@ -191,18 +191,41 @@ type 값은 반드시 "예능", "상황", "설명", "맥락" 중 하나:
             throw new Error("AI returned an empty response.");
         }
         
-        const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+        // JSON 추출 및 정리
+        let cleanedText = responseText
+            .replace(/```json\n?/g, '').replace(/```\n?/g, '') // 마크다운 코드블록 제거
+            .trim();
+
+        const jsonMatch = cleanedText.match(/\[\s*\{[\s\S]*\}\s*\]/);
 
         let parsedResult = [];
         if (jsonMatch) {
+            let jsonStr = jsonMatch[0];
+            // AI가 흔히 만드는 JSON 오류 수정
+            jsonStr = jsonStr
+                .replace(/,\s*([}\]])/g, '$1')          // trailing comma 제거
+                .replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":') // unquoted key → quoted
+                .replace(/:\s*'([^']*)'/g, ': "$1"')    // single quotes → double quotes
+                .replace(/\n/g, ' ');                     // 줄바꿈 제거
             try {
-                parsedResult = JSON.parse(jsonMatch[0]);
+                parsedResult = JSON.parse(jsonStr);
             } catch (pErr) {
-                console.error("JSON parsing error:", pErr, "Raw response:", responseText);
-                throw new Error("Failed to parse AI response as valid JSON.");
+                console.error("JSON parsing error:", pErr, "Cleaned JSON:", jsonStr.slice(0, 500));
+                // 2차 시도: 개별 객체 파싱
+                const objectMatches = jsonStr.matchAll(/\{[^{}]+\}/g);
+                const fallbackResults: any[] = [];
+                for (const m of objectMatches) {
+                    try { fallbackResults.push(JSON.parse(m[0])); } catch { /* skip */ }
+                }
+                if (fallbackResults.length > 0) {
+                    console.log(`[Gemini] Fallback parsing: ${fallbackResults.length}개 자막 복구`);
+                    parsedResult = fallbackResults;
+                } else {
+                    throw new Error("Failed to parse AI response as valid JSON.");
+                }
             }
         } else {
-            console.error("Gemini failed to return JSON format. Raw output:", responseText);
+            console.error("Gemini failed to return JSON format. Raw output:", responseText.slice(0, 500));
             throw new Error("AI response did not contain a valid JSON array.");
         }
 

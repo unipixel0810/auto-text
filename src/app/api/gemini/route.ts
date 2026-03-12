@@ -59,6 +59,31 @@ JSON 배열만 출력 (마크다운 코드블록 없이):
 [{"startTime": 0.0, "endTime": 2.5, "text": "자막내용만", "type": "TRANSCRIPT", "reason": "이유"}]`;
 }
 
+// AI 응답에서 JSON 배열 안전하게 파싱
+function safeParseJsonArray(raw: string): any[] | null {
+  let text = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  const jsonMatch = text.match(/\[\s*\{[\s\S]*\}\s*\]/);
+  if (!jsonMatch) return null;
+
+  let jsonStr = jsonMatch[0]
+    .replace(/,\s*([}\]])/g, '$1')            // trailing comma
+    .replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":') // unquoted keys
+    .replace(/:\s*'([^']*)'/g, ': "$1"')       // single → double quotes
+    .replace(/\n/g, ' ');
+
+  try {
+    const arr = JSON.parse(jsonStr);
+    return Array.isArray(arr) && arr.length > 0 ? arr : null;
+  } catch {
+    // fallback: 개별 객체 파싱
+    const results: any[] = [];
+    for (const m of jsonStr.matchAll(/\{[^{}]+\}/g)) {
+      try { results.push(JSON.parse(m[0])); } catch { /* skip */ }
+    }
+    return results.length > 0 ? results : null;
+  }
+}
+
 // 재시도 가능한 fetch (503/429 대응)
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [2000, 5000, 10000]; // ms
@@ -116,13 +141,9 @@ async function processChunk(
         if (!response.ok) continue;
 
         const result = await response.json();
-        let text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-
-        const subtitles = JSON.parse(text);
-        if (Array.isArray(subtitles) && subtitles.length > 0) {
-          return subtitles;
-        }
+        const rawText = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const subtitles = safeParseJsonArray(rawText);
+        if (subtitles) return subtitles;
       } catch (e) {
         continue;
       }
@@ -151,13 +172,9 @@ async function processChunk(
 
       if (response.ok) {
         const result = await response.json();
-        let text = result.choices?.[0]?.message?.content || '';
-        text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-        
-        const subtitles = JSON.parse(text);
-        if (Array.isArray(subtitles) && subtitles.length > 0) {
-          return subtitles;
-        }
+        const rawText = result.choices?.[0]?.message?.content || '';
+        const subtitles = safeParseJsonArray(rawText);
+        if (subtitles) return subtitles;
       }
     } catch (e) {
       // ignore

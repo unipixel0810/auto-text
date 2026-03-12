@@ -42,6 +42,27 @@ export async function insertEvents(events: AnalyticsEvent[]): Promise<boolean> {
       return false;
     }
 
+    // 1.5 visitor_sessions 매핑 (visitor_id → session_id)
+    const visitorMappings = new Map<string, string>();
+    for (const e of events) {
+      if (e.visitor_id && e.visitor_id !== 'ssr' && e.session_id !== 'ssr') {
+        visitorMappings.set(`${e.visitor_id}:${e.session_id}`, e.visitor_id);
+      }
+    }
+    if (visitorMappings.size > 0) {
+      const vsRows = Array.from(visitorMappings.entries()).map(([key, visitorId]) => ({
+        visitor_id: visitorId,
+        session_id: key.split(':')[1],
+      }));
+      // upsert: 같은 visitor_id+session_id 조합이면 무시
+      const { error: vsError } = await supabase
+        .from('visitor_sessions')
+        .upsert(vsRows, { onConflict: 'visitor_id,session_id', ignoreDuplicates: true });
+      if (vsError) {
+        console.error('[Analytics] visitor_sessions upsert error:', vsError.message);
+      }
+    }
+
     // 2. page_view 이벤트가 있으면 page_views 테이블에 저장
     const pageViews = events.filter(e => e.event_type === 'page_view');
     if (pageViews.length > 0) {
