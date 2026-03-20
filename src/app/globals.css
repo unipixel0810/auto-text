@@ -275,6 +275,22 @@
   }
 }
 
+/* ── 모바일 (768px 미만) ── */
+@media (max-width: 767px) {
+  :root {
+    --ui-scale: 0.75;
+    --icon-size: 14px;
+    --icon-size-sm: 11px;
+    --toolbar-height: 28px;
+    --track-label-width: 48px;
+  }
+  /* 터치 타겟 최소 크기 보장 */
+  .editor-toolbar button {
+    min-width: 32px;
+    min-height: 32px;
+  }
+}
+
 /* 에디터 내 툴바 아이콘 반응형 크기 조정 */
 .editor-toolbar .material-icons,
 .editor-toolbar .material-symbols-outlined {

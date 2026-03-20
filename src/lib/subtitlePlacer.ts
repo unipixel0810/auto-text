@@ -194,37 +194,40 @@ export function placeWithoutOverlap(
   const resolved: PlacedSubtitle[] = [];
 
   if (continuous) {
-    // 대본(Dialogue) 모드: STT 원본 타이밍을 유지하되 최소 3초 보장
+    // 대본(Dialogue) 모드:
+    // ★ 최소 3초 보장 — 다음 대본/AI 시작 전까지만 확장
+    //    STT 원본 endTime이 짧아도(0.5~2초) 읽기 편하도록 3초까지 늘림
     for (let i = 0; i < sorted.length; i++) {
       const item = sorted[i];
       const startTime = item.startTime;
       const rawDuration = item.endTime - item.startTime;
-      // 최소 3초 보장하되, 다음 대본 시작을 침범하지 않음
       const nextStart = i + 1 < sorted.length ? sorted[i + 1].startTime : Infinity;
-      const maxDuration = nextStart - startTime;
-      const duration = Math.min(Math.max(SUBTITLE_MIN_DURATION, rawDuration), maxDuration);
+      // 3초 최소 보장, 단 다음 대본과 겹치지 않도록 제한
+      const desiredDuration = Math.max(rawDuration, SUBTITLE_MIN_DURATION);
+      const duration = Math.min(nextStart - startTime, desiredDuration);
 
-      resolved.push({ startTime, duration, item });
+      resolved.push({ startTime, duration: Math.max(duration, 0.5), item });
     }
   } else {
-    // AI 자막 모드: 최소 노출 시간 보장 + 겹침 방지
-    // ★ 단, 오케스트레이터가 정한 endTime을 초과하지 않도록 클램핑
+    // AI 자막 모드: 오케스트레이터가 정한 gap 경계(endTime)를 그대로 사용
+    // ★ AI 자막은 이미 gap.start~gap.end에 맞춰져 있으므로 확장 불필요
     let lastEndTime = 0;
     for (let i = 0; i < sorted.length; i++) {
       const item = sorted[i];
       let startTime = item.startTime;
       const originalDuration = item.endTime - item.startTime;
-      // 최소 3초 보장하되, 다음 항목 시작을 침범하지 않음
-      const nextStart = i + 1 < sorted.length ? sorted[i + 1].startTime : Infinity;
-      const maxDuration = Math.max(originalDuration, nextStart - startTime - gap);
-      const rawDuration = Math.min(Math.max(SUBTITLE_MIN_DURATION, originalDuration), maxDuration);
 
       if (startTime < lastEndTime + gap) {
         startTime = lastEndTime + gap;
       }
 
-      resolved.push({ startTime, duration: rawDuration, item });
-      lastEndTime = startTime + rawDuration;
+      // endTime을 초과하지 않음
+      const duration = Math.min(originalDuration, item.endTime - startTime);
+
+      if (duration >= 0.3) {
+        resolved.push({ startTime, duration, item });
+        lastEndTime = startTime + duration;
+      }
     }
   }
 
@@ -240,7 +243,9 @@ export function buildSubtitlePlacements(
   options: { gap?: number; continuous?: boolean; timelineEnd?: number } = {},
 ): PlacedSubtitle[] {
   const { gap = SUBTITLE_GAP_SECONDS, continuous = false, timelineEnd } = options;
-  const expanded = splitLongSubtitles(items);
+  // 대본(continuous) 모드: STT가 이미 자연 발화 단위로 분할했으므로 추가 분할 불필요
+  // 추가 분할 시 3초 미만 조각이 생겨 읽기 어려움
+  const expanded = continuous ? items : splitLongSubtitles(items);
   const placed = placeWithoutOverlap(expanded, gap, continuous);
 
   // timelineEnd가 있으면 초과 구간 제거/클램핑

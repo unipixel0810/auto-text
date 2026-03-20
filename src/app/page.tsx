@@ -30,6 +30,16 @@ const ZOOM_STEP = 1.25;
 export default function Home() {
   const { isAuthenticated, signIn } = useAuth();
 
+  // ── 모바일 감지 ──
+  const [isMobile, setIsMobile] = useState(false);
+  const [mobilePanel, setMobilePanel] = useState<'player' | 'library' | 'inspector' | 'timeline'>('player');
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
   const [activeTab, setActiveTab] = useState<'media' | 'audio' | 'stickers' | 'effects' | 'transitions'>('media');
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([]);
   const [subtitles, setSubtitles] = useState<SubtitleItem[]>([]);
@@ -2801,24 +2811,49 @@ export default function Home() {
           clips={clips}
           transcripts={transcripts}
         />
-        <SecondaryToolbar
-          onTabChange={setActiveTab}
-          onSoundEffect={handleSoundEffect}
-          onSticker={handleSticker}
-          onAnimationEffect={handleAnimationEffect}
-        />
+        {!isMobile && (
+          <SecondaryToolbar
+            onTabChange={setActiveTab}
+            onSoundEffect={handleSoundEffect}
+            onSticker={handleSticker}
+            onAnimationEffect={handleAnimationEffect}
+          />
+        )}
+        {/* ── 모바일 패널 탭 바 ── */}
+        {isMobile && (
+          <div className="flex shrink-0 bg-[#1a1a1a] border-b border-border-color z-40">
+            {([
+              { key: 'player' as const, icon: 'play_circle', label: '미리보기' },
+              { key: 'library' as const, icon: 'video_library', label: '미디어' },
+              { key: 'inspector' as const, icon: 'tune', label: 'AI자막' },
+              { key: 'timeline' as const, icon: 'view_timeline', label: '타임라인' },
+            ]).map(tab => (
+              <button
+                key={tab.key}
+                onClick={() => setMobilePanel(tab.key)}
+                className={`flex-1 flex flex-col items-center py-1.5 text-[10px] transition-colors ${
+                  mobilePanel === tab.key ? 'text-[#00D4D4] bg-[#00D4D4]/10' : 'text-gray-500'
+                }`}
+              >
+                <span className="material-icons text-base">{tab.icon}</span>
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div
-          className="flex-1 flex overflow-hidden relative min-h-0"
+          className={`flex-1 ${isMobile ? 'flex flex-col' : 'flex'} overflow-hidden relative min-h-0`}
           onClickCapture={handleInteractionGuard}
           onPointerDownCapture={handleInteractionGuard}
         >
           {/* Left Sidebar */}
           <div
-            style={{ width: `${leftPct}%`, minWidth: 160 }}
-            className="shrink-0 relative overflow-hidden"
+            style={isMobile ? undefined : { width: `${leftPct}%`, minWidth: 160 }}
+            className={`shrink-0 relative overflow-hidden ${isMobile ? (mobilePanel === 'library' ? 'flex-1' : 'hidden') : ''}`}
             onPointerDownCapture={() => setActiveSection('library')}
           >
-            <SectionBorder active={activeSection === 'library'} />
+            {!isMobile && <SectionBorder active={activeSection === 'library'} />}
             <LeftSidebar
               onVideoAdd={handleVideoAdd}
               onSubtitleImport={handleSubtitleImport}
@@ -2829,26 +2864,35 @@ export default function Home() {
               onLibraryDelete={handleLibraryDelete}
               columns={libraryColumns}
               isActive={activeSection === 'library'}
+              isMobile={isMobile}
+              onAddToTimeline={(itemId: string) => {
+                const insertAt = clipsRef.current
+                  .filter(c => c.trackIndex === 1)
+                  .reduce((maxEnd, c) => Math.max(maxEnd, c.startTime + c.duration), 0);
+                handleClipAdd(null, 1, insertAt, itemId);
+              }}
             />
           </div>
           {/* Left Divider */}
+          {!isMobile && (
+            <div
+              className="w-1 bg-border-color hover:bg-[#00D4D4] cursor-col-resize shrink-0 transition-colors z-30 group relative"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                resizingRef.current = 'left';
+                resizeStartRef.current = { x: e.clientX, y: 0, size: leftPct };
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+              }}
+            >
+              <div className="absolute inset-y-0 -left-1 -right-1" />
+            </div>
+          )}
           <div
-            className="w-1 bg-border-color hover:bg-[#00D4D4] cursor-col-resize shrink-0 transition-colors z-30 group relative"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              resizingRef.current = 'left';
-              resizeStartRef.current = { x: e.clientX, y: 0, size: leftPct };
-              document.body.style.cursor = 'col-resize';
-              document.body.style.userSelect = 'none';
-            }}
-          >
-            <div className="absolute inset-y-0 -left-1 -right-1" />
-          </div>
-          <div
-            className="flex-1 min-w-0 min-h-0 relative"
+            className={`flex-1 min-w-0 min-h-0 relative ${isMobile ? (mobilePanel === 'player' ? '' : '!hidden') : ''}`}
             onPointerDownCapture={() => setActiveSection('viewer')}
           >
-            <SectionBorder active={activeSection === 'viewer'} />
+            {!isMobile && <SectionBorder active={activeSection === 'viewer'} />}
           <Player
             videoUrl={currentVideoUrl}
             currentTime={isPlaying ? playbackTime : currentTime}
@@ -2883,25 +2927,27 @@ export default function Home() {
           />
           </div>
           {/* Right Divider */}
-          <div
-            className="w-1 bg-border-color hover:bg-[#00D4D4] cursor-col-resize shrink-0 transition-colors z-30 group relative"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              resizingRef.current = 'right';
-              resizeStartRef.current = { x: e.clientX, y: 0, size: rightPct };
-              document.body.style.cursor = 'col-resize';
-              document.body.style.userSelect = 'none';
-            }}
-          >
-            <div className="absolute inset-y-0 -left-1 -right-1" />
-          </div>
+          {!isMobile && (
+            <div
+              className="w-1 bg-border-color hover:bg-[#00D4D4] cursor-col-resize shrink-0 transition-colors z-30 group relative"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                resizingRef.current = 'right';
+                resizeStartRef.current = { x: e.clientX, y: 0, size: rightPct };
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+              }}
+            >
+              <div className="absolute inset-y-0 -left-1 -right-1" />
+            </div>
+          )}
           {/* Right Sidebar */}
           <div
-            style={{ width: `${rightPct}%`, minWidth: 160 }}
-            className="shrink-0 relative overflow-hidden"
+            style={isMobile ? undefined : { width: `${rightPct}%`, minWidth: 160 }}
+            className={`shrink-0 relative overflow-hidden ${isMobile ? (mobilePanel === 'inspector' ? 'flex-1' : 'hidden') : ''}`}
             onPointerDownCapture={() => setActiveSection('inspector')}
           >
-            <SectionBorder active={activeSection === 'inspector'} />
+            {!isMobile && <SectionBorder active={activeSection === 'inspector'} />}
             <RightSidebar
               transcripts={transcripts}
               subtitles={subtitles}
@@ -2923,21 +2969,23 @@ export default function Home() {
             />
           </div>
         </div>
-        {/* Timeline Divider (horizontal) */}
+        {/* Timeline Divider (horizontal) — 모바일에서 숨김 */}
+        {!isMobile && (
+          <div
+            className="h-1 bg-border-color hover:bg-[#00D4D4] cursor-row-resize shrink-0 transition-colors z-30 group relative"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              resizingRef.current = 'timeline';
+              resizeStartRef.current = { x: 0, y: e.clientY, size: timelinePct };
+              document.body.style.cursor = 'row-resize';
+              document.body.style.userSelect = 'none';
+            }}
+          >
+            <div className="absolute inset-x-0 -top-1 -bottom-1" />
+          </div>
+        )}
         <div
-          className="h-1 bg-border-color hover:bg-[#00D4D4] cursor-row-resize shrink-0 transition-colors z-30 group relative"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            resizingRef.current = 'timeline';
-            resizeStartRef.current = { x: 0, y: e.clientY, size: timelinePct };
-            document.body.style.cursor = 'row-resize';
-            document.body.style.userSelect = 'none';
-          }}
-        >
-          <div className="absolute inset-x-0 -top-1 -bottom-1" />
-        </div>
-        <div
-          style={{ flex: `0 0 ${timelinePct}%`, minHeight: 120 }}
+          style={isMobile ? (mobilePanel === 'timeline' ? { flex: '1 1 0' } : { display: 'none' }) : { flex: `0 0 ${timelinePct}%`, minHeight: 120 }}
           className="relative flex flex-col"
           onPointerDownCapture={() => setActiveSection('timeline')}
         >

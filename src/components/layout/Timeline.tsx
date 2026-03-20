@@ -793,7 +793,9 @@ const Timeline = React.memo(({
 
       // If just a click (or tiny drag), move playhead + 빈 영역 클릭이므로 선택 해제
       if (Math.abs(xMax - xMin) < 5 && Math.abs(yMax - yMin) < 5) {
-        onPlayheadChange?.(Math.max(0, (lassoStart.x - TRACK_CONTROLS_WIDTH) / pixelsPerSecond));
+        // lassoStart.x는 tracksRef 기준 좌표 (scrollLeft 이중 반영)이므로 보정
+        const scrollLeftNow = tracksRef.current.parentElement?.scrollLeft || 0;
+        onPlayheadChange?.(Math.max(0, (lassoStart.x - scrollLeftNow - TRACK_CONTROLS_WIDTH) / pixelsPerSecond));
         onClipSelect?.([]);
       } else {
         const newlySelected: string[] = [];
@@ -1155,12 +1157,15 @@ const Timeline = React.memo(({
               const isSubtitle = (idx: number) => idx === 0 || idx === 5;
               const isAudio = (idx: number) => idx >= 20;
               const isVisual = (idx: number) => idx === 1 || (idx >= 10 && idx <= 14);
-              // Prevent cross-type moves: audio stays in audio, visual stays in visual
+              const origIsSubtitle = isSubtitle(clip.trackIndex);
               const origIsAudio = isAudio(clip.trackIndex);
               const origIsVisual = isVisual(clip.trackIndex);
-              if (!isSubtitle(potentialTrack) &&
-                  !(origIsAudio && !isAudio(potentialTrack)) &&
-                  !(origIsVisual && !isVisual(potentialTrack))) {
+              // 자막 클립: 어디든 이동 가능 (자막↔자막, 자막→비디오 등)
+              // 오디오/비디오 클립: 같은 타입 트랙 내에서만 이동
+              if (origIsSubtitle ||
+                  (!isSubtitle(potentialTrack) &&
+                   !(origIsAudio && !isAudio(potentialTrack)) &&
+                   !(origIsVisual && !isVisual(potentialTrack)))) {
                 newTrackIndex = potentialTrack;
               }
             }
@@ -1198,11 +1203,14 @@ const Timeline = React.memo(({
               const isSubtitle = (idx: number) => idx === 0 || idx === 5;
               const isAudio = (idx: number) => idx >= 20;
               const isVisual = (idx: number) => idx === 1 || (idx >= 10 && idx <= 14);
+              const origIsSubtitle = isSubtitle(companion.trackIndex);
               const origIsAudio = isAudio(companion.trackIndex);
               const origIsVisual = isVisual(companion.trackIndex);
-              if (!isSubtitle(targetTrack) && targetTrack >= 0 &&
-                  !(origIsAudio && !isAudio(targetTrack)) &&
-                  !(origIsVisual && !isVisual(targetTrack))) {
+              if (targetTrack >= 0 &&
+                  (origIsSubtitle ||
+                   (!isSubtitle(targetTrack) &&
+                    !(origIsAudio && !isAudio(targetTrack)) &&
+                    !(origIsVisual && !isVisual(targetTrack))))) {
                 companionTrack = targetTrack;
               }
             }

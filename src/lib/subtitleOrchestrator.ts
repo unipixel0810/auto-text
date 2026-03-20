@@ -67,7 +67,9 @@ interface Gap { start: number; end: number }
 const DIALOGUE_MIN_DISPLAY = 3.0;
 
 /** 대본 사이의 빈 구간 추출 (최소 AI_MIN_GAP 이상)
- *  ★ 대본이 타임라인에서 최소 3초로 연장되는 것을 반영하여 gap 계산
+ *  ★ 대본의 원본 endTime(STT 타이밍) 기준으로 gap 계산
+ *    3초 연장은 AI 배치 후 step 5.5에서 처리 (AI 경계를 넘지 않는 범위 내)
+ *    → 대본이 빽빽해도 음성이 끝난 순간부터 AI 자막 배치 가능
  */
 function findDialogueGaps(
   dialogue: TranscriptItem[],
@@ -76,30 +78,22 @@ function findDialogueGaps(
   if (dialogue.length === 0) return [{ start: 0, end: timelineEnd }];
   const sorted = [...dialogue].sort((a, b) => a.startTime - b.startTime);
 
-  // 대본의 실제 표시 endTime 계산 (최소 3초 보장, 다음 대본 침범 안 함)
-  const displayEnds: number[] = sorted.map((d, i) => {
-    const rawEnd = d.endTime;
-    const minEnd = d.startTime + DIALOGUE_MIN_DISPLAY;
-    const nextStart = i + 1 < sorted.length ? sorted[i + 1].startTime : timelineEnd;
-    return Math.min(Math.max(rawEnd, minEnd), nextStart);
-  });
-
   const gaps: Gap[] = [];
 
   // 타임라인 시작 ~ 첫 대본
   if (sorted[0].startTime > AI_MIN_GAP) {
     gaps.push({ start: 0, end: sorted[0].startTime });
   }
-  // 대본 사이 — 연장된 endTime 기준으로 gap 계산
+  // 대본 사이 — 원본 endTime 기준으로 gap 계산
   for (let i = 0; i < sorted.length - 1; i++) {
-    const gapStart = displayEnds[i];
+    const gapStart = sorted[i].endTime;
     const gapEnd = sorted[i + 1].startTime;
     if (gapEnd - gapStart >= AI_MIN_GAP) {
       gaps.push({ start: gapStart, end: gapEnd });
     }
   }
   // 마지막 대본 ~ 타임라인 끝
-  const lastEnd = displayEnds[displayEnds.length - 1];
+  const lastEnd = sorted[sorted.length - 1].endTime;
   if (timelineEnd - lastEnd >= AI_MIN_GAP) {
     gaps.push({ start: lastEnd, end: timelineEnd });
   }
@@ -227,8 +221,26 @@ export function orchestrate(
   // 5. 배타적 노출: AI 자막 구간의 대본 제거
   const trimmedDialogue = cutDialogueAroundAi(dialogue, styledAi);
 
+  // 5.5. 대본 최소 3초 보장 (AI 경계를 넘지 않는 범위 내)
+  //      gap 계산은 3초 기준이지만 원본 endTime이 짧을 수 있으므로 여기서 확장
+  const sortedAiStarts = styledAi.map(a => a.startTime).sort((a, b) => a - b);
+  const sortedDStarts = [...trimmedDialogue].sort((a, b) => a.startTime - b.startTime).map(d => d.startTime);
+  const extendedDialogue = trimmedDialogue.map(d => {
+    const minEnd = d.startTime + DIALOGUE_MIN_DISPLAY;
+    if (d.endTime >= minEnd) return d;
+    // 확장 가능한 최대 지점: AI 시작 또는 다음 대본 시작 중 가까운 것
+    let cap = minEnd;
+    for (const t of sortedAiStarts) {
+      if (t > d.startTime && t < cap) { cap = t; break; }
+    }
+    for (const t of sortedDStarts) {
+      if (t > d.startTime && t < cap) { cap = t; break; }
+    }
+    return { ...d, endTime: Math.max(d.endTime, Math.min(minEnd, cap)) };
+  });
+
   // 6. 타임라인 끝 clamp
-  const clampD = trimmedDialogue
+  const clampD = extendedDialogue
     .filter(d => d.startTime < timelineEnd)
     .map(d => d.endTime > timelineEnd ? { ...d, endTime: timelineEnd } : d);
   const clampA = styledAi

@@ -15,6 +15,10 @@ interface LeftSidebarProps {
   columns?: number;
   /** 이 패널이 현재 활성 상태인지 (단축키 범위 제한용) */
   isActive?: boolean;
+  /** 모바일 모드 여부 */
+  isMobile?: boolean;
+  /** 모바일: 터치로 타임라인에 추가 */
+  onAddToTimeline?: (itemId: string) => void;
 }
 
 function isSubtitleFile(file: File): boolean {
@@ -59,9 +63,11 @@ interface ThumbnailItemProps {
   onDragStart: (e: React.DragEvent, item: LibraryItem) => void;
   onContextMenu: (e: React.MouseEvent, item: LibraryItem) => void;
   itemRef: (el: HTMLDivElement | null) => void;
+  isMobile?: boolean;
+  onAddToTimeline?: () => void;
 }
 
-function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart, onContextMenu, itemRef }: ThumbnailItemProps) {
+function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart, onContextMenu, itemRef, isMobile, onAddToTimeline }: ThumbnailItemProps) {
   const thumbnail = useVideoThumbnail(item.url, item.type);
   const isVideo = item.type === 'video';
   const isAudio = item.type === 'audio';
@@ -80,13 +86,14 @@ function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart,
       role="button"
       tabIndex={0}
       onClick={onSelect}
+      onDoubleClick={(e) => { e.stopPropagation(); onAddToTimeline?.(); }}
       onMouseDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => onContextMenu(e, item)}
-      draggable
+      draggable={!isMobile}
       onDragStart={(e) => onDragStart(e, item)}
-      className={`relative group rounded-lg overflow-hidden border transition-all duration-150 hover:scale-[1.03] active:scale-95 cursor-grab active:cursor-grabbing ${isSelected ? 'border-primary ring-1 ring-primary' : 'border-transparent hover:border-gray-600'
+      className={`relative group rounded-lg overflow-hidden border transition-all duration-150 hover:scale-[1.03] active:scale-95 ${isMobile ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'} ${isSelected ? 'border-primary ring-1 ring-primary' : 'border-transparent hover:border-gray-600'
         }`}
-      title={item.name}
+      title={isMobile ? '탭: 선택 / 더블탭: 타임라인에 추가' : item.name}
     >
       <div className="aspect-video bg-gray-800 flex items-center justify-center">
         {isVideo && thumbnail ? (
@@ -122,8 +129,17 @@ function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart,
         )}
       </div>
 
-      <div className="px-1.5 py-1 bg-panel-bg">
-        <p className="text-[10px] text-gray-300 truncate">{item.name}</p>
+      <div className="px-1.5 py-1 bg-panel-bg flex items-center gap-1">
+        <p className="text-[10px] text-gray-300 truncate flex-1">{item.name}</p>
+        {isMobile && onAddToTimeline && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onAddToTimeline(); }}
+            className="shrink-0 w-6 h-6 rounded bg-[#00D4D4]/20 border border-[#00D4D4]/40 flex items-center justify-center active:scale-90 transition-transform"
+            title="타임라인에 추가"
+          >
+            <span className="material-icons text-[#00D4D4] text-sm">add</span>
+          </button>
+        )}
       </div>
     </div>
   );
@@ -137,7 +153,7 @@ function rectsOverlap(
   return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
 
-export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems = [], selectedLibraryIds = [], onLibrarySelect, onLibraryDelete, columns = 2, isActive = false }: LeftSidebarProps) {
+export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems = [], selectedLibraryIds = [], onLibrarySelect, onLibraryDelete, columns = 2, isActive = false, isMobile = false, onAddToTimeline }: LeftSidebarProps) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastClickedIndexRef = useRef<number>(-1);
@@ -373,8 +389,8 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
         onChange={handleFileChange}
       />
 
-      <div className="flex-1 flex flex-col p-4 overflow-y-auto">
-        <div className="flex items-center justify-between mb-4">
+      <div className={`flex-1 flex flex-col ${isMobile ? 'p-2' : 'p-4'} overflow-y-auto`}>
+        <div className="flex items-center justify-between mb-2">
           <h2 className="text-sm font-semibold">Local</h2>
           <div className="flex items-center gap-2">
             {selectedLibraryIds.length > 1 && (
@@ -397,7 +413,7 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`group w-full h-24 border border-dashed rounded-lg flex flex-col items-center justify-center transition-all mb-4 active:scale-95 hover:scale-[1.02] shrink-0 ${isDragging
+          className={`group w-full ${isMobile ? 'h-14' : 'h-24'} border border-dashed rounded-lg flex flex-col items-center justify-center transition-all ${isMobile ? 'mb-2' : 'mb-4'} active:scale-95 hover:scale-[1.02] shrink-0 ${isDragging
             ? 'border-primary bg-primary/10 border-2'
             : 'border-border-color hover:border-primary bg-panel-bg'
             }`}
@@ -440,6 +456,8 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
                     if (el) itemRefs.current.set(item.id, el);
                     else itemRefs.current.delete(item.id);
                   }}
+                  isMobile={isMobile}
+                  onAddToTimeline={onAddToTimeline ? () => onAddToTimeline(item.id) : undefined}
                 />
               ))}
             </div>

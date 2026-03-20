@@ -5,9 +5,18 @@ import AnalyticsProvider from '@/components/analytics/AnalyticsProvider';
 import AuthProvider from '@/components/auth/AuthProvider';
 import FeedbackWidget from '@/components/feedback/FeedbackWidget';
 
+import type { Viewport } from 'next';
+
 export const metadata: Metadata = {
   title: 'AutoText | AI 자막 자동 생성',
   description: 'AI 기반 자막 자동 생성 및 추천 시스템 - 예능, 상황, 설명 자막을 자동으로 생성합니다.',
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default function RootLayout({
