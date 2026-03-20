@@ -694,8 +694,9 @@ const RightSidebar = React.memo(({
 
       const effectiveAi = finalAi.length > 0 ? finalAi : aiItems;
 
-      // ★ AI 자막 구간의 대본은 제거된 trimmedDialogue + AI 자막 합침
-      onTranscriptsUpdate?.([...trimmedDialogue, ...effectiveAi]);
+      // ★ 대본 + AI 자막을 시간순으로 정렬하여 합침
+      const merged = [...trimmedDialogue, ...effectiveAi].sort((a, b) => a.startTime - b.startTime);
+      onTranscriptsUpdate?.(merged);
 
       const newSubs: SubtitleItem[] = effectiveAi.map((r, i) => ({
         id: `gemsub_${Date.now()}_${i}`,
@@ -979,8 +980,9 @@ const RightSidebar = React.memo(({
         };
       });
 
-      // 최종 결합: AI 구간 제거된 대본 + AI 자막
-      onTranscriptsUpdate?.([...finalStt, ...finalGemini]);
+      // 최종 결합: 대본 + AI 자막을 시간순으로 정렬
+      const mergedAll = [...finalStt, ...finalGemini].sort((a, b) => a.startTime - b.startTime);
+      onTranscriptsUpdate?.(mergedAll);
       onSubtitlesUpdate?.(geminiSubs);
 
       // 타임라인 갱신 — 대본(Track 0) AI구간 제거 + AI(Track 5) 배치
