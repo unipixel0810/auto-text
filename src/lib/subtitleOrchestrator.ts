@@ -48,6 +48,12 @@ const STYLE_CYCLE: ('예능' | '상황' | '설명')[] = [
 /** AI 자막 최소 간격 (초) */
 const AI_MIN_GAP = 1.0;
 
+/** AI 자막 최대 표시 시간 (초) — gap이 길어도 이 이상 안 늘어남 */
+const AI_MAX_DURATION = 5.0;
+
+/** AI 자막 최소 표시 시간 (초) */
+const AI_MIN_DURATION = 1.5;
+
 // ============================================
 // 타입
 // ============================================
@@ -107,63 +113,69 @@ function findDialogueGaps(
 function placeAiInGaps(
   aiItems: TranscriptItem[],
   gaps: Gap[],
-  timelineEnd: number,
+  _timelineEnd: number,
 ): TranscriptItem[] {
   if (aiItems.length === 0 || gaps.length === 0) return [];
 
-  const sorted = [...aiItems].sort((a, b) => a.startTime - b.startTime);
-  const usedGaps = new Set<number>();
+  // 1단계: gap을 슬롯으로 분할 (큰 gap → 여러 슬롯)
+  interface Slot { start: number; end: number }
+  const slots: Slot[] = [];
 
-  // 1단계: 각 AI 자막을 가장 가까운 gap에 배정하고, gap 경계에 정확히 맞춤
+  for (const gap of gaps) {
+    const gapDur = gap.end - gap.start;
+    if (gapDur < AI_MIN_DURATION) continue;
+
+    if (gapDur <= AI_MAX_DURATION) {
+      // 작은 gap → 슬롯 1개 (gap 전체 사용)
+      slots.push({ start: gap.start, end: gap.end });
+    } else {
+      // 큰 gap → 여러 슬롯으로 분할
+      const numSlots = Math.max(1, Math.floor(gapDur / AI_MAX_DURATION));
+      const slotDur = Math.min(AI_MAX_DURATION, gapDur / numSlots);
+      // 슬롯을 gap 내에 균등 배치 (간격 포함)
+      const totalSlotTime = numSlots * slotDur;
+      const spacing = numSlots > 1 ? (gapDur - totalSlotTime) / (numSlots - 1) : 0;
+
+      for (let s = 0; s < numSlots; s++) {
+        const slotStart = gap.start + s * (slotDur + spacing);
+        const slotEnd = slotStart + slotDur;
+        if (slotEnd <= gap.end + 0.01) {
+          slots.push({ start: slotStart, end: Math.min(slotEnd, gap.end) });
+        }
+      }
+    }
+  }
+
+  if (slots.length === 0) return [];
+
+  // 2단계: AI 자막을 가장 가까운 슬롯에 1:1 매칭
+  const sorted = [...aiItems].sort((a, b) => a.startTime - b.startTime);
+  const usedSlots = new Set<number>();
   const placed: TranscriptItem[] = [];
+
   for (const ai of sorted) {
     const aiMid = (ai.startTime + ai.endTime) / 2;
 
-    // 아직 사용 안 된 가장 가까운 gap 찾기
     let bestIdx = -1;
     let bestDist = Infinity;
-    for (let g = 0; g < gaps.length; g++) {
-      if (usedGaps.has(g)) continue;
-      const gMid = (gaps[g].start + gaps[g].end) / 2;
-      const dist = Math.abs(aiMid - gMid);
-      if (dist < bestDist) { bestDist = dist; bestIdx = g; }
+    for (let s = 0; s < slots.length; s++) {
+      if (usedSlots.has(s)) continue;
+      const sMid = (slots[s].start + slots[s].end) / 2;
+      const dist = Math.abs(aiMid - sMid);
+      if (dist < bestDist) { bestDist = dist; bestIdx = s; }
     }
     if (bestIdx === -1) continue;
 
-    const gap = gaps[bestIdx];
-    usedGaps.add(bestIdx);
+    const slot = slots[bestIdx];
+    usedSlots.add(bestIdx);
 
-    // ★ 핵심: AI 자막의 시작/끝을 gap 경계에 정확히 맞춤
-    // (대본이 끝나는 지점에서 시작, 다음 대본이 시작하는 지점에서 끝)
-    const newStart = gap.start;
-    const newEnd = gap.end;
-
-    if (newEnd - newStart >= 0.5) {
-      placed.push({ ...ai, startTime: newStart, endTime: newEnd });
+    const dur = slot.end - slot.start;
+    if (dur >= AI_MIN_DURATION) {
+      placed.push({ ...ai, startTime: slot.start, endTime: slot.end });
     }
   }
 
-  // 2단계: 골고루 분배 — 타임라인 N등분, 구간당 최대 1개
-  if (placed.length <= 1) return placed;
-  const slotCount = Math.max(3, Math.floor(timelineEnd / 10));
-  const slotDur = timelineEnd / slotCount;
-  const distributed: TranscriptItem[] = [];
-
-  for (let s = 0; s < slotCount; s++) {
-    const sStart = s * slotDur;
-    const sEnd = (s + 1) * slotDur;
-    const sMid = (sStart + sEnd) / 2;
-    const cands = placed.filter(a => a.startTime >= sStart && a.startTime < sEnd);
-    if (cands.length === 0) continue;
-    const best = cands.reduce((a, b) =>
-      Math.abs(a.startTime - sMid) < Math.abs(b.startTime - sMid) ? a : b
-    );
-    if (distributed.length === 0 || best.startTime - distributed[distributed.length - 1].endTime >= AI_MIN_GAP) {
-      distributed.push(best);
-    }
-  }
-
-  return distributed;
+  return placed.sort((a, b) => a.startTime - b.startTime);
 }
 
 // ============================================
