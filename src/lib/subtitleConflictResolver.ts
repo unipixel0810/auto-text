@@ -15,8 +15,9 @@ import { SEGMENT_MIN_DURATION } from './subtitlePlacer';
 // 상수
 // ============================================
 
-/** 대본-AI 전환 시 최소 간격 (초) */
-export const GAP_PADDING = 0.3;
+/** 대본-AI 전환 시 최소 간격 (초)
+ *  AI 자막이 이미 대본 gap 경계에 정확히 배치되므로 패딩 불필요 */
+export const GAP_PADDING = 0;
 
 // ============================================
 // 타입

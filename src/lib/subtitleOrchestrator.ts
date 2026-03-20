@@ -63,29 +63,43 @@ export interface OrchestratedResult {
 
 interface Gap { start: number; end: number }
 
-/** 대본 사이의 빈 구간 추출 (최소 AI_MIN_GAP 이상) */
+/** 대본의 실제 표시 시간 최소값 (subtitlePlacer의 SUBTITLE_MIN_DURATION과 동일) */
+const DIALOGUE_MIN_DISPLAY = 3.0;
+
+/** 대본 사이의 빈 구간 추출 (최소 AI_MIN_GAP 이상)
+ *  ★ 대본이 타임라인에서 최소 3초로 연장되는 것을 반영하여 gap 계산
+ */
 function findDialogueGaps(
   dialogue: TranscriptItem[],
   timelineEnd: number,
 ): Gap[] {
   if (dialogue.length === 0) return [{ start: 0, end: timelineEnd }];
   const sorted = [...dialogue].sort((a, b) => a.startTime - b.startTime);
+
+  // 대본의 실제 표시 endTime 계산 (최소 3초 보장, 다음 대본 침범 안 함)
+  const displayEnds: number[] = sorted.map((d, i) => {
+    const rawEnd = d.endTime;
+    const minEnd = d.startTime + DIALOGUE_MIN_DISPLAY;
+    const nextStart = i + 1 < sorted.length ? sorted[i + 1].startTime : timelineEnd;
+    return Math.min(Math.max(rawEnd, minEnd), nextStart);
+  });
+
   const gaps: Gap[] = [];
 
   // 타임라인 시작 ~ 첫 대본
   if (sorted[0].startTime > AI_MIN_GAP) {
     gaps.push({ start: 0, end: sorted[0].startTime });
   }
-  // 대본 사이
+  // 대본 사이 — 연장된 endTime 기준으로 gap 계산
   for (let i = 0; i < sorted.length - 1; i++) {
-    const gapStart = sorted[i].endTime;
+    const gapStart = displayEnds[i];
     const gapEnd = sorted[i + 1].startTime;
     if (gapEnd - gapStart >= AI_MIN_GAP) {
       gaps.push({ start: gapStart, end: gapEnd });
     }
   }
   // 마지막 대본 ~ 타임라인 끝
-  const lastEnd = sorted[sorted.length - 1].endTime;
+  const lastEnd = displayEnds[displayEnds.length - 1];
   if (timelineEnd - lastEnd >= AI_MIN_GAP) {
     gaps.push({ start: lastEnd, end: timelineEnd });
   }
