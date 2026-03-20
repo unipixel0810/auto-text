@@ -234,11 +234,11 @@ const RightSidebar = React.memo(({
     const mainClips = (clips || []).filter(c => c.trackIndex === 1).sort((a, b) => a.startTime - b.startTime);
     if (mainClips.length === 0) return items;
 
-    // ★ 클립이 1개이고 trimStart=0이면 → 전체 영상을 그대로 사용 중 → 리매핑 불필요
+    // ★ 클립이 1개이고 trimStart≈0이면 → 전체 영상을 그대로 사용 중 → 리매핑 불필요
     if (mainClips.length === 1) {
       const clip = mainClips[0];
       const trimStart = clip.trimStart ?? 0;
-      if (trimStart === 0 && clip.startTime === 0) {
+      if (trimStart < 0.1 && clip.startTime < 0.1) {
         console.log('[클립 필터] 단일 클립, 트림 없음 → 리매핑 스킵');
         return items;
       }
@@ -314,19 +314,37 @@ const RightSidebar = React.memo(({
       }
       // 매칭 안 되면 해당 항목은 타임라인에 없는 구간이므로 제외
     }
-    // ★ 커버리지 확인: 마지막 세그먼트가 타임라인 끝까지 도달하는지 로그
+    // ★ 커버리지 확인: 매핑 결과가 원본의 50% 미만이면 리매핑 실패로 판단 → 원본 반환
     const timelineEnd = mainClips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
     const lastSeg = filtered.length > 0 ? filtered[filtered.length - 1] : null;
     const coverage = lastSeg ? (lastSeg.endTime / timelineEnd * 100).toFixed(1) : '0';
     console.log(`[클립 필터] ${items.length}개 → ${filtered.length}개 매핑 (커버리지: ${coverage}%, 타임라인 끝: ${timelineEnd.toFixed(1)}초, 마지막 세그: ${lastSeg?.endTime.toFixed(1) ?? 'N/A'}초)`);
+
+    // 매핑 후 50% 이상 누락되면 리매핑 실패 → 원본 그대로 사용 (데이터 손실 방지)
+    if (items.length > 0 && filtered.length < items.length * 0.5) {
+      console.warn(`[클립 필터] ⚠️ 매핑 후 ${items.length - filtered.length}개 누락 (${((1 - filtered.length / items.length) * 100).toFixed(0)}%) → 원본 사용으로 폴백`);
+      return items;
+    }
+
     return filtered;
   }, [clips]);
 
   // 타임라인 트랙1 클립에서 실제 사용 중인 미디어 구간 추출
-  // ★ 각 클립의 trimStart ~ trimStart + duration*speed 전체를 빠짐없이 커버
+  // ★ 단일 클립 + 트림 없음 → undefined 반환 (전체 영상 분석)
   const getMediaRangesFromClips = useCallback((): MediaRange[] | undefined => {
     const mainClips = (clips || []).filter(c => c.trackIndex === 1);
     if (mainClips.length === 0) return undefined;
+
+    // 단일 클립이고 트림이 없으면 전체 영상을 분석하도록 undefined 반환
+    if (mainClips.length === 1) {
+      const c = mainClips[0];
+      const trimStart = c.trimStart ?? 0;
+      if (trimStart < 0.1 && c.startTime < 0.1 && c.trimEnd == null) {
+        console.log('[mediaRanges] 단일 클립, 트림 없음 → 전체 영상 분석');
+        return undefined;
+      }
+    }
+
     return mainClips.map(c => {
       const speed = c.speed || 1;
       const mediaStart = c.trimStart ?? 0;
