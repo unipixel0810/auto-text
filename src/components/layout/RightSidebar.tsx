@@ -1172,8 +1172,8 @@ const RightSidebar = React.memo(({
                       ))}
                       {filteredTranscripts.length === 0 && <div className="text-center py-12 text-text-secondary text-xs opacity-50">{searchQuery ? '검색 결과 없음' : '대본을 생성하거나 불러와주세요'}</div>}
                     </div>
-                    <div className="border-t border-border-color flex flex-col" style={{ height: '40%' }}>
-                      <div className="p-2 border-b border-border-color bg-panel-bg space-y-2">
+                    <div className="border-t border-border-color flex flex-col overflow-y-auto" style={{ minHeight: '35%', maxHeight: '50%' }}>
+                      <div className="p-2 border-b border-border-color bg-panel-bg space-y-2 shrink-0">
                         <div className="flex items-center justify-between">
                           <h3 className="text-xs font-semibold">대본 Settings</h3>
                         </div>

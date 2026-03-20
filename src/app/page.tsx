@@ -8,7 +8,7 @@ import Player from '@/components/layout/Player';
 import RightSidebar from '@/components/layout/RightSidebar';
 import Timeline from '@/components/layout/Timeline';
 import { parseSubtitleFile } from '@/lib/subtitleParser';
-import { buildSubtitlePlacements, SUBTITLE_GAP_SECONDS } from '@/lib/subtitlePlacer';
+import { buildSubtitlePlacements, SUBTITLE_GAP_SECONDS, SUBTITLE_MAX_CHARS, SUBTITLE_MAX_CHARS_PORTRAIT } from '@/lib/subtitlePlacer';
 import { detectSceneChanges } from '@/lib/sceneDetector';
 import type { TranscriptItem, SubtitleItem } from '@/types/subtitle';
 import type { VideoClip, HistoryEntry, ClipboardData, LibraryItem } from '@/types/video';
@@ -1560,10 +1560,14 @@ export default function Home() {
     const mainVideo = clipsRef.current.find(c => c.trackIndex === 1);
     const groupId = mainVideo?.linkGroupId || mainVideo?.id;
 
+    const isPortrait = canvasAspectRatio === '9:16' || canvasAspectRatio === '3:4';
+    const maxChars = isPortrait ? SUBTITLE_MAX_CHARS_PORTRAIT : SUBTITLE_MAX_CHARS;
+
     const placements = buildSubtitlePlacements(items, {
       gap,
       continuous: isDialogueTrack,
       timelineEnd: tlEnd > 0 ? tlEnd : undefined,
+      maxChars,
     });
 
     const newClips: VideoClip[] = placements.map(({ startTime, duration, item }) => ({
@@ -1584,7 +1588,7 @@ export default function Home() {
       const base = replaceTrack ? prev.filter(c => c.trackIndex !== trackIndex) : prev;
       return [...base, ...newClips];
     });
-  }, []);
+  }, [canvasAspectRatio]);
 
   // Handle SRT/ASS file import
   const handleSubtitleImport = useCallback(async (file: File) => {

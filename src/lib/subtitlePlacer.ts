@@ -18,8 +18,11 @@ export const SUBTITLE_GAP_SECONDS = 0.5;
 /** 자막 최소 노출 시간 (초) — 사람이 읽을 수 있는 최소 시간 */
 export const SUBTITLE_MIN_DURATION = 3.0;
 
-/** 한 줄 최대 글자 수 */
+/** 한 줄 최대 글자 수 (가로 영상 기준) */
 export const SUBTITLE_MAX_CHARS = 20;
+
+/** 세로 영상 한 줄 최대 글자 수 */
+export const SUBTITLE_MAX_CHARS_PORTRAIT = 12;
 
 /** 분할 시 최소 청크 글자 수 */
 const SPLIT_MIN_CHARS = 6;
@@ -65,19 +68,19 @@ function splitWordsByCharLimit(words: WordTiming[], maxChars: number): WordTimin
 // 텍스트 분할 (긴 자막 → 20자 이내 청크)
 // ============================================
 
-export function splitLongSubtitles(items: TranscriptItem[]): TranscriptItem[] {
+export function splitLongSubtitles(items: TranscriptItem[], maxChars: number = SUBTITLE_MAX_CHARS): TranscriptItem[] {
   const result: TranscriptItem[] = [];
 
   for (const item of items) {
     const text = item.editedText || item.originalText;
-    if (text.length <= SUBTITLE_MAX_CHARS) {
+    if (text.length <= maxChars) {
       result.push(item);
       continue;
     }
 
     // 단어 타이밍이 있으면 단어 단위로 분할 (음성 싱크 정확)
     if (item.words && item.words.length > 1) {
-      const wordChunks = splitWordsByCharLimit(item.words, SUBTITLE_MAX_CHARS);
+      const wordChunks = splitWordsByCharLimit(item.words, maxChars);
       for (let ci = 0; ci < wordChunks.length; ci++) {
         const wc = wordChunks[ci];
         const chunkText = wc.map(w => w.word).join(' ');
@@ -96,7 +99,7 @@ export function splitLongSubtitles(items: TranscriptItem[]): TranscriptItem[] {
 
     // 단어 타이밍 없으면 글자 수 비례 분배 (폴백)
     const totalDuration = item.endTime - item.startTime;
-    const chunks = splitTextAtBreakPoints(text);
+    const chunks = splitTextAtBreakPoints(text, maxChars);
     const totalChars = chunks.reduce((s, c) => s + c.length, 0);
 
     let t = item.startTime;
@@ -143,15 +146,15 @@ function isKoreanBreakPoint(text: string, idx: number): boolean {
   return false;
 }
 
-function splitTextAtBreakPoints(text: string): string[] {
+function splitTextAtBreakPoints(text: string, charLimit: number = SUBTITLE_MAX_CHARS): string[] {
   const chunks: string[] = [];
   let remaining = text;
 
-  while (remaining.length > SUBTITLE_MAX_CHARS) {
+  while (remaining.length > charLimit) {
     let splitIdx = -1;
 
     // 1순위: 공백, 쉼표, 구두점에서 분할
-    for (let j = SUBTITLE_MAX_CHARS - 1; j >= SPLIT_MIN_CHARS; j--) {
+    for (let j = charLimit - 1; j >= SPLIT_MIN_CHARS; j--) {
       if (' ,，.。!?、·'.includes(remaining[j])) {
         splitIdx = j + 1;
         break;
@@ -160,7 +163,7 @@ function splitTextAtBreakPoints(text: string): string[] {
 
     // 2순위: 한국어 자연 분할점 (조사/어미 뒤)
     if (splitIdx === -1) {
-      for (let j = SUBTITLE_MAX_CHARS - 1; j >= SPLIT_MIN_CHARS; j--) {
+      for (let j = charLimit - 1; j >= SPLIT_MIN_CHARS; j--) {
         if (isKoreanBreakPoint(remaining, j)) {
           splitIdx = j + 1;
           break;
@@ -169,7 +172,7 @@ function splitTextAtBreakPoints(text: string): string[] {
     }
 
     // 3순위: 그래도 못 찾으면 최대 길이에서 자르되, 한글 음절 경계 유지
-    if (splitIdx === -1) splitIdx = SUBTITLE_MAX_CHARS;
+    if (splitIdx === -1) splitIdx = charLimit;
 
     chunks.push(remaining.slice(0, splitIdx).trim());
     remaining = remaining.slice(splitIdx).trim();
@@ -240,12 +243,12 @@ export function placeWithoutOverlap(
 
 export function buildSubtitlePlacements(
   items: TranscriptItem[],
-  options: { gap?: number; continuous?: boolean; timelineEnd?: number } = {},
+  options: { gap?: number; continuous?: boolean; timelineEnd?: number; maxChars?: number } = {},
 ): PlacedSubtitle[] {
-  const { gap = SUBTITLE_GAP_SECONDS, continuous = false, timelineEnd } = options;
+  const { gap = SUBTITLE_GAP_SECONDS, continuous = false, timelineEnd, maxChars = SUBTITLE_MAX_CHARS } = options;
   // 대본·AI 모두 긴 텍스트 분할 적용 (화면 밖 overflow 방지)
   // 3초 미만 조각은 placeWithoutOverlap에서 SUBTITLE_MIN_DURATION으로 보장
-  const expanded = splitLongSubtitles(items);
+  const expanded = splitLongSubtitles(items, maxChars);
   const placed = placeWithoutOverlap(expanded, gap, continuous);
 
   // timelineEnd가 있으면 초과 구간 제거/클램핑

@@ -344,6 +344,7 @@ const SubtitleOverlay = React.memo(({
 }) => {
   const aspectScaleMap: Record<string, number> = { '16:9': 1, '9:16': 0.56, '1:1': 0.75, '3:4': 0.65 };
   const aspectScale = aspectScaleMap[canvasAspectRatio] || 1;
+  const isPortrait = canvasAspectRatio === '9:16' || canvasAspectRatio === '3:4';
   const DRAG_THRESHOLD = 5;
 
   const [editingClipId, setEditingClipId] = useState<string | null>(null);
@@ -460,7 +461,7 @@ const SubtitleOverlay = React.memo(({
           <div
             key={clip.id}
             data-subtitle-box
-            className={`absolute left-1/2 -translate-x-1/2 z-[110] max-w-[80%] text-center transition-none select-none${animClass ? ` ${animClass}` : ''}`}
+            className={`absolute left-1/2 -translate-x-1/2 z-[110] max-w-[80%] text-center transition-none select-none overflow-hidden${animClass ? ` ${animClass}` : ''}`}
             style={{
               bottom: bottomPos,
               transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
@@ -561,9 +562,13 @@ const SubtitleOverlay = React.memo(({
                   lineHeight: clip.lineHeight ?? 1.4,
                   letterSpacing: clip.letterSpacing !== undefined ? `${clip.letterSpacing}em` : undefined,
                   whiteSpace: 'pre-wrap',
-                  wordBreak: 'keep-all',
+                  wordBreak: 'break-all',
                   overflowWrap: 'break-word',
                   overflow: 'hidden',
+                  maxWidth: '100%',
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: 'vertical' as const,
                   textShadow: clip.glowColor
                     ? `0 0 ${clip.shadowBlur || 0}px ${clip.glowColor}, 0 0 ${(clip.shadowBlur || 0) * 2}px ${clip.glowColor}`
                     : (clip.shadowBlur || 0) > 0

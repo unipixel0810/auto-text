@@ -52,7 +52,7 @@ const AI_MIN_GAP = 1.0;
 const AI_MAX_DURATION = 5.0;
 
 /** AI 자막 최소 표시 시간 (초) */
-const AI_MIN_DURATION = 1.5;
+const AI_MIN_DURATION = 1.0;
 
 // ============================================
 // 타입
@@ -220,12 +220,15 @@ export function orchestrate(
 
   // 1. AI 자막 겹침 해소
   const deoverlapped = deoverlapAiItems(aiRaw);
+  console.log(`[orchestrate] 입력: dialogue=${dialogue.length}, aiRaw=${aiRaw.length}, deoverlapped=${deoverlapped.length}, timelineEnd=${timelineEnd}`);
 
   // 2. 대본 빈 구간 계산
   const gaps = findDialogueGaps(dialogue, timelineEnd);
+  console.log(`[orchestrate] gaps=${gaps.length}`, gaps.slice(0, 5).map(g => `${g.start.toFixed(1)}-${g.end.toFixed(1)}(${(g.end-g.start).toFixed(1)}s)`));
 
   // 3. AI 자막을 빈 구간에만 배치 + 골고루 분배
   const placedAi = placeAiInGaps(deoverlapped, gaps, timelineEnd);
+  console.log(`[orchestrate] placedAi=${placedAi.length}`);
 
   // 4. 3종 스타일 DNA 할당
   const styledAi = assignStyleDna(placedAi);

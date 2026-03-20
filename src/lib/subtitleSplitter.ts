@@ -231,11 +231,8 @@ function trimEndTimes(segments: SubtitleSegment[]): SubtitleSegment[] {
       cappedEnd = Math.min(cappedEnd, seg.endTime);
     }
 
-    // 최소 3초 보장 (다음 세그먼트 시작을 침범하지 않는 범위 내)
-    const minEnd = seg.startTime + 3.0;
-    if (cappedEnd < minEnd && (!next || next.startTime >= minEnd)) {
-      cappedEnd = minEnd;
-    }
+    // ★ 3초 최소 보장은 subtitlePlacer + orchestrator step 5.5에서 처리
+    //   여기서 endTime을 늘리면 gap이 사라져 AI 자막 배치 불가
     // startTime보다는 항상 뒤에
     cappedEnd = Math.max(cappedEnd, seg.startTime + 0.5);
 
