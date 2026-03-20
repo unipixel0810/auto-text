@@ -104,43 +104,33 @@ function placeAiInGaps(
   if (aiItems.length === 0 || gaps.length === 0) return [];
 
   const sorted = [...aiItems].sort((a, b) => a.startTime - b.startTime);
+  const usedGaps = new Set<number>();
 
-  // 1단계: AI 자막을 가장 가까운 빈 구간으로 스냅
+  // 1단계: 각 AI 자막을 가장 가까운 gap에 배정하고, gap 경계에 정확히 맞춤
   const placed: TranscriptItem[] = [];
   for (const ai of sorted) {
     const aiMid = (ai.startTime + ai.endTime) / 2;
-    const aiDur = ai.endTime - ai.startTime;
 
-    // 가장 가까운 gap 찾기
-    let bestGap: Gap | null = null;
+    // 아직 사용 안 된 가장 가까운 gap 찾기
+    let bestIdx = -1;
     let bestDist = Infinity;
-    for (const g of gaps) {
-      const gMid = (g.start + g.end) / 2;
+    for (let g = 0; g < gaps.length; g++) {
+      if (usedGaps.has(g)) continue;
+      const gMid = (gaps[g].start + gaps[g].end) / 2;
       const dist = Math.abs(aiMid - gMid);
-      if (dist < bestDist) { bestDist = dist; bestGap = g; }
+      if (dist < bestDist) { bestDist = dist; bestIdx = g; }
     }
-    if (!bestGap) continue;
+    if (bestIdx === -1) continue;
 
-    // gap 안에 맞게 시간 조정
-    const clampedDur = Math.min(aiDur, bestGap.end - bestGap.start);
-    // gap 중앙에 배치하되 gap 범위 안으로 clamp
-    let newStart = Math.max(bestGap.start, aiMid - clampedDur / 2);
-    let newEnd = newStart + clampedDur;
-    if (newEnd > bestGap.end) {
-      newEnd = bestGap.end;
-      newStart = newEnd - clampedDur;
-    }
+    const gap = gaps[bestIdx];
+    usedGaps.add(bestIdx);
 
-    // 이전 AI 자막과 겹침 방지
-    if (placed.length > 0) {
-      const prevEnd = placed[placed.length - 1].endTime;
-      if (newStart < prevEnd + AI_MIN_GAP) {
-        newStart = prevEnd + AI_MIN_GAP;
-        newEnd = newStart + clampedDur;
-      }
-    }
+    // ★ 핵심: AI 자막의 시작/끝을 gap 경계에 정확히 맞춤
+    // (대본이 끝나는 지점에서 시작, 다음 대본이 시작하는 지점에서 끝)
+    const newStart = gap.start;
+    const newEnd = gap.end;
 
-    if (newStart >= 0 && newEnd <= timelineEnd && newEnd - newStart >= 0.5) {
+    if (newEnd - newStart >= 0.5) {
       placed.push({ ...ai, startTime: newStart, endTime: newEnd });
     }
   }
