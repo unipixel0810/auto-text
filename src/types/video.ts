@@ -21,9 +21,16 @@ export interface VideoClip {
   opacity?: number;
   blendMode?: boolean;
   autoColorCorrection?: boolean;
+  // Color correction filters (0-200 scale, 100 = no change)
+  brightness?: number;    // 밝기 (기본 100)
+  contrast?: number;      // 대비 (기본 100)
+  saturate?: number;      // 채도 (기본 100)
+  temperature?: number;   // 색온도 — hue-rotate로 구현 (기본 0, -30~30)
+  sharpen?: number;       // 선명도 (기본 0, 0~100)
   animationEffect?: string;
   speed?: number; // playback speed 0.1x ~ 10x
   linked?: boolean; // audio+video linked
+  linkGroupId?: string; // 같은 그룹의 미디어+자막을 연결하는 ID
   // Subtitle/Text Styling
   fontFamily?: string;
   fontSize?: number;

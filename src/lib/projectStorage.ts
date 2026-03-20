@@ -39,6 +39,27 @@ export interface SavedProject {
 const STORAGE_KEY = 'autotext_projects';
 const CURRENT_PROJECT_KEY = 'autotext_current_project';
 
+/** localStorage 최대 용량 안전 마진 (4MB — 대부분 브라우저 한도 5~10MB) */
+const MAX_STORAGE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * 프로젝트 데이터를 경량화 — blob URL, 큰 문자열 등 제거
+ * localStorage에 저장할 수 없는/불필요한 데이터를 정리
+ */
+function lightenProject(project: SavedProject): SavedProject {
+    return {
+        ...project,
+        thumbnail: undefined, // 썸네일은 용량 큼 (base64 이미지)
+        clips: (project.clips as any[]).map((clip: any) => {
+            // blob:// URL은 세션이 끝나면 무효 → 저장할 필요 없음
+            const url = typeof clip.url === 'string' && clip.url.startsWith('blob:') ? '' : clip.url;
+            // 불필요한 큰 필드 제거
+            const { audioBuffer, waveformData, _cachedFrames, ...rest } = clip;
+            return { ...rest, url };
+        }),
+    };
+}
+
 /** 모든 프로젝트 목록 가져오기 */
 export function getAllProjects(): SavedProject[] {
     if (typeof window === 'undefined') return [];
@@ -61,15 +82,49 @@ export function saveProject(project: SavedProject): void {
     if (typeof window === 'undefined') return;
     const projects = getAllProjects();
     const existingIndex = projects.findIndex(p => p.id === project.id);
-    project.updatedAt = new Date().toISOString();
+
+    // 경량화하여 저장 (blob URL, thumbnail 등 제거)
+    const lightProject = lightenProject(project);
+    lightProject.updatedAt = new Date().toISOString();
 
     if (existingIndex >= 0) {
-        projects[existingIndex] = project;
+        projects[existingIndex] = lightProject;
     } else {
-        projects.unshift(project);
+        projects.unshift(lightProject);
     }
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
+    // JSON 크기 체크 후 저장 시도
+    let json = JSON.stringify(projects);
+
+    // 4MB 초과 시 오래된 프로젝트부터 제거
+    while (json.length > MAX_STORAGE_BYTES && projects.length > 1) {
+        // 현재 프로젝트가 아닌 가장 오래된 프로젝트 제거
+        const removeIdx = projects.findLastIndex(p => p.id !== lightProject.id);
+        if (removeIdx < 0) break;
+        projects.splice(removeIdx, 1);
+        json = JSON.stringify(projects);
+    }
+
+    try {
+        localStorage.setItem(STORAGE_KEY, json);
+    } catch {
+        // 그래도 실패 → 현재 프로젝트만 저장
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify([lightProject]));
+        } catch {
+            // clips도 너무 크면 clips를 비우고 저장
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify([{
+                    ...lightProject,
+                    clips: [],
+                    transcripts: lightProject.transcripts.slice(0, 50),
+                    subtitles: lightProject.subtitles.slice(0, 50),
+                }]));
+            } catch {
+                console.error('[ProjectStorage] 저장 불가 — localStorage 용량 부족');
+            }
+        }
+    }
 }
 
 /** 프로젝트 삭제 */

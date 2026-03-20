@@ -57,10 +57,12 @@ export default function UsersPage() {
     setLoading(true);
     try {
       const res = await fetch(`/api/analytics/query?action=users&page=${p}&limit=${PAGE_LIMIT}`);
+      if (!res.ok) { console.error('Failed to fetch users:', res.status); setUsers([]); return; }
       const data = await res.json();
-      setUsers(data.users ?? []);
-      setTotal(data.total ?? 0);
-    } catch {
+      setUsers(data?.users ?? []);
+      setTotal(data?.total ?? 0);
+    } catch (err) {
+      console.error('Failed to fetch users:', err);
       setUsers([]);
     } finally {
       setLoading(false);
@@ -76,9 +78,11 @@ export default function UsersPage() {
     setActivityLoading(true);
     try {
       const res = await fetch(`/api/analytics/query?action=user_activity&visitor_id=${encodeURIComponent(visitorId)}`);
+      if (!res.ok) { console.error('Failed to fetch user activity:', res.status); setActivityMap(prev => ({ ...prev, [visitorId]: [] })); return; }
       const data = await res.json();
-      setActivityMap(prev => ({ ...prev, [visitorId]: data.events ?? [] }));
-    } catch {
+      setActivityMap(prev => ({ ...prev, [visitorId]: data?.events ?? [] }));
+    } catch (err) {
+      console.error('Failed to fetch user activity:', err);
       setActivityMap(prev => ({ ...prev, [visitorId]: [] }));
     } finally {
       setActivityLoading(false);

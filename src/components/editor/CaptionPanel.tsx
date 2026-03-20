@@ -48,7 +48,10 @@ export default function CaptionPanel({
     setIsGeneratingAI(true);
     try {
       const generated = await generateSubtitlesWithGemini({ transcripts });
-      const subtitleItems: SubtitleItem[] = generated.map((g, i) => ({
+      // TRANSCRIPT 타입은 대본 트랙이 담당하므로 AI 자막에서는 제외
+      // ENTERTAINMENT, SITUATION, EXPLANATION, CONTEXT만 AI 자막으로 추가
+      const nonTranscript = generated.filter((g) => g.type !== 'TRANSCRIPT');
+      const subtitleItems: SubtitleItem[] = nonTranscript.map((g, i) => ({
         id: `ai_${Date.now()}_${i}`,
         startTime: g.startTime,
         endTime: g.endTime,
@@ -87,7 +90,9 @@ export default function CaptionPanel({
     setIsGeneratingAI(true);
     try {
       const generated = await generateSubtitlesWithGemini({ transcripts: scriptTranscripts });
-      const subtitleItems: SubtitleItem[] = generated.map((g, i) => ({
+      // TRANSCRIPT 타입은 대본 트랙이 담당하므로 AI 자막에서는 제외
+      const nonTranscript = generated.filter((g) => g.type !== 'TRANSCRIPT');
+      const subtitleItems: SubtitleItem[] = nonTranscript.map((g, i) => ({
         id: `ai_script_${Date.now()}_${i}`,
         startTime: g.startTime,
         endTime: g.endTime,

@@ -19,6 +19,15 @@ export interface TranscriptDataForAI {
   text: string;
 }
 
+/** AI 자막 장르 */
+
+
+/** 분석할 미디어 시간 구간 (원본 파일 기준 초) */
+export interface MediaRange {
+  start: number;
+  end: number;
+}
+
 /** 청크 단위: 90초 */
 const CHUNK_DURATION_SECONDS = 90;
 
@@ -111,12 +120,31 @@ interface AudioChunk {
 }
 
 /**
+ * 겹치는 미디어 구간을 병합 (정렬 → 인접/중복 합치기)
+ */
+function mergeMediaRanges(ranges: MediaRange[]): MediaRange[] {
+  if (ranges.length <= 1) return ranges;
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const merged: MediaRange[] = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = merged[merged.length - 1];
+    if (sorted[i].start <= last.end + 0.1) {
+      last.end = Math.max(last.end, sorted[i].end);
+    } else {
+      merged.push({ ...sorted[i] });
+    }
+  }
+  return merged;
+}
+
+/**
  * 비디오 파일의 오디오를 CHUNK_DURATION_SECONDS 단위 WAV 청크 배열로 추출
- * 각 청크는 base64 인코딩 + startTime/endTime 포함
+ * mediaRanges가 주어지면 해당 구간만 추출 (토큰 절약)
  */
 async function extractAudioChunks(
   videoFile: File,
-  onProgress?: (percent: number, message: string) => void
+  onProgress?: (percent: number, message: string) => void,
+  mediaRanges?: MediaRange[],
 ): Promise<{ chunks: AudioChunk[]; totalDuration: number }> {
   // 1. 전체 오디오 디코딩
   onProgress?.(5, '오디오 디코딩 중...');
@@ -148,21 +176,40 @@ async function extractAudioChunks(
     };
   }
 
-  const totalChunks = Math.ceil(totalDuration / CHUNK_DURATION_SECONDS);
   const sampleRate = audioBuffer.sampleRate;
 
+  // mediaRanges가 주어지면 해당 구간만, 아니면 전체 오디오
+  const ranges = mediaRanges && mediaRanges.length > 0
+    ? mergeMediaRanges(mediaRanges).map(r => ({
+        start: Math.max(0, r.start),
+        end: Math.min(totalDuration, r.end),
+      }))
+    : [{ start: 0, end: totalDuration }];
+
+  // 각 range를 90초 단위 청크로 분할
+  const chunkDefs: { start: number; end: number }[] = [];
+  for (const range of ranges) {
+    let t = range.start;
+    while (t < range.end) {
+      const chunkEnd = Math.min(t + CHUNK_DURATION_SECONDS, range.end);
+      chunkDefs.push({ start: t, end: chunkEnd });
+      t = chunkEnd;
+    }
+  }
+
+  const totalChunks = chunkDefs.length;
   onProgress?.(10, `${totalChunks}개 청크로 분할 중...`);
 
   const chunks: AudioChunk[] = [];
 
   for (let i = 0; i < totalChunks; i++) {
-    const chunkStart = i * CHUNK_DURATION_SECONDS;
-    const chunkEnd = Math.min(chunkStart + CHUNK_DURATION_SECONDS, totalDuration);
+    const { start: chunkStart, end: chunkEnd } = chunkDefs[i];
     const chunkDur = chunkEnd - chunkStart;
 
     const startSample = Math.floor(chunkStart * sampleRate);
     const endSample = Math.floor(chunkEnd * sampleRate);
     const numSamples = endSample - startSample;
+    if (numSamples <= 0) continue;
 
     // OfflineAudioContext로 구간 렌더링
     const offlineCtx = new OfflineAudioContext(1, numSamples, sampleRate);
@@ -200,7 +247,8 @@ async function callGeminiForChunk(
   totalDuration: number,
   mode: 'default' | 'creative',
   transcriptData: TranscriptDataForAI[] | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  customPrompt?: string,
 ): Promise<GeminiSubtitleResult[]> {
   const chunkDuration = chunk.endTime - chunk.startTime;
 
@@ -226,6 +274,7 @@ async function callGeminiForChunk(
       chunkStartTime: chunk.startTime,
       totalDuration,
       mode,
+      customPrompt: customPrompt || '',
       transcriptData: filteredTranscript,
     }),
     signal,
@@ -260,6 +309,72 @@ async function callGeminiForChunk(
 }
 
 // ============================================
+// 청크 간 중복 제거
+// ============================================
+
+/** 두 텍스트의 유사도 (0~1). 짧은 쪽 기준 포함 비율 */
+function textSimilarity(a: string, b: string): number {
+  const ta = a.replace(/[\s\[\]()]/g, '');
+  const tb = b.replace(/[\s\[\]()]/g, '');
+  if (ta === tb) return 1;
+  const shorter = ta.length <= tb.length ? ta : tb;
+  const longer = ta.length <= tb.length ? tb : ta;
+  if (shorter.length === 0) return 0;
+  if (longer.includes(shorter)) return 1;
+  // 공통 문자 비율
+  let match = 0;
+  for (const ch of shorter) { if (longer.includes(ch)) match++; }
+  return match / shorter.length;
+}
+
+/** 시간대 겹침 여부 */
+function timeOverlap(a: GeminiSubtitleResult, b: GeminiSubtitleResult): boolean {
+  return a.start_time < b.end_time && b.start_time < a.end_time;
+}
+
+/**
+ * 청크 결과를 시간순 정렬 후:
+ *  1. 시간이 겹치면서 텍스트 유사도 > 0.5 → 중복 제거 (더 긴 텍스트 유지)
+ *  2. 시간이 거의 같은(3초 이내) 자막 → 중복 제거
+ *  3. 완전 동일 텍스트 → 제거
+ */
+function deduplicateChunkResults(items: GeminiSubtitleResult[]): GeminiSubtitleResult[] {
+  if (items.length <= 1) return items;
+  const sorted = [...items].sort((a, b) => a.start_time - b.start_time);
+  const removed = new Set<number>();
+
+  for (let i = 0; i < sorted.length; i++) {
+    if (removed.has(i)) continue;
+    for (let j = i + 1; j < sorted.length; j++) {
+      if (removed.has(j)) continue;
+      // 시간 차이가 5초 초과면 검사 중단 (정렬됨)
+      if (sorted[j].start_time - sorted[i].end_time > 5) break;
+
+      const timeDiff = Math.abs(sorted[i].start_time - sorted[j].start_time);
+      const overlap = timeOverlap(sorted[i], sorted[j]);
+      const sim = textSimilarity(sorted[i].text, sorted[j].text);
+
+      // 중복 판정: (겹침 + 유사) 또는 (가까움 + 동일) 또는 (완전 동일 텍스트)
+      if ((overlap && sim > 0.5) || (timeDiff < 3 && sim > 0.7) || sim > 0.9) {
+        // 텍스트가 더 긴 쪽 유지
+        if (sorted[i].text.length >= sorted[j].text.length) {
+          removed.add(j);
+        } else {
+          removed.add(i);
+          break; // i가 제거됨 → 더 비교 불필요
+        }
+      }
+    }
+  }
+
+  const result = sorted.filter((_, idx) => !removed.has(idx));
+  if (removed.size > 0) {
+    console.log(`[Gemini AI] 청크 간 중복 제거: ${items.length}개 → ${result.length}개 (${removed.size}개 중복)`);
+  }
+  return result;
+}
+
+// ============================================
 // 메인 함수
 // ============================================
 
@@ -272,14 +387,15 @@ export async function generateSubtitlesFromAudio(
   _apiKey: string, // No longer used directly here
   onProgress?: (percent: number, message: string) => void,
   signal?: AbortSignal,
-  options?: { mode?: 'default' | 'creative'; transcriptData?: TranscriptDataForAI[]; duration?: number },
+  options?: { mode?: 'default' | 'creative'; transcriptData?: TranscriptDataForAI[]; duration?: number; mediaRanges?: MediaRange[]; customPrompt?: string },
 ): Promise<GeminiSubtitleResult[]> {
 
-  // 1. 오디오 청크 추출
-  const { chunks, totalDuration } = await extractAudioChunks(videoFile, onProgress);
+  // 1. 오디오 청크 추출 (mediaRanges가 있으면 해당 구간만 — 토큰 절약)
+  const { chunks, totalDuration } = await extractAudioChunks(videoFile, onProgress, options?.mediaRanges);
 
   const mode = options?.mode || 'default';
   const transcriptData = options?.transcriptData;
+  const customPrompt = options?.customPrompt || '';
 
   const allResults: GeminiSubtitleResult[] = [];
   const totalChunks = chunks.length;
@@ -307,7 +423,8 @@ export async function generateSubtitlesFromAudio(
       totalDuration,
       mode,
       transcriptData,
-      signal
+      signal,
+      customPrompt,
     );
 
     allResults.push(...chunkResults);
@@ -318,7 +435,10 @@ export async function generateSubtitlesFromAudio(
   // 3. 시간순 정렬
   allResults.sort((a, b) => a.start_time - b.start_time);
 
+  // 4. 청크 간 중복 제거 — 유사 텍스트 + 시간 겹침 기반
+  const deduped = deduplicateChunkResults(allResults);
+
   onProgress?.(100, '자막 생성 완료!');
 
-  return allResults;
+  return deduped;
 }

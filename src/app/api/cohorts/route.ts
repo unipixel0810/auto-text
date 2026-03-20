@@ -52,6 +52,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'name and rules required' }, { status: 400 });
     }
 
+    // Validate each rule has the required structure before evaluation
+    for (const rule of rules) {
+      if (!rule || typeof rule !== 'object') {
+        return NextResponse.json({ error: 'Each rule must be a non-null object' }, { status: 400 });
+      }
+      if (!rule.eventType || typeof rule.eventType !== 'string') {
+        return NextResponse.json({ error: 'Each rule must have a non-empty eventType string' }, { status: 400 });
+      }
+    }
+
     // 코호트 규칙에 따른 멤버 수 계산
     const memberCount = await evaluateCohortRules(supabase, rules);
 
@@ -85,6 +95,11 @@ async function evaluateCohortRules(supabase: any, rules: any[]): Promise<number>
     const matchingSets: Set<string>[] = [];
 
     for (const rule of rules) {
+      if (!rule || !rule.eventType) {
+        matchingSets.push(new Set());
+        continue;
+      }
+
       const cutoff = new Date(Date.now() - (rule.timeWindow || 30) * 86400000).toISOString();
 
       const { data, error } = await supabase

@@ -25,6 +25,9 @@ interface TimelineProps {
   onClipSelect?: (clipIds: string[]) => void;
   onClipDelete?: (clipId: string) => void;
   onSplit?: () => void;
+  onAutoSplit?: () => void;
+  onSceneSplit?: () => void;
+  onAutoColorCorrection?: () => void;
   onUndo?: () => void;
   onRedo?: () => void;
   onSpeedChange?: (clipId: string, speed: number) => void;
@@ -44,12 +47,30 @@ interface TimelineProps {
   onTrackHeightScaleChange?: (scale: number) => void;
 }
 
-const TRACK_CONTROLS_WIDTH = 80;
+// 반응형: CSS 변수에서 실제 값 읽기 (SSR 안전)
+function getTrackControlsWidth(): number {
+  if (typeof window === 'undefined') return 80;
+  const val = getComputedStyle(document.documentElement).getPropertyValue('--track-label-width');
+  return val ? parseInt(val, 10) : 80;
+}
+const TRACK_CONTROLS_WIDTH_DEFAULT = 80;
 const MIN_CLIP_DURATION = 0.3;
 const DELETE_THRESHOLD = 0.2;
 const SNAP_THRESHOLD_PX = 8;
 const MIN_ZOOM = 0.001;  // Shift+Z로 긴 영상도 한 화면에 표시 가능
 const MAX_ZOOM = 5;
+
+// ── 디자인 토큰: 장면 분할선 / 컷 편집 포인트 ──
+/** 컷 편집 포인트 선 색상 (Neutral Grey) */
+const CUT_POINT_COLOR = '#6B7280';
+/** 컷 편집 포인트 선 두께 (px) */
+const CUT_POINT_WIDTH = '1px';
+/** 컷 편집 포인트 인접 판정 임계치 (초) */
+const CUT_POINT_PROXIMITY = 0.15;
+/** 자막↔영상 링크선 두께 */
+const LINK_LINE_STROKE_WIDTH = 1;
+/** 자막↔영상 링크선 불투명도 */
+const LINK_LINE_OPACITY = 0.45;
 
 // Track definitions — dynamic tracks are built from clips
 type TrackDef = { trackIndex: number; label: string; icon: string; color: string; height: string };
@@ -63,7 +84,7 @@ const ABOVE_TRACKS: TrackDef[] = [
   { trackIndex: 12, label: 'V3', icon: 'layers', color: 'cyan', height: 'h-16' },
   { trackIndex: 11, label: 'V2', icon: 'layers', color: 'cyan', height: 'h-16' },
   { trackIndex: 10, label: 'V1', icon: 'layers', color: 'cyan', height: 'h-16' },
-  { trackIndex: 5, label: 'AI 자막', icon: 'auto_awesome', color: 'pink', height: 'h-8' },
+  { trackIndex: 5, label: 'AI 자막', icon: 'auto_awesome', color: 'gray', height: 'h-8' },
   { trackIndex: 0, label: '대본', icon: 'subtitles', color: 'purple', height: 'h-8' },
 ];
 const BELOW_TRACKS: TrackDef[] = [
@@ -112,18 +133,29 @@ const WaveformCanvas = React.memo(({ waveform, width, height, color }: { wavefor
   const canvasRef = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !waveform.length) return;
-    canvas.width = width;
-    canvas.height = height;
+    if (!canvas || !waveform.length || width <= 0 || height <= 0) return;
+    // 캔버스 최대 크기 제한 (브라우저 한계 방지)
+    const drawW = Math.min(width, 16000);
+    const drawH = height;
+    canvas.width = drawW;
+    canvas.height = drawH;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.clearRect(0, 0, width, height);
+    ctx.clearRect(0, 0, drawW, drawH);
+
+    const mid = drawH / 2;
     ctx.fillStyle = color;
-    const barW = Math.max(1, width / waveform.length);
-    for (let i = 0; i < waveform.length; i++) {
-      const h = Math.max(1, waveform[i] * height * 0.9);
-      const x = i * barW;
-      ctx.fillRect(x, (height - h) / 2, Math.max(1, barW - 0.5), h);
+    const totalBars = Math.max(1, Math.floor(drawW));
+
+    for (let px = 0; px < totalBars; px++) {
+      const idxStart = (px / totalBars) * waveform.length;
+      const idxEnd = ((px + 1) / totalBars) * waveform.length;
+      let peak = 0;
+      for (let j = Math.floor(idxStart); j < Math.min(Math.ceil(idxEnd), waveform.length); j++) {
+        if (waveform[j] > peak) peak = waveform[j];
+      }
+      const h = Math.max(0.5, peak * drawH * 0.95);
+      ctx.fillRect(px, mid - h / 2, 1, h);
     }
   }, [waveform, width, height, color]);
   return <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none" style={{ width, height }} />;
@@ -145,7 +177,11 @@ const ClipItem = React.memo(({
   onResizeStart: (e: React.PointerEvent, id: string, edge: 'left' | 'right') => void,
   onVolumeChange?: (clipId: string, volume: number) => void,
 }) => {
-  const colors = TRACK_COLORS[clip.trackIndex] || TRACK_COLORS[1];
+  const isSubtitleTrack = clip.trackIndex === 0 || (clip.trackIndex >= 5 && clip.trackIndex <= 8);
+  // 자막 클립은 텍스트 color 기반으로 타임라인 색상 결정
+  const colors = isSubtitleTrack
+    ? SUBTITLE_COLOR_MAP[getSubtitleClipColor(clip)]
+    : (TRACK_COLORS[clip.trackIndex] || TRACK_COLORS[1]);
   const isSel = selectedClipIds.includes(clip.id);
   const isDrag = draggingClipId === clip.id;
   const isResizing = resizingClipId === clip.id;
@@ -153,7 +189,6 @@ const ClipItem = React.memo(({
   const clipWidth = Math.max(clip.duration * pixelsPerSecond, 4);
   const isAudioTrack = clip.trackIndex >= 20;
   const isVideoTrack = clip.trackIndex === 1 || (clip.trackIndex >= 10 && clip.trackIndex <= 14);
-  const isSubtitleTrack = clip.trackIndex === 0 || (clip.trackIndex >= 5 && clip.trackIndex <= 8);
   const hasUrl = !!clip.url;
 
   // Volume drag
@@ -198,26 +233,38 @@ const ClipItem = React.memo(({
         ...(clip.disabled ? { backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(0,0,0,0.1) 10px, rgba(0,0,0,0.1) 20px)' } : {})
       }}
     >
-      {/* Video/Image thumbnails filmstrip — lazy loaded */}
-      {isVideoTrack && hasUrl && clip.thumbnails && clip.thumbnails.length > 0 && (
-        <div className="absolute inset-0 flex pointer-events-none bg-gray-800/60">
-          {clip.thumbnails.map((thumb, i) => (
-            <img key={i} src={thumb} alt="" loading="lazy" decoding="async" className="h-full object-contain flex-shrink-0" style={{ width: `${clipWidth / clip.thumbnails!.length}px`, background: '#1a1a2e' }} />
-          ))}
-          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-black/40" />
-        </div>
-      )}
+      {/* Video/Image thumbnails filmstrip — 고정 너비 타일 반복 (축소해도 썸네일 크기 유지) */}
+      {isVideoTrack && hasUrl && clip.thumbnails && clip.thumbnails.length > 0 && (() => {
+        const thumbs = clip.thumbnails!;
+        const TILE_W = 80; // 고정 타일 너비 (px) — 16:9 비율 기준 track height에 맞춤
+        const tileCount = Math.max(1, Math.ceil(clipWidth / TILE_W));
+        return (
+          <div className="absolute inset-0 flex pointer-events-none overflow-hidden" style={{ background: '#1a1a2e' }}>
+            {Array.from({ length: tileCount }, (_, i) => {
+              // 타일 위치에 해당하는 썸네일 인덱스 선택 (클립 구간별 다른 프레임 표시)
+              const thumbIdx = Math.min(Math.floor((i / tileCount) * thumbs.length), thumbs.length - 1);
+              const tileWidth = i < tileCount - 1 ? TILE_W : clipWidth - TILE_W * (tileCount - 1);
+              return (
+                <img key={i} src={thumbs[thumbIdx]} alt="" loading="lazy" decoding="async"
+                  className="h-full object-cover flex-shrink-0"
+                  style={{ width: `${Math.max(tileWidth, 1)}px` }} />
+              );
+            })}
+            <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-black/30" />
+          </div>
+        );
+      })()}
 
       {/* Audio waveform */}
       {isAudioTrack && clip.waveform && clip.waveform.length > 0 && (
-        <div className="absolute inset-0 pointer-events-none" style={{ background: '#1e2a1e' }}>
-          <WaveformCanvas waveform={clip.waveform} width={clipWidth} height={36} color="rgba(74, 222, 128, 0.6)" />
+        <div className="absolute inset-0 pointer-events-none" style={{ background: '#1a2e1a' }}>
+          <WaveformCanvas waveform={clip.waveform} width={clipWidth} height={36} color="rgba(74, 222, 128, 0.85)" />
         </div>
       )}
-      {/* Main track audio waveform (if video has audio) */}
+      {/* Main track audio waveform (if video has audio) — 하단 밀착 */}
       {clip.trackIndex === 1 && clip.waveform && clip.waveform.length > 0 && (
-        <div className="absolute bottom-0 left-0 right-0 h-[30%] pointer-events-none" style={{ background: 'rgba(30, 30, 50, 0.6)' }}>
-          <WaveformCanvas waveform={clip.waveform} width={clipWidth} height={14} color="rgba(96, 165, 250, 0.5)" />
+        <div className="absolute bottom-0 left-0 right-0 h-[35%] pointer-events-none" style={{ background: 'rgba(10, 10, 35, 0.85)' }}>
+          <WaveformCanvas waveform={clip.waveform} width={clipWidth} height={18} color="rgba(100, 200, 255, 0.9)" />
         </div>
       )}
 
@@ -307,7 +354,7 @@ const TrackRow = React.memo(({
   onVolumeChange?: (clipId: string, volume: number) => void,
 }) => {
   return (
-    <div className={`flex-1 relative ${track.trackIndex === 1 ? 'bg-[#0a0a0a]' : track.trackIndex >= 20 ? 'bg-green-950/30' : track.trackIndex >= 10 ? 'bg-cyan-950/20' : track.trackIndex === 5 ? 'bg-pink-950/20' : track.trackIndex === 0 ? 'bg-purple-950/20' : 'bg-gray-900/30'} ${!isVisible ? 'opacity-30' : ''}`}
+    <div className={`flex-1 relative ${track.trackIndex === 1 ? 'bg-[#0a0a0a]' : track.trackIndex >= 20 ? 'bg-green-950/30' : track.trackIndex >= 10 ? 'bg-cyan-950/20' : track.trackIndex === 5 ? 'bg-gray-900/20' : track.trackIndex === 0 ? 'bg-purple-950/20' : 'bg-gray-900/30'} ${!isVisible ? 'opacity-30' : ''}`}
       onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('bg-primary/10'); }}
       onDragLeave={(e) => { e.currentTarget.classList.remove('bg-primary/10'); }}
       onDrop={(e) => { e.currentTarget.classList.remove('bg-primary/10'); onTrackDrop(e, track.trackIndex); }}>
@@ -332,15 +379,62 @@ const TrackRow = React.memo(({
           onVolumeChange={onVolumeChange}
         />
       ))}
+      {/* ★ 컷 편집 포인트 — 인접 클립 경계에 얇은 회색 실선 표시 */}
+      {isVisible && (() => {
+        const sorted = [...clips].sort((a, b) => a.startTime - b.startTime);
+        const cutPoints: { x: number; key: string }[] = [];
+        for (let i = 0; i < sorted.length - 1; i++) {
+          const cur = sorted[i];
+          const next = sorted[i + 1];
+          const curEnd = cur.startTime + cur.duration;
+          if (Math.abs(next.startTime - curEnd) < CUT_POINT_PROXIMITY) {
+            cutPoints.push({ x: next.startTime * pixelsPerSecond, key: `cut_${cur.id}_${next.id}` });
+          }
+        }
+        return cutPoints.map(pt => (
+          <div
+            key={pt.key}
+            className="absolute top-0 bottom-0 pointer-events-none z-[2]"
+            style={{
+              left: `${pt.x}px`,
+              width: CUT_POINT_WIDTH,
+              backgroundColor: CUT_POINT_COLOR,
+            }}
+          />
+        ));
+      })()}
     </div>
   );
 });
 
+/** 자막 클립의 color 값으로 타임라인 색상 구분: 예능 / 상황 / 설명 / 기본 */
+function getSubtitleClipColor(clip: VideoClip): string {
+  const c = clip.color?.toLowerCase() || '#ffffff';
+  // 예능: #FFE066 (노란 계열)
+  if (c === '#ffe066' || c === '#ffd700' || c === '#ffd11a' || c === '#ffff00'
+    || c === '#f59e0b' || c === '#facc15') return 'entertainment';
+  // 상황: #A8E6CF (초록/민트 계열)
+  if (c === '#a8e6cf' || c === '#00cc80' || c === '#10b981' || c === '#34d399'
+    || c === '#4ade80' || c === '#50ff50') return 'situation';
+  // 설명: #88D8FF (파란/하늘 계열)
+  if (c === '#88d8ff' || c === '#4da6ff' || c === '#60a5fa' || c === '#3b82f6'
+    || c === '#0066cc' || c === '#38bdf8') return 'explanation';
+  // 기본 (대본, 흰색 등)
+  return 'default';
+}
+
+const SUBTITLE_COLOR_MAP: Record<string, { bg: string; bgSel: string; border: string; text: string; lineColor: string }> = {
+  entertainment: { bg: 'bg-yellow-900/50',  bgSel: 'bg-yellow-700/60',  border: 'border-yellow-500/50',  text: 'text-yellow-200',  lineColor: '#FACC15' },
+  situation:     { bg: 'bg-emerald-900/50', bgSel: 'bg-emerald-700/60', border: 'border-emerald-500/50', text: 'text-emerald-200', lineColor: '#34D399' },
+  explanation:   { bg: 'bg-sky-900/50',     bgSel: 'bg-sky-700/60',     border: 'border-sky-500/50',     text: 'text-sky-200',     lineColor: '#38BDF8' },
+  default:       { bg: 'bg-gray-800/50',    bgSel: 'bg-gray-600/60',    border: 'border-gray-500/50',    text: 'text-gray-200',    lineColor: '#9CA3AF' },
+};
+
 const TRACK_COLORS: Record<number, { bg: string; bgSel: string; border: string; text: string }> = {
-  5: { bg: 'bg-pink-900/50', bgSel: 'bg-pink-700/60', border: 'border-pink-500/50', text: 'text-pink-100' },
-  6: { bg: 'bg-pink-900/50', bgSel: 'bg-pink-700/60', border: 'border-pink-500/50', text: 'text-pink-100' },
-  7: { bg: 'bg-pink-900/50', bgSel: 'bg-pink-700/60', border: 'border-pink-500/50', text: 'text-pink-100' },
-  8: { bg: 'bg-pink-900/50', bgSel: 'bg-pink-700/60', border: 'border-pink-500/50', text: 'text-pink-100' },
+  5: { bg: 'bg-gray-800/50', bgSel: 'bg-gray-600/60', border: 'border-gray-500/50', text: 'text-gray-200' },
+  6: { bg: 'bg-gray-800/50', bgSel: 'bg-gray-600/60', border: 'border-gray-500/50', text: 'text-gray-200' },
+  7: { bg: 'bg-gray-800/50', bgSel: 'bg-gray-600/60', border: 'border-gray-500/50', text: 'text-gray-200' },
+  8: { bg: 'bg-gray-800/50', bgSel: 'bg-gray-600/60', border: 'border-gray-500/50', text: 'text-gray-200' },
   0: { bg: 'bg-purple-900/50', bgSel: 'bg-purple-700/60', border: 'border-purple-500/50', text: 'text-purple-100' },
   1: { bg: 'bg-[#0a0a0a]', bgSel: 'bg-blue-600/40', border: 'border-primary/40', text: 'text-white' },
   // Overlays (10-14)
@@ -358,7 +452,7 @@ const TRACK_COLORS: Record<number, { bg: string; bgSel: string; border: string; 
 const Timeline = React.memo(({
   clips, playheadPosition, playbackPosition = 0, isPlaying = false, currentTool = 'selection', onToolChange, selectedClipIds = [], zoom, onZoomChange, snapEnabled = true, onSnapToggle,
   onPlayheadChange, onHoverTimeChange, onClipAdd, onFilesAdd, onSubtitleAdd, onClipUpdate, onClipSelect, onClipDelete,
-  onSplit, onUndo, onRedo, onSpeedChange, onFitToScreen, onTrimLeft, onTrimRight, rippleMode, onRippleToggle, onResizeEnd, onInteractionStart, onInteractionEnd, isTimelineHovered, onHoverChange, onPlayheadDragChange,
+  onSplit, onAutoSplit, onSceneSplit, onAutoColorCorrection, onUndo, onRedo, onSpeedChange, onFitToScreen, onTrimLeft, onTrimRight, rippleMode, onRippleToggle, onResizeEnd, onInteractionStart, onInteractionEnd, isTimelineHovered, onHoverChange, onPlayheadDragChange,
   trackHeightScale: trackHeightScaleProp, onTrackHeightScaleChange,
 }: TimelineProps) => {
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
@@ -409,6 +503,15 @@ const Timeline = React.memo(({
     ALL_TRACK_INDICES.forEach(t => obj[t] = false);
     return obj;
   });
+
+  // 반응형 트랙 컨트롤 너비 (CSS 변수에서 읽기)
+  const [TRACK_CONTROLS_WIDTH, setTrackControlsWidth] = useState(TRACK_CONTROLS_WIDTH_DEFAULT);
+  useEffect(() => {
+    const update = () => setTrackControlsWidth(getTrackControlsWidth());
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
 
   // Scrub mode
   const [scrubMode, setScrubMode] = useState<'click' | 'hover'>('click');
@@ -572,6 +675,14 @@ const Timeline = React.memo(({
     const clip = clips.find(c => c.id === clipId);
     if (!clip || trackLocked[clip.trackIndex]) return;
 
+    // Move blue playhead to click position
+    if (timelineRef.current) {
+      const rect = timelineRef.current.getBoundingClientRect();
+      const scrollLeft = timelineRef.current.scrollLeft;
+      const time = Math.max(0, (e.clientX - rect.left + scrollLeft - TRACK_CONTROLS_WIDTH) / pixelsPerSecond);
+      onPlayheadChange?.(time);
+    }
+
     if (!selectedClipIds.includes(clipId)) {
       onClipSelect?.([clipId]);
     }
@@ -579,7 +690,7 @@ const Timeline = React.memo(({
     // Use pending drag with threshold to avoid accidental moves
     pendingDragRef.current = { clipId, initialMouseX: e.clientX, initialStartTime: clip.startTime, initialMouseY: e.clientY };
     onInteractionStart?.();
-  }, [clips, trackLocked, selectedClipIds, onClipSelect, onInteractionStart, currentTool]);
+  }, [clips, trackLocked, selectedClipIds, onClipSelect, onInteractionStart, currentTool, pixelsPerSecond, onPlayheadChange]);
 
   const handleResizeStart = useCallback((e: React.PointerEvent, clipId: string, edge: 'left' | 'right') => {
     e.preventDefault(); e.stopPropagation();
@@ -772,9 +883,9 @@ const Timeline = React.memo(({
     }
     const move = (e: PointerEvent) => {
       if (e.pointerType === 'mouse' && e.buttons === 0) { setIsDraggingPlayhead(false); onPlayheadDragChange?.(false); return; }
-      if (!tracksRef.current) return;
-      const rect = tracksRef.current.getBoundingClientRect();
-      const scrollLeft = tracksRef.current.parentElement?.scrollLeft || 0;
+      if (!timelineRef.current) return;
+      const rect = timelineRef.current.getBoundingClientRect();
+      const scrollLeft = timelineRef.current.scrollLeft;
       const time = Math.max(0, (e.clientX - rect.left + scrollLeft - TRACK_CONTROLS_WIDTH) / pixelsPerSecond);
       onPlayheadChange?.(time);
       // 드래그 중 주황 툴팁 업데이트
@@ -812,6 +923,7 @@ const Timeline = React.memo(({
 
     // Main 트랙(1) 마그네틱: 왼쪽으로 늘릴 때 앞 클립 끝과 겹치지 않도록 제한
     const isMainTrack = clip?.trackIndex === 1;
+    const isSubtitleTrack = clip?.trackIndex === 0 || (clip?.trackIndex !== undefined && clip.trackIndex >= 5 && clip.trackIndex <= 8);
     const prevClipEnd = isMainTrack
       ? Math.max(0, ...clips
           .filter(c => c.trackIndex === 1 && c.id !== resizingClip.clipId && c.startTime + c.duration <= resizingClip.initialStartTime + 0.01)
@@ -836,10 +948,14 @@ const Timeline = React.memo(({
 
       if (resizingClip.edge === 'right') {
         // ─── 오른쪽 끝 드래그: duration 늘리기/줄이기 ───
-        newDur = Math.max(0, resizingClip.initialDuration + deltaTime);
-        // 원본 미디어 끝 초과 불가
-        const maxDurFromMedia = (origMediaDuration - resizingClip.initialTrimStart) / speed;
-        if (maxDurFromMedia > 0) newDur = Math.min(newDur, maxDurFromMedia);
+        // ★ startTime(왼쪽 끝)은 절대 움직이지 않음
+        newDur = Math.max(MIN_CLIP_DURATION, resizingClip.initialDuration + deltaTime);
+        // 자막 트랙은 미디어 길이 제한 없음 (무한 확장 가능)
+        if (!isSubtitleTrack) {
+          // 원본 미디어 끝 초과 불가
+          const maxDurFromMedia = (origMediaDuration - resizingClip.initialTrimStart) / speed;
+          if (maxDurFromMedia > 0) newDur = Math.min(newDur, maxDurFromMedia);
+        }
         // Main 트랙: 뒤 클립과 겹침 방지
         if (isMainTrack && nextClipStart < Infinity) {
           const maxDurFromNext = nextClipStart - resizingClip.initialStartTime;
@@ -857,22 +973,42 @@ const Timeline = React.memo(({
         //   shift=-3 → trimStart=2s, startTime=max(0,-3)=0, duration=13s
         //   → 클립 [0,13], 원본 2초부터 재생, 숨겨진 3초 복구됨
 
-        // shift 제한: trimStart ≥ 0 (원본 0초 이전 불가) + duration ≥ MIN
-        const maxRecovery = resizingClip.initialTrimStart / speed;
-        const maxTrimMore = resizingClip.initialDuration - MIN_CLIP_DURATION;
-        const shift = Math.max(-maxRecovery, Math.min(deltaTime, maxTrimMore));
+        if (isSubtitleTrack) {
+          // 자막 트랙: 한쪽 끝만 움직이고 반대쪽은 절대 불변
+          // shift 범위: 왼쪽으로는 startTime이 0이 될 때까지만, 오른쪽으로는 duration이 MIN까지만
+          const maxLeft = -resizingClip.initialStartTime;           // 더 이상 왼쪽 불가
+          const maxRight = resizingClip.initialDuration - MIN_CLIP_DURATION; // 더 이상 오른쪽 불가
+          const shift = Math.max(maxLeft, Math.min(deltaTime, maxRight));
+          newStart = resizingClip.initialStartTime + shift;
+          newDur = resizingClip.initialDuration - shift;  // endTime = initialStart + initialDur (불변)
+          newTrimStart = 0;
+        } else {
+          // shift 제한: trimStart ≥ 0 + duration ≥ MIN + startTime ≥ minStart
+          const maxRecovery = resizingClip.initialTrimStart / speed;
+          const maxTrimMore = resizingClip.initialDuration - MIN_CLIP_DURATION;
+          const minStart = isMainTrack ? prevClipEnd : 0;
+          const maxLeft = -(resizingClip.initialStartTime - minStart); // startTime이 minStart까지만
+          const shift = Math.max(Math.max(-maxRecovery, maxLeft), Math.min(deltaTime, maxTrimMore));
 
-        // trimStart: 항상 shift 그대로 적용 (startTime clamp와 독립적)
-        newTrimStart = resizingClip.initialTrimStart + (shift * speed);
+          newTrimStart = resizingClip.initialTrimStart + (shift * speed);
+          newStart = resizingClip.initialStartTime + shift;
+          // endTime = initialStartTime + initialDuration (불변)
+          newDur = resizingClip.initialDuration - shift;
+        }
+      }
 
-        // startTime: 최소 경계(0 또는 앞 클립 끝)로 clamp
-        const desiredStart = resizingClip.initialStartTime + shift;
-        const minStart = isMainTrack ? prevClipEnd : 0;
-        newStart = Math.max(minStart, desiredStart);
-
-        // duration: trimStart가 줄어든 만큼 클립 전체 길이 증가
-        // endTime을 기준으로 계산하지 않고, shift 기반으로 직접 계산
-        newDur = resizingClip.initialDuration - shift;
+      // ★★★ 최종 강제 보정: 한쪽을 드래그하면 반대쪽은 절대 불변 ★★★
+      if (resizingClip.edge === 'right') {
+        // 오른쪽 드래그 → startTime 고정 (절대 변하면 안 됨)
+        newStart = resizingClip.initialStartTime;
+      } else {
+        // 왼쪽 드래그 → endTime 고정 (startTime + duration = 초기값)
+        const fixedEnd = resizingClip.initialStartTime + resizingClip.initialDuration;
+        newDur = fixedEnd - newStart;
+        if (newDur < MIN_CLIP_DURATION) {
+          newDur = MIN_CLIP_DURATION;
+          newStart = fixedEnd - MIN_CLIP_DURATION;
+        }
       }
 
       setResizePreview({ clipId: resizingClip.clipId, newDuration: newDur });
@@ -1121,11 +1257,12 @@ const Timeline = React.memo(({
     if (now - lastScrubRef.current < 16) return; // 60fps throttle
     lastScrubRef.current = now;
     setScrubTime(time);
-    // Playhead (blue line) only moves when actively scrubbing (click+drag) — NOT on hover
-    if (isScrubbingRef.current) {
+    // click 모드: 클릭+드래그 중에만 playhead 이동
+    // hover 모드: 마우스 올리기만 해도 playhead 이동
+    if (isScrubbingRef.current || scrubMode === 'hover') {
       onPlayheadChange?.(time);
     }
-  }, [onPlayheadChange]);
+  }, [onPlayheadChange, scrubMode]);
 
   const handleScrubMouseDown = useCallback((e: React.PointerEvent) => {
     if (scrubMode === 'click') {
@@ -1139,6 +1276,9 @@ const Timeline = React.memo(({
   const handleScrubMouseMove = useCallback((e: React.PointerEvent) => {
     const time = getTimeFromMouseX(e.clientX);
     hoverTimeRef.current = time;
+
+    // 재생 중에는 주황선/hover 비활성화 — 흰선(playback)만 표시
+    if (isPlaying) return;
 
     // Always sync hover time to parent immediately (no throttle) so Q/W reads exact position
     onHoverTimeChange?.(time);
@@ -1159,7 +1299,7 @@ const Timeline = React.memo(({
     if (hoverTooltip2Ref.current) hoverTooltip2Ref.current.textContent = fmtTime(time);
 
     throttledScrub(time);
-  }, [getTimeFromMouseX, throttledScrub, pixelsPerSecond, onHoverTimeChange]);
+  }, [getTimeFromMouseX, throttledScrub, pixelsPerSecond, onHoverTimeChange, isPlaying]);
 
   const handleScrubMouseUp = useCallback(() => {
     if (scrubMode === 'click') {
@@ -1181,32 +1321,26 @@ const Timeline = React.memo(({
     }
   }, [scrubMode, onHoverTimeChange]);
 
+  // 재생 시작 시 주황 hover 라인 즉시 숨김
+  useEffect(() => {
+    if (isPlaying) {
+      if (hoverLineRef.current) hoverLineRef.current.style.display = 'none';
+      if (hoverRulerRef.current) hoverRulerRef.current.style.display = 'none';
+      setScrubTime(null);
+    }
+  }, [isPlaying]);
+
   // Keyboard shortcuts: S=scrub toggle, Ctrl+/- =zoom, Shift+Z=fit
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = document.activeElement?.tagName;
       const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 
-      // Ctrl + = / Ctrl + - : zoom in/out (works even in input)
-      if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
-        e.preventDefault();
-        onZoomChange?.(Math.min(MAX_ZOOM, zoom * 1.25));
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === '-') {
-        e.preventDefault();
-        onZoomChange?.(Math.max(MIN_ZOOM, zoom / 1.25));
-        return;
-      }
+      // Cmd+/- 줌 및 Shift+Z는 page.tsx에서 activeSection 기반으로 통합 관리
+      if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+' || e.key === '-')) return;
+      if (e.code === 'KeyZ' && e.shiftKey && !e.ctrlKey && !e.metaKey) return;
 
       if (isInput) return;
-
-      // Shift + Z : fit to screen
-      if (e.code === 'KeyZ' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault();
-        onFitToScreen?.();
-        return;
-      }
 
       // S : scrub mode toggle
       if (e.code === 'KeyS' && !e.metaKey && !e.ctrlKey) {
@@ -1274,7 +1408,7 @@ const Timeline = React.memo(({
       onMouseLeave={() => onHoverChange?.(false)}
     >
       {/* Toolbar */}
-      <div className="h-9 border-b border-border-color flex items-center justify-between px-2 bg-panel-bg">
+      <div className="editor-toolbar border-b border-border-color flex items-center justify-between px-2 bg-panel-bg" style={{ height: 'var(--toolbar-height, 36px)' }}>
         <div className="flex items-center space-x-0.5">
           <Tooltip label="Undo" shortcut="⌘Z">
             <button onClick={onUndo} className="p-1 rounded hover:bg-white/10 text-white hover:text-primary transition-all active:scale-90">
@@ -1297,10 +1431,18 @@ const Timeline = React.memo(({
               <span className="material-icons text-sm">near_me</span>
             </button>
           </Tooltip>
+          <Tooltip label="자르기 툴" shortcut="B">
+            <button
+              onClick={() => onToolChange?.('blade')}
+              className={`p-1 rounded transition-all active:scale-90 ${currentTool === 'blade' ? 'bg-[#00D4D4]/20 text-[#00D4D4]' : 'text-gray-400 hover:text-white hover:bg-white/10'}`}
+            >
+              <span className="material-symbols-outlined text-sm">carpenter</span>
+            </button>
+          </Tooltip>
           <div className="w-px h-4 bg-gray-700 mx-1" />
 
           {/* Speed — no shortcut */}
-          <Tooltip label="Speed">
+          <Tooltip label="속도 조절">
             <div className="relative">
               <button onClick={handleSpeedClick} className={cyanBtn(showSpeedPopup)}>
                 <span className="material-symbols-outlined text-[18px]">speed</span>
@@ -1330,11 +1472,48 @@ const Timeline = React.memo(({
           </Tooltip>
 
           {/* Split */}
-          <Tooltip label="Split" shortcut="⌘B / M">
+          <Tooltip label="분할" shortcut="⌘B / M">
             <button onClick={onSplit} className={cyanBtn()}>
               <span className="material-symbols-outlined text-[18px]">content_cut</span>
             </button>
           </Tooltip>
+
+          {/* Auto Split by Transcript */}
+          <Tooltip label="대본 기준 분할" shortcut="⌘⇧B">
+            <button onClick={onAutoSplit} className={cyanBtn()}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="5" width="20" height="14" rx="2" />
+                <line x1="12" y1="5" x2="12" y2="19" strokeDasharray="2 2" />
+                <path d="M17.5 9l.7 1.5 1.5.7-1.5.7-.7 1.5-.7-1.5-1.5-.7 1.5-.7z" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
+          </Tooltip>
+
+          {/* Scene Detection Split */}
+          <Tooltip label="장면 전환 감지 분할">
+            <button onClick={onSceneSplit} className={cyanBtn()}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="5" width="8" height="14" rx="1" />
+                <rect x="14" y="5" width="8" height="14" rx="1" />
+                <path d="M10 9l4 3-4 3z" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
+          </Tooltip>
+
+          {/* Auto Color Correction */}
+          {(() => {
+            const selClip = selectedClipIds.length > 0
+              ? clips.find(c => c.id === selectedClipIds[0])
+              : clips.find(c => c.trackIndex === 1);
+            const isColorActive = !!selClip?.autoColorCorrection;
+            return (
+              <Tooltip label={isColorActive ? '색보정 ON (클릭하여 해제)' : '자동 색보정'} shortcut="C">
+                <button onClick={onAutoColorCorrection} className={cyanBtn(isColorActive)}>
+                  <span className="material-symbols-outlined text-[18px]">auto_fix_high</span>
+                </button>
+              </Tooltip>
+            );
+          })()}
 
           {/* Link/Unlink — 선택된 클립이 모두 linked면 활성화, 클릭으로 토글 */}
           {(() => {
@@ -1345,7 +1524,14 @@ const Timeline = React.memo(({
                 <button
                   onClick={() => {
                     const nextLinked = !isLinked;
-                    selectedClipIds.forEach(id => onClipUpdate?.(id, { linked: nextLinked }));
+                    if (nextLinked) {
+                      // Link: 선택된 클립들을 같은 그룹으로 묶음
+                      const groupId = selectedClipIds[0];
+                      selectedClipIds.forEach(id => onClipUpdate?.(id, { linked: true, linkGroupId: groupId }));
+                    } else {
+                      // Unlink: 그룹 해제
+                      selectedClipIds.forEach(id => onClipUpdate?.(id, { linked: false, linkGroupId: undefined }));
+                    }
                   }}
                   disabled={selectedClipIds.length === 0}
                   className={`${cyanBtn(isLinked)} flex items-center disabled:opacity-30 disabled:cursor-not-allowed`}
@@ -1358,36 +1544,40 @@ const Timeline = React.memo(({
             );
           })()}
 
-          {/* Snap — no shortcut */}
-          <Tooltip label={`Snap ${snapEnabled ? 'ON' : 'OFF'}`}>
-            <div className="relative">
-              <button onClick={() => setShowSnapMenu(!showSnapMenu)} className={`${cyanBtn(snapEnabled)} flex items-center`}>
-                <span className="material-symbols-outlined text-[18px]">straighten</span>
-                <span className="material-icons text-[10px] -ml-0.5">arrow_drop_down</span>
-              </button>
-              {showSnapMenu && (
-                <div className="absolute bottom-full left-0 mb-1 bg-gray-900 border border-gray-700 rounded shadow-xl z-50 py-1 w-40">
-                  <button className="w-full text-left px-3 py-1.5 text-xs text-white hover:bg-[#00D4D4]/10 flex items-center gap-2"
-                    onClick={() => { onSnapToggle?.(); setShowSnapMenu(false); }}>
-                    <span className={`material-symbols-outlined text-sm ${snapEnabled ? 'text-[#00D4D4]' : 'text-gray-400'}`}>
-                      {snapEnabled ? 'toggle_on' : 'toggle_off'}
-                    </span>
-                    Snap {snapEnabled ? 'ON' : 'OFF'}
-                  </button>
+          {/* Snap (자석) — 클릭 토글 */}
+          <Tooltip label={snapEnabled ? '자석 ON (클립 자동 흡착)' : '자석 OFF (미세 조정)'} shortcut="N">
+            <button onClick={() => onSnapToggle?.()} className={`${cyanBtn(snapEnabled)} relative`}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                {/* U자형 자석 아이콘 — 빨강/파랑 극 표시 */}
+                <path d="M4 18V10a8 8 0 0 1 16 0v8h-5v-8a3 3 0 0 0-6 0v8H4z" fill="none" stroke="currentColor" strokeWidth="2" />
+                {/* 왼쪽 극 (빨강) */}
+                <rect x="4" y="15" width="5" height="4" rx="0.5" fill={snapEnabled ? '#EF4444' : 'currentColor'} opacity={snapEnabled ? 1 : 0.4} />
+                {/* 오른쪽 극 (파랑) */}
+                <rect x="15" y="15" width="5" height="4" rx="0.5" fill={snapEnabled ? '#3B82F6' : 'currentColor'} opacity={snapEnabled ? 1 : 0.4} />
+                {/* 자력선 (ON일 때만) */}
+                {snapEnabled && (
+                  <>
+                    <path d="M8 5c0-1.5 2-3 4-3s4 1.5 4 3" fill="none" stroke="currentColor" strokeWidth="1" strokeDasharray="2 1.5" opacity="0.5" />
+                  </>
+                )}
+              </svg>
+              {!snapEnabled && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-[20px] h-0.5 bg-red-400 rotate-45 opacity-70" />
                 </div>
               )}
-            </div>
+            </button>
           </Tooltip>
 
           {/* Fit to Screen */}
-          <Tooltip label="Fit" shortcut="⇧Z">
+          <Tooltip label="화면에 맞추기" shortcut="⇧Z">
             <button onClick={onFitToScreen} className={cyanBtn()}>
               <span className="material-symbols-outlined text-[18px]">fit_screen</span>
             </button>
           </Tooltip>
 
           {/* Preview Window — no shortcut */}
-          <Tooltip label="Preview Window">
+          <Tooltip label="미리보기 창">
             <button onClick={() => setPreviewOverlay(!previewOverlay)} className={cyanBtn(previewOverlay)}>
               <span className="material-symbols-outlined text-[18px]">pip</span>
             </button>
@@ -1399,26 +1589,31 @@ const Timeline = React.memo(({
           <Tooltip label={scrubMode === 'hover' ? '스크럽: 호버 모드 (S)' : '스크럽: 클릭 모드 (S)'}>
             <button
               onClick={() => setScrubMode(prev => prev === 'click' ? 'hover' : 'click')}
-              className={`px-1.5 py-0.5 rounded text-[9px] font-semibold transition-all active:scale-90 ${scrubMode === 'hover'
+              className={`p-1 rounded transition-all active:scale-90 ${scrubMode === 'hover'
                 ? 'bg-[#00D4D4] text-black'
                 : 'text-[#00D4D4] hover:bg-[#00D4D4]/10'
                 }`}
             >
-              스크럽
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                {/* 세로선 */}
+                <line x1="6" y1="2" x2="6" y2="22" />
+                {/* 마우스 화살표 커서 */}
+                <path d="M12 6l7 9h-4l2 5h-3l-2-5-3 2.5z" fill="currentColor" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
+              </svg>
             </button>
           </Tooltip>
 
           <div className="w-px h-4 bg-gray-700 mx-1" />
 
           {/* Trim Left / Right */}
-          <Tooltip label="Trim Left" shortcut="Q">
+          <Tooltip label="왼쪽 트림" shortcut="Q">
             <button onClick={onTrimLeft} className={cyanBtn()} disabled={selectedClipIds.length !== 1}>
-              <span className="text-[15px] font-bold">[</span>
+              <span className="text-[18px] font-bold leading-none">[</span>
             </button>
           </Tooltip>
-          <Tooltip label="Trim Right" shortcut="W">
+          <Tooltip label="오른쪽 트림" shortcut="W">
             <button onClick={onTrimRight} className={cyanBtn()} disabled={selectedClipIds.length !== 1}>
-              <span className="text-[15px] font-bold">]</span>
+              <span className="text-[18px] font-bold leading-none">]</span>
             </button>
           </Tooltip>
 
@@ -1434,7 +1629,7 @@ const Timeline = React.memo(({
                   : 'text-gray-400 hover:text-white hover:bg-white/10 border border-transparent'
               }`}
             >
-              <span className="material-icons text-[14px]">{rippleMode ? 'keyboard_double_arrow_left' : 'space_bar'}</span>
+              <span className="material-icons text-[18px]">{rippleMode ? 'keyboard_double_arrow_left' : 'space_bar'}</span>
               {rippleMode ? 'Ripple' : 'Gap'}
             </button>
           </Tooltip>
@@ -1442,7 +1637,7 @@ const Timeline = React.memo(({
           <div className="w-px h-4 bg-gray-700 mx-1" />
 
           {/* Delete */}
-          <Tooltip label="Delete" shortcut="Del">
+          <Tooltip label="삭제" shortcut="Del">
             <button onClick={() => { if (selectedClipIds.length > 0) { selectedClipIds.forEach(id => onClipDelete?.(id)); onClipSelect?.([]); } }}
               className={`p-1 rounded transition-all active:scale-90 ${selectedClipIds.length > 0 ? 'text-red-400 hover:text-red-300 hover:bg-red-600/20' : 'text-gray-600'}`}>
               <span className="material-icons text-[18px]">delete</span>
@@ -1454,7 +1649,7 @@ const Timeline = React.memo(({
         <div className="flex items-center space-x-1.5">
           {/* View Menu (eye icon) */}
           <div className="relative">
-            <Tooltip label="View">
+            <Tooltip label="보기">
               <button
                 onClick={() => setShowViewMenu(prev => !prev)}
                 className={`p-1 rounded transition-all active:scale-90 ${showViewMenu ? 'text-[#00D4D4] bg-[#00D4D4]/10' : 'text-gray-400 hover:text-white hover:bg-white/10'}`}
@@ -1494,7 +1689,7 @@ const Timeline = React.memo(({
             )}
           </div>
           <div className="w-px h-4 bg-gray-700" />
-          <Tooltip label="Zoom Out" shortcut="⌘-">
+          <Tooltip label="축소" shortcut="⌘-">
             <button onClick={() => onZoomChange?.(Math.max(MIN_ZOOM, zoom / 1.25))} className={cyanBtn()}>
               <span className="material-icons text-sm">remove</span>
             </button>
@@ -1502,14 +1697,14 @@ const Timeline = React.memo(({
           <input className="w-20 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#00D4D4]"
             type="range" min={MIN_ZOOM} max={MAX_ZOOM} step="0.001" value={zoom}
             onChange={(e) => onZoomChange?.(Number(e.target.value))} />
-          <Tooltip label="Zoom In" shortcut="⌘=">
+          <Tooltip label="확대" shortcut="⌘=">
             <button onClick={() => onZoomChange?.(Math.min(MAX_ZOOM, zoom * 1.25))} className={cyanBtn()}>
               <span className="material-icons text-sm">add</span>
             </button>
           </Tooltip>
           <span className="text-[9px] text-gray-500 font-mono w-8 text-right">{(zoom * 100).toFixed(0)}%</span>
           <div className="w-px h-4 bg-gray-700" />
-          <Tooltip label="Track Height">
+          <Tooltip label="트랙 높이">
             <button
               onClick={() => setTrackHeightScale(1)}
               className="p-1 rounded text-gray-400 hover:text-white hover:bg-white/10 transition-all active:scale-90"
@@ -1526,7 +1721,7 @@ const Timeline = React.memo(({
 
       {/* Ruler */}
       <div className="h-6 bg-editor-bg border-b border-border-color relative select-none flex" style={{ overflow: 'visible' }}>
-        <div className="w-20 shrink-0 bg-panel-bg border-r border-border-color" />
+        <div className="shrink-0 bg-panel-bg border-r border-border-color" style={{ width: `${TRACK_CONTROLS_WIDTH}px` }} />
         <div className="flex-1 relative" style={{ overflow: 'visible' }}>
           {/* 반응형 눈금: zoom에 따라 레이블 간격을 자동 선택 */}
           {(() => {
@@ -1594,8 +1789,8 @@ const Timeline = React.memo(({
           })()}
           <div className="absolute inset-0" style={{ width: `${maxTime * pixelsPerSecond}px` }} />
           
-          {/* High-frequency isolated components */}
-          <Playhead x={playheadPosition * pixelsPerSecond} onPointerDown={handlePlayheadMouseDown} isDragging={isDraggingPlayhead} time={playheadPosition} />
+          {/* Blue playhead in ruler — 항상 표시 */}
+          <Playhead x={(isPlaying ? playbackPosition : playheadPosition) * pixelsPerSecond} onPointerDown={handlePlayheadMouseDown} isDragging={isDraggingPlayhead} time={isPlaying ? playbackPosition : playheadPosition} />
 
           {/* White playback marker in ruler — 재생 중일 때만 표시 */}
           {isPlaying && (
@@ -1721,12 +1916,12 @@ const Timeline = React.memo(({
             </div>
           )}
 
-          {/* Blue Edit Line (click to set position, used for Q/W/B cuts) */}
-          <Playhead x={playheadX} onPointerDown={handlePlayheadMouseDown} isDragging={isDraggingPlayhead} time={playheadPosition} />
+          {/* Blue Edit Line — 항상 표시 (재생 중에는 playback 위치 추적) */}
+          <Playhead x={TRACK_CONTROLS_WIDTH + (isPlaying ? playbackPosition : playheadPosition) * pixelsPerSecond} onPointerDown={handlePlayheadMouseDown} isDragging={isDraggingPlayhead} time={isPlaying ? playbackPosition : playheadPosition} />
 
           {/* Top spacer — drop zone for video/image → overlay tracks */}
           <div className="flex" style={{ flex: '1 0 0', minHeight: '8px' }}>
-            <div className="w-20 bg-panel-bg border-r border-border-color shrink-0 h-full" />
+            <div className="bg-panel-bg border-r border-border-color shrink-0 h-full" style={{ width: `${TRACK_CONTROLS_WIDTH}px` }} />
             <div
               className="flex-1 h-full relative transition-colors"
               onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('bg-cyan-500/10'); }}
@@ -1753,8 +1948,8 @@ const Timeline = React.memo(({
                 {isFirstAudio && (
                   <div className="h-4 bg-black/30 border-y border-white/5 shrink-0" />
                 )}
-                <div className="flex shrink-0" style={{ height: `${parseFloat(track.height.replace('h-', '')) * 4 * trackHeightScale}px` }}>
-                  <div className="w-20 bg-panel-bg border-r border-border-color flex flex-col justify-center items-center shrink-0 z-10 gap-0.5">
+                <div className="flex shrink-0" data-track-index={track.trackIndex} style={{ height: `${parseFloat(track.height.replace('h-', '')) * 4 * trackHeightScale}px` }}>
+                  <div className="bg-panel-bg border-r border-border-color flex flex-col justify-center items-center shrink-0 z-10 gap-0.5" style={{ width: `${TRACK_CONTROLS_WIDTH}px` }}>
                     <span className={`material-icons text-sm text-${track.color}-400`} title={track.label}>{track.icon}</span>
                     <span className={`text-[9px] text-${track.color}-400/70`}>{track.label}</span>
                     {trackClips.length > 0 && track.trackIndex !== 1 && (
@@ -1796,9 +1991,77 @@ const Timeline = React.memo(({
               </React.Fragment>
             );
           })}
+          {/* Link Group Lines — 자막 시작점 → 영상 트랙 수직 연결선 (DOM 기반 좌표) */}
+          {(() => {
+            const container = tracksRef.current;
+            if (!container) return null;
+
+            // linkGroupId별로 클립 묶기
+            const groups = new Map<string, typeof clips>();
+            for (const c of clips) {
+              if (!c.linked || !c.linkGroupId) continue;
+              const list = groups.get(c.linkGroupId) || [];
+              list.push(c);
+              groups.set(c.linkGroupId, list);
+            }
+            if (groups.size === 0) return null;
+
+            // DOM에서 실제 트랙 행의 위치를 읽기
+            const containerRect = container.getBoundingClientRect();
+            const trackYMap = new Map<number, { top: number; bottom: number }>();
+            const trackEls = container.querySelectorAll<HTMLElement>('[data-track-index]');
+            for (const el of trackEls) {
+              const ti = parseInt(el.getAttribute('data-track-index') || '', 10);
+              if (isNaN(ti)) continue;
+              const r = el.getBoundingClientRect();
+              trackYMap.set(ti, {
+                top: r.top - containerRect.top + container.scrollTop,
+                bottom: r.bottom - containerRect.top + container.scrollTop,
+              });
+            }
+
+            const lines: React.ReactNode[] = [];
+            groups.forEach((groupClips, gid) => {
+              if (groupClips.length < 2) return;
+              const media = groupClips.find(c => c.trackIndex === 1 || (c.trackIndex >= 10 && c.trackIndex <= 14) || (c.trackIndex >= 20 && c.trackIndex <= 22));
+              if (!media) return;
+              const mediaPos = trackYMap.get(media.trackIndex);
+              if (!mediaPos) return;
+
+              for (const sub of groupClips) {
+                if (sub.id === media.id) continue;
+                const subPos = trackYMap.get(sub.trackIndex);
+                if (!subPos) continue;
+                // 자막의 color 속성에 맞는 링크선 색상
+                const subColorKey = getSubtitleClipColor(sub);
+                const lineColor = SUBTITLE_COLOR_MAP[subColorKey].lineColor;
+                // 자막 시작점 X 좌표
+                const x = TRACK_CONTROLS_WIDTH + sub.startTime * pixelsPerSecond;
+                // 자막이 영상 위에 있으면: 자막 하단 → 영상 상단
+                const isSubAbove = subPos.top < mediaPos.top;
+                const y1 = isSubAbove ? subPos.bottom : subPos.top;
+                const y2 = isSubAbove ? mediaPos.top : mediaPos.bottom;
+                lines.push(
+                  <line
+                    key={`${gid}-${sub.id}`}
+                    x1={x} y1={y1} x2={x} y2={y2}
+                    stroke={lineColor} strokeWidth={LINK_LINE_STROKE_WIDTH} strokeOpacity={LINK_LINE_OPACITY}
+                  />
+                );
+              }
+            });
+
+            if (lines.length === 0) return null;
+            return (
+              <svg className="absolute inset-0 pointer-events-none" style={{ zIndex: 5, overflow: 'visible' }}>
+                {lines}
+              </svg>
+            );
+          })()}
+
           {/* Bottom spacer — drop zone for audio → audio tracks */}
           <div className="flex" style={{ flex: '1 0 0', minHeight: '8px' }}>
-            <div className="w-20 bg-panel-bg border-r border-border-color shrink-0 h-full" />
+            <div className="bg-panel-bg border-r border-border-color shrink-0 h-full" style={{ width: `${TRACK_CONTROLS_WIDTH}px` }} />
             <div
               className="flex-1 h-full relative transition-colors"
               onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('bg-green-500/10'); }}
@@ -1814,7 +2077,20 @@ const Timeline = React.memo(({
       </div>
 
       {contextMenu && (
-        <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} onDelete={handleDelete} />
+        <ContextMenu x={contextMenu.x} y={contextMenu.y} onClose={() => setContextMenu(null)} items={[
+          { label: '잘라내기', icon: 'content_cut', shortcut: '⌘B', action: () => { onClipSelect?.(contextMenu.clipIds); onSplit?.(); } },
+          { label: '복제', icon: 'content_copy', shortcut: '⌘D', action: () => {
+            contextMenu.clipIds.forEach(id => {
+              const clip = clips.find(c => c.id === id);
+              if (clip) {
+                const dup = { ...clip, id: crypto.randomUUID(), startTime: clip.startTime + (clip.duration / (clip.speed ?? 1)) };
+                onClipUpdate?.(id, {}); // noop to trigger re-render
+                onClipAdd?.(new File([], clip.name), clip.trackIndex, dup.startTime);
+              }
+            });
+          }},
+          { label: '삭제', icon: 'delete', shortcut: 'Del', danger: true, divider: true, action: handleDelete },
+        ]} />
       )}
     </footer>
   );

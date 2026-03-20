@@ -24,11 +24,20 @@ export interface WordTimestamp {
 /**
  * STT 원본 결과 (전체 텍스트 + 단어별 타임스탬프)
  */
+/** Whisper가 반환하는 문장 단위 세그먼트 */
+export interface SentenceSegment {
+  text: string;
+  startTime: number;
+  endTime: number;
+}
+
 export interface STTResult {
   /** 전체 텍스트 */
   fullText: string;
   /** 단어별 타임스탬프 배열 */
   words: WordTimestamp[];
+  /** Whisper 원본 문장 세그먼트 (있으면 이걸 우선 사용) */
+  sentences?: SentenceSegment[];
   /** 전체 음성 길이 (초) */
   duration: number;
   /** 언어 코드 */
@@ -76,18 +85,19 @@ export interface SplitterOptions {
 // ============================================
 
 const DEFAULT_OPTIONS: Required<SplitterOptions> = {
-  minDuration: 1.5,
-  targetDuration: 2.5,
-  maxDuration: 3.5,
-  maxCharacters: 50,
-  // 문장 종결 패턴: 마침표, 물음표, 느낌표
+  minDuration: 3.0,
+  targetDuration: 4.0,
+  maxDuration: 10.0,
+  maxCharacters: 80,
   sentenceDelimiters: /[.?!。？！]/,
-  // 자연스러운 끊김 패턴: 쉼표, 접속사 뒤, 조사 뒤 등
-  naturalBreakPattern: /[,，、:;]|\s+(그리고|그래서|하지만|그러나|그런데|또한|그리고는|그래서는|근데|아니면|또는)\s+/,
+  naturalBreakPattern: /[,，、:;]|\s+(그리고|그래서|하지만|그러나|그런데|또한|근데|아니면|또는)\s+/,
 };
 
-// 한국어 문장 종결 어미 패턴
-const KOREAN_SENTENCE_ENDINGS = /(?:다|요|죠|네|나|까|지|고|며|면서|는데|니까|거든|잖아|래|세요|습니다|합니다|입니다|됩니다|니다)[\s]*$/;
+/** 침묵 기반 분할 임계값 (초) — 이 이상 쉬면 발화 단위가 바뀐 것으로 판단 */
+const SILENCE_THRESHOLD = 0.4;
+
+/** 너무 긴 발화를 나눌 때 사용하는 보조 침묵 임계값 */
+const SOFT_SILENCE_THRESHOLD = 0.2;
 
 // UUID 생성 함수
 function generateId(): string {
@@ -99,140 +109,327 @@ function generateId(): string {
 // ============================================
 
 /**
- * STT 결과를 2~3초 단위 자막 세그먼트로 분할
- * 
- * @param sttResult - STT 분석 결과
- * @param options - 분할 옵션
- * @returns 분할된 자막 세그먼트 배열
+ * STT 결과를 의미 단위(발화/침묵 기반)로 자막 세그먼트 분할
+ *
+ * 1단계: 침묵 구간(0.4초+)으로 "발화 덩어리"를 나눔 (화자 전환, 호흡 등)
+ * 2단계: 너무 짧은 덩어리는 인접 덩어리에 병합
+ * 3단계: 너무 긴 덩어리만 보조 침묵(0.2초+)으로 추가 분할
  */
 export function splitSubtitles(
   sttResult: STTResult,
   options: SplitterOptions = {}
 ): SubtitleSegment[] {
   const opts = { ...DEFAULT_OPTIONS, ...options };
+
+  // Whisper 원본 문장 세그먼트가 있으면 우선 사용
+  if (sttResult.sentences && sttResult.sentences.length > 0) {
+    const rawSegments = sttResult.sentences
+      .filter(s => s.text.trim().length > 0)
+      .map(s => ({
+        id: generateId(),
+        text: s.text.trim(),
+        startTime: s.startTime,
+        endTime: s.endTime,
+        words: [] as WordTimestamp[],
+        duration: s.endTime - s.startTime,
+      }));
+    // 긴 문장은 자연스러운 지점에서 분할 (더 많은 자막 줄 생성)
+    const segments: SubtitleSegment[] = [];
+    for (const seg of rawSegments) {
+      if (seg.duration > opts.maxDuration || seg.text.length > opts.maxCharacters) {
+        const parts = splitSentenceText(seg.text, seg.startTime, seg.endTime);
+        segments.push(...parts);
+      } else {
+        segments.push(seg);
+      }
+    }
+    const trimmed = trimEndTimes(mergeFragments(segments));
+    return trimmed;
+  }
+
   const { words } = sttResult;
 
   if (words.length === 0) {
     return [];
   }
 
-  const segments: SubtitleSegment[] = [];
-  let currentWords: WordTimestamp[] = [];
-  let currentStartTime = words[0].startTime;
+  // ── 1단계: 침묵 기반으로 발화 덩어리 생성 ──
+  const utterances: WordTimestamp[][] = [];
+  let current: WordTimestamp[] = [words[0]];
 
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-    const nextWord = words[i + 1];
-    
-    currentWords.push(word);
-    
-    const currentText = currentWords.map(w => w.word).join(' ');
-    const currentDuration = word.endTime - currentStartTime;
-    const currentCharCount = currentText.replace(/\s/g, '').length;
+  for (let i = 1; i < words.length; i++) {
+    const gap = words[i].startTime - words[i - 1].endTime;
+    if (gap >= SILENCE_THRESHOLD) {
+      utterances.push(current);
+      current = [];
+    }
+    current.push(words[i]);
+  }
+  if (current.length > 0) utterances.push(current);
 
-    // 세그먼트 종료 조건 체크
-    const shouldSplit = checkShouldSplit({
-      currentDuration,
-      currentCharCount,
-      currentText,
-      word,
-      nextWord,
-      opts,
-    });
-
-    if (shouldSplit) {
-      // 현재 세그먼트 저장
-      segments.push(createSegment(currentWords, currentStartTime));
-      
-      // 다음 세그먼트 준비
-      currentWords = [];
-      if (nextWord) {
-        currentStartTime = nextWord.startTime;
+  // ── 2단계: 너무 짧은 덩어리(1초 미만, 2단어 이하)는 인접 덩어리에 병합 ──
+  const merged: WordTimestamp[][] = [];
+  for (const utt of utterances) {
+    const uttDuration = utt[utt.length - 1].endTime - utt[0].startTime;
+    if (
+      merged.length > 0 &&
+      uttDuration < opts.minDuration &&
+      utt.length <= 2
+    ) {
+      // 이전 덩어리와의 갭이 작으면 병합
+      const prev = merged[merged.length - 1];
+      const gapToPrev = utt[0].startTime - prev[prev.length - 1].endTime;
+      if (gapToPrev < 1.0) {
+        prev.push(...utt);
+        continue;
       }
+    }
+    merged.push(utt);
+  }
+
+  // ── 3단계: 너무 긴 덩어리만 보조 침묵으로 추가 분할 ──
+  const segments: SubtitleSegment[] = [];
+  for (const utt of merged) {
+    const uttDuration = utt[utt.length - 1].endTime - utt[0].startTime;
+    const uttChars = utt.map(w => w.word).join('').length;
+
+    if (uttDuration <= opts.maxDuration && uttChars <= opts.maxCharacters) {
+      segments.push(createSegment(utt, utt[0].startTime));
+    } else {
+      const subSegments = splitLongUtterance(utt, opts);
+      segments.push(...subSegments);
     }
   }
 
-  // 마지막 남은 단어들 처리
-  if (currentWords.length > 0) {
-    segments.push(createSegment(currentWords, currentStartTime));
-  }
-
-  // 후처리: 너무 짧은 세그먼트 병합
-  return mergeShortSegments(segments, opts);
+  // ── 4단계: 의미 없는 조각 병합 ──
+  // "리인데", "에서" 같은 4글자 미만 조각은 인접 세그먼트에 병합
+  return trimEndTimes(mergeFragments(segments));
 }
 
-// ============================================
-// 분할 조건 체크
-// ============================================
+/** 자막이 너무 오래 표시되지 않도록 endTime 정리
+ *  1) 다음 세그먼트 시작 전까지만 표시 (겹침 방지)
+ *  2) 발화 길이 대비 최대 1.5초까지만 여유 허용 (침묵 구간에서 자막 안 남도록)
+ */
+function trimEndTimes(segments: SubtitleSegment[]): SubtitleSegment[] {
+  if (segments.length === 0) return segments;
 
-interface SplitCheckParams {
-  currentDuration: number;
-  currentCharCount: number;
-  currentText: string;
-  word: WordTimestamp;
-  nextWord?: WordTimestamp;
-  opts: Required<SplitterOptions>;
+  return segments.map((seg, i) => {
+    const next = segments[i + 1];
+    let cappedEnd = seg.endTime;
+
+    // 다음 세그먼트 시작 시간으로 제한 (겹침 방지)
+    if (next) {
+      cappedEnd = Math.min(cappedEnd, next.startTime);
+    }
+
+    // Whisper가 준 endTime을 기본 신뢰하되, 다음 발화까지 5초 이상 빈 구간이면 잘라냄
+    const gapToNext = next ? next.startTime - seg.endTime : 0;
+    if (!next || gapToNext <= 5.0) {
+      // 갭이 적으면 Whisper endTime 그대로 (다음 시작 이전까지만)
+    } else {
+      // 긴 침묵 구간: endTime을 seg.endTime 그대로 유지 (이미 cappedEnd <= next.startTime)
+      cappedEnd = Math.min(cappedEnd, seg.endTime);
+    }
+
+    // 최소 3초 보장 (다음 세그먼트 시작을 침범하지 않는 범위 내)
+    const minEnd = seg.startTime + 3.0;
+    if (cappedEnd < minEnd && (!next || next.startTime >= minEnd)) {
+      cappedEnd = minEnd;
+    }
+    // startTime보다는 항상 뒤에
+    cappedEnd = Math.max(cappedEnd, seg.startTime + 0.5);
+
+    if (cappedEnd === seg.endTime) return seg;
+
+    return {
+      ...seg,
+      endTime: cappedEnd,
+      duration: cappedEnd - seg.startTime,
+    };
+  });
+}
+
+/** 긴 Whisper 문장을 글자 수 비례로 시간 분배하여 분할 */
+function splitSentenceText(
+  text: string,
+  startTime: number,
+  endTime: number,
+): SubtitleSegment[] {
+  const totalDuration = endTime - startTime;
+  const totalChars = text.length;
+
+  // 자연스러운 끊김점: 쉼표, 마침표, 접속사, 조사 뒤 공백
+  const breakPattern = /(?<=[,，.。?!·]\s*)|(?<=\s(?:그리고|그래서|하지만|그러나|그런데|또한|근데|아니면|또는|그래|그럼|네|예|아)\s)/g;
+  const parts = text.split(breakPattern).filter(p => p.trim().length > 0);
+
+  if (parts.length <= 1) {
+    // 끊김점이 없으면 공백 기준으로 균등 분할
+    const words = text.split(/\s+/);
+    if (words.length <= 1) {
+      return [{
+        id: generateId(), text, startTime, endTime,
+        words: [], duration: totalDuration,
+      }];
+    }
+    const wordsPerPart = Math.ceil(words.length / Math.ceil(totalChars / 80));
+    const result: SubtitleSegment[] = [];
+    let charsSoFar = 0;
+    for (let i = 0; i < words.length; i += wordsPerPart) {
+      const chunk = words.slice(i, i + wordsPerPart);
+      const chunkText = chunk.join(' ');
+      const chunkStart = startTime + (charsSoFar / totalChars) * totalDuration;
+      charsSoFar += chunkText.length;
+      const chunkEnd = startTime + (charsSoFar / totalChars) * totalDuration;
+      result.push({
+        id: generateId(), text: chunkText.trim(),
+        startTime: chunkStart, endTime: chunkEnd,
+        words: [], duration: chunkEnd - chunkStart,
+      });
+    }
+    return result;
+  }
+
+  // 자연스러운 끊김점으로 분할
+  const segments: SubtitleSegment[] = [];
+  let charsSoFar = 0;
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (trimmed.length === 0) continue;
+    const partStart = startTime + (charsSoFar / totalChars) * totalDuration;
+    charsSoFar += part.length;
+    const partEnd = startTime + (charsSoFar / totalChars) * totalDuration;
+    segments.push({
+      id: generateId(), text: trimmed,
+      startTime: partStart, endTime: partEnd,
+      words: [], duration: partEnd - partStart,
+    });
+  }
+
+  return segments;
+}
+
+/** 의미 없는 짧은 조각(2글자 미만)을 인접 세그먼트에 병합 */
+function mergeFragments(segments: SubtitleSegment[]): SubtitleSegment[] {
+  if (segments.length <= 1) return segments;
+
+  const MIN_MEANINGFUL_CHARS = 2;
+  const result: SubtitleSegment[] = [];
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const textChars = seg.text.replace(/\s/g, '').length;
+
+    if (textChars >= MIN_MEANINGFUL_CHARS) {
+      result.push(seg);
+      continue;
+    }
+
+    // 짧은 조각 → 가장 가까운 세그먼트에 병합
+    const prev = result[result.length - 1];
+    const next = segments[i + 1];
+
+    if (prev && next) {
+      // 이전/다음 중 시간적으로 더 가까운 쪽에 병합
+      const gapToPrev = seg.startTime - prev.endTime;
+      const gapToNext = next.startTime - seg.endTime;
+      if (gapToPrev <= gapToNext) {
+        // 이전에 병합
+        result[result.length - 1] = combineSegments(prev, seg);
+      } else {
+        // 다음에 병합 (다음 세그먼트를 미리 합쳐서 교체)
+        segments[i + 1] = combineSegments(seg, next);
+      }
+    } else if (prev) {
+      result[result.length - 1] = combineSegments(prev, seg);
+    } else if (next) {
+      segments[i + 1] = combineSegments(seg, next);
+    } else {
+      // 유일한 세그먼트 → 그대로 유지
+      result.push(seg);
+    }
+  }
+
+  return result;
+}
+
+/** 두 세그먼트를 하나로 합침 */
+function combineSegments(a: SubtitleSegment, b: SubtitleSegment): SubtitleSegment {
+  const allWords = [...a.words, ...b.words];
+  return {
+    id: a.id,
+    text: `${a.text} ${b.text}`.trim(),
+    startTime: a.startTime,
+    endTime: b.endTime,
+    words: allWords,
+    duration: b.endTime - a.startTime,
+  };
 }
 
 /**
- * 현재 위치에서 세그먼트를 분할해야 하는지 체크
+ * 긴 발화 덩어리를 보조 침묵 + 의미 단위로 분할
  */
-function checkShouldSplit({
-  currentDuration,
-  currentCharCount,
-  currentText,
-  word,
-  nextWord,
-  opts,
-}: SplitCheckParams): boolean {
-  // 마지막 단어인 경우
-  if (!nextWord) {
-    return true;
+function splitLongUtterance(
+  words: WordTimestamp[],
+  opts: Required<SplitterOptions>,
+): SubtitleSegment[] {
+  // 단어 간 갭을 찾아서 가장 큰 침묵 순으로 분할점 후보 수집
+  const gaps: { index: number; gap: number }[] = [];
+  for (let i = 1; i < words.length; i++) {
+    const gap = words[i].startTime - words[i - 1].endTime;
+    if (gap >= SOFT_SILENCE_THRESHOLD) {
+      gaps.push({ index: i, gap });
+    }
+  }
+  // 갭이 큰 순서로 정렬
+  gaps.sort((a, b) => b.gap - a.gap);
+
+  // 분할점을 하나씩 추가하면서, 모든 조각이 maxDuration/maxCharacters 이하가 될 때까지
+  const splitIndices = new Set<number>();
+  splitIndices.add(0);
+  splitIndices.add(words.length);
+
+  for (const { index } of gaps) {
+    splitIndices.add(index);
+    // 모든 조각이 조건을 만족하는지 체크
+    const sorted = Array.from(splitIndices).sort((a, b) => a - b);
+    let allOk = true;
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const chunk = words.slice(sorted[i], sorted[i + 1]);
+      const dur = chunk[chunk.length - 1].endTime - chunk[0].startTime;
+      const chars = chunk.map(w => w.word).join('').length;
+      if (dur > opts.maxDuration || chars > opts.maxCharacters) {
+        allOk = false;
+        break;
+      }
+    }
+    if (allOk) break;
   }
 
-  const nextGap = nextWord.startTime - word.endTime;
+  // 분할점이 부족하면 (침묵이 없는 긴 발화) 시간 기반으로 강제 분할
+  const sorted = Array.from(splitIndices).sort((a, b) => a - b);
+  const segments: SubtitleSegment[] = [];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const chunk = words.slice(sorted[i], sorted[i + 1]);
+    if (chunk.length === 0) continue;
+    const dur = chunk[chunk.length - 1].endTime - chunk[0].startTime;
+    const chars = chunk.map(w => w.word).join('').length;
 
-  // 1. 최대 시간 초과 시 강제 분할
-  if (currentDuration >= opts.maxDuration) {
-    return true;
-  }
-
-  // 2. 최대 글자 수 초과 시 강제 분할
-  if (currentCharCount >= opts.maxCharacters) {
-    return true;
-  }
-
-  // 3. 문장 종결 + 목표 시간 도달
-  const isSentenceEnd = 
-    opts.sentenceDelimiters.test(word.word) || 
-    KOREAN_SENTENCE_ENDINGS.test(word.word);
-  
-  if (isSentenceEnd && currentDuration >= opts.minDuration) {
-    return true;
-  }
-
-  // 4. 자연스러운 끊김점 + 적절한 시간
-  const isNaturalBreak = opts.naturalBreakPattern.test(currentText);
-  if (isNaturalBreak && currentDuration >= opts.targetDuration) {
-    return true;
-  }
-
-  // 5. 긴 침묵 (0.5초 이상) 후 분할
-  if (nextGap >= 0.5 && currentDuration >= opts.minDuration) {
-    return true;
-  }
-
-  // 6. 목표 시간 도달 + 단어 경계
-  if (currentDuration >= opts.targetDuration) {
-    // 다음 단어가 접속사나 새로운 문장 시작일 경우 분할
-    const startsNewClause = /^(그리고|그래서|하지만|그러나|그런데|또한|근데|아니면|또는|그럼|자|이제|그때)/
-      .test(nextWord.word);
-    if (startsNewClause) {
-      return true;
+    if (dur > opts.maxDuration || chars > opts.maxCharacters) {
+      // 침묵 없이 너무 긴 구간 → 단어 수 기반 균등 분할
+      const numParts = Math.ceil(Math.max(dur / opts.targetDuration, chars / opts.maxCharacters));
+      const wordsPerPart = Math.ceil(chunk.length / numParts);
+      for (let j = 0; j < chunk.length; j += wordsPerPart) {
+        const part = chunk.slice(j, j + wordsPerPart);
+        if (part.length > 0) {
+          segments.push(createSegment(part, part[0].startTime));
+        }
+      }
+    } else {
+      segments.push(createSegment(chunk, chunk[0].startTime));
     }
   }
 
-  return false;
+  return segments;
 }
 
 // ============================================

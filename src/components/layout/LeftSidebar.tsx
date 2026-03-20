@@ -2,9 +2,10 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import type { VideoClip, LibraryItem } from '@/types/video';
+import ContextMenu, { type ContextMenuItem } from '@/components/ui/ContextMenu';
 
 interface LeftSidebarProps {
-  onVideoAdd?: (file: File) => string | void;
+  onVideoAdd?: (file: File) => string | void | Promise<string>;
   onSubtitleImport?: (file: File) => void;
   clips?: VideoClip[];
   libraryItems?: LibraryItem[];
@@ -12,6 +13,8 @@ interface LeftSidebarProps {
   onLibrarySelect?: (ids: string[]) => void;
   onLibraryDelete?: (ids: string[]) => void;
   columns?: number;
+  /** 이 패널이 현재 활성 상태인지 (단축키 범위 제한용) */
+  isActive?: boolean;
 }
 
 function isSubtitleFile(file: File): boolean {
@@ -54,10 +57,11 @@ interface ThumbnailItemProps {
   selectedCount: number;
   onSelect: (e: React.MouseEvent) => void;
   onDragStart: (e: React.DragEvent, item: LibraryItem) => void;
+  onContextMenu: (e: React.MouseEvent, item: LibraryItem) => void;
   itemRef: (el: HTMLDivElement | null) => void;
 }
 
-function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart, itemRef }: ThumbnailItemProps) {
+function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart, onContextMenu, itemRef }: ThumbnailItemProps) {
   const thumbnail = useVideoThumbnail(item.url, item.type);
   const isVideo = item.type === 'video';
   const isAudio = item.type === 'audio';
@@ -77,6 +81,7 @@ function ThumbnailItem({ item, isSelected, selectedCount, onSelect, onDragStart,
       tabIndex={0}
       onClick={onSelect}
       onMouseDown={(e) => e.stopPropagation()}
+      onContextMenu={(e) => onContextMenu(e, item)}
       draggable
       onDragStart={(e) => onDragStart(e, item)}
       className={`relative group rounded-lg overflow-hidden border transition-all duration-150 hover:scale-[1.03] active:scale-95 cursor-grab active:cursor-grabbing ${isSelected ? 'border-primary ring-1 ring-primary' : 'border-transparent hover:border-gray-600'
@@ -132,10 +137,11 @@ function rectsOverlap(
   return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
 
-export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems = [], selectedLibraryIds = [], onLibrarySelect, onLibraryDelete, columns = 2 }: LeftSidebarProps) {
+export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems = [], selectedLibraryIds = [], onLibrarySelect, onLibraryDelete, columns = 2, isActive = false }: LeftSidebarProps) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastClickedIndexRef = useRef<number>(-1);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: LibraryItem } | null>(null);
 
   // Lasso selection state
   const gridRef = useRef<HTMLDivElement>(null);
@@ -144,12 +150,13 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
   const [lassoCurrent, setLassoCurrent] = useState<{ x: number; y: number } | null>(null);
   const lassoBaseSelection = useRef<string[]>([]);
 
-  // Handle Delete key
+  // Handle Delete key — 이 패널이 활성일 때만 동작
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (selectedLibraryIds.length === 0) return;
+      if (!isActive || selectedLibraryIds.length === 0) return;
       const tag = document.activeElement?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if ((document.activeElement as HTMLElement)?.isContentEditable) return;
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
         onLibraryDelete?.(selectedLibraryIds);
@@ -157,12 +164,12 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedLibraryIds, onLibraryDelete]);
+  }, [isActive, selectedLibraryIds, onLibraryDelete]);
 
-  // Ctrl/Cmd+A select all
+  // Ctrl/Cmd+A select all — 이 패널이 활성일 때만 동작
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (libraryItems.length === 0) return;
+      if (!isActive || libraryItems.length === 0) return;
       const tag = document.activeElement?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
@@ -172,7 +179,7 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [libraryItems, onLibrarySelect]);
+  }, [isActive, libraryItems, onLibrarySelect]);
 
   // Lasso: pointer move/up handlers (pointer capture delivers events to gridRef)
   const handleLassoPointerMove = useCallback((e: React.PointerEvent) => {
@@ -292,15 +299,24 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
     }
   }, [selectedLibraryIds, libraryItems, onLibrarySelect]);
 
+  const handleItemContextMenu = useCallback((e: React.MouseEvent, item: LibraryItem) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!selectedLibraryIds.includes(item.id)) {
+      onLibrarySelect?.([item.id]);
+    }
+    setContextMenu({ x: e.clientX, y: e.clientY, item });
+  }, [selectedLibraryIds, onLibrarySelect]);
+
   // Route files and collect added IDs to auto-select them
-  const addFilesAndSelect = useCallback((files: File[]) => {
+  const addFilesAndSelect = useCallback(async (files: File[]) => {
     const addedIds: string[] = [];
     for (const file of files) {
       if (isSubtitleFile(file)) {
         onSubtitleImport?.(file);
       } else {
-        const id = onVideoAdd?.(file);
-        if (id) addedIds.push(id);
+        const id = await onVideoAdd?.(file);
+        if (id && typeof id === 'string') addedIds.push(id);
       }
     }
     if (addedIds.length > 0) {
@@ -347,7 +363,7 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
   } : null;
 
   return (
-    <aside className="w-full h-full flex flex-col border-r border-border-color bg-editor-bg">
+    <aside className="editor-sidebar w-full h-full flex flex-col border-r border-border-color bg-editor-bg">
       <input
         ref={fileInputRef}
         type="file"
@@ -419,6 +435,7 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
                   selectedCount={selectedLibraryIds.length}
                   onSelect={(e) => handleItemSelect(e, idx)}
                   onDragStart={handleItemDragStart}
+                  onContextMenu={handleItemContextMenu}
                   itemRef={(el) => {
                     if (el) itemRefs.current.set(item.id, el);
                     else itemRefs.current.delete(item.id);
@@ -450,13 +467,33 @@ export default function LeftSidebar({ onVideoAdd, onSubtitleImport, libraryItems
             })()}
           </div>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-center py-8">
+          <div className="flex-1 flex flex-col items-center justify-center text-center py-8 px-4">
             <span className="material-icons text-gray-600 text-4xl mb-2">video_library</span>
             <p className="text-xs text-gray-500">Import 버튼을 클릭하거나</p>
             <p className="text-xs text-gray-500">파일을 드래그하여 추가하세요</p>
+            <p className="text-[10px] text-gray-600 mt-3">외장하드 파일은 Finder에서 직접 드래그하세요</p>
           </div>
         )}
       </div>
+
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          items={[
+            { label: '정보', icon: 'info', action: () => {
+              const item = contextMenu.item;
+              const dur = item.duration > 0 ? `${Math.floor(item.duration / 60)}:${Math.floor(item.duration % 60).toString().padStart(2, '0')}` : '-';
+              alert(`이름: ${item.name}\n유형: ${item.type}\n길이: ${dur}`);
+            }},
+            { label: selectedLibraryIds.length > 1 ? `${selectedLibraryIds.length}개 삭제` : '삭제', icon: 'delete', shortcut: 'Del', danger: true, divider: true, action: () => {
+              const ids = selectedLibraryIds.includes(contextMenu.item.id) ? selectedLibraryIds : [contextMenu.item.id];
+              onLibraryDelete?.(ids);
+            }},
+          ]}
+        />
+      )}
     </aside>
   );
 }

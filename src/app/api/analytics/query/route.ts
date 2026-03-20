@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
     // ===== type=demographics =====
     if (action === 'demographics') {
       const supabase = getSupabase();
-      const days = parseInt(searchParams.get('days') || '30');
+      const days = parseInt(searchParams.get('days') || '30') || 30;
       const cutoff = new Date(Date.now() - days * 86400000).toISOString();
 
       let ageGroups: { name: string; value: number }[] = [];
@@ -244,7 +244,7 @@ export async function GET(req: NextRequest) {
     // ===== type=funnels =====
     if (action === 'funnels') {
       const supabase = getSupabase();
-      const days = parseInt(searchParams.get('days') || '30');
+      const days = parseInt(searchParams.get('days') || '30') || 30;
       const cutoff = new Date(Date.now() - days * 86400000).toISOString();
 
       const funnelSteps = [
@@ -309,7 +309,7 @@ export async function GET(req: NextRequest) {
     // ===== type=health =====
     if (action === 'health') {
       const supabase = getSupabase();
-      const days = parseInt(searchParams.get('days') || '30');
+      const days = parseInt(searchParams.get('days') || '30') || 30;
       const cutoff = new Date(Date.now() - days * 86400000).toISOString();
 
       let activeUsers = 0;
@@ -378,7 +378,8 @@ export async function GET(req: NextRequest) {
             // Error trend by date
             const trendMap: Record<string, number> = {};
             data.forEach((r: any) => {
-              const date = (r.created_at || '').substring(5, 10); // MM-DD
+              const ts = r.created_at || '';
+              const date = ts.length >= 10 ? ts.substring(5, 10) : 'unknown';
               trendMap[date] = (trendMap[date] || 0) + 1;
             });
             errorTrend = Object.entries(trendMap)
@@ -446,7 +447,8 @@ export async function GET(req: NextRequest) {
           if (data && data.length > 0) {
             const latencyMap: Record<string, { total: number; count: number }> = {};
             data.forEach((r: any) => {
-              const date = (r.created_at || '').substring(5, 10);
+              const ts = r.created_at || '';
+              const date = ts.length >= 10 ? ts.substring(5, 10) : 'unknown';
               if (!latencyMap[date]) latencyMap[date] = { total: 0, count: 0 };
               latencyMap[date].total += r.time_on_page || 0;
               latencyMap[date].count++;
@@ -476,7 +478,7 @@ export async function GET(req: NextRequest) {
     // ===== type=editing_data =====
     if (action === 'editing_data') {
       const supabase = getSupabase();
-      const days = parseInt(searchParams.get('days') || '30');
+      const days = parseInt(searchParams.get('days') || '30') || 30;
       const cutoff = new Date(Date.now() - days * 86400000).toISOString();
 
       if (!supabase) {
@@ -599,7 +601,7 @@ export async function GET(req: NextRequest) {
 
     // ===== action=retention =====
     if (action === 'retention') {
-      const days = parseInt(searchParams.get('days') || '90');
+      const days = parseInt(searchParams.get('days') || '90') || 90;
       const granularity = (searchParams.get('granularity') || 'week') as 'day' | 'week' | 'month';
       const result = await getRetentionData({ days, granularity });
       return NextResponse.json(result);
@@ -608,8 +610,8 @@ export async function GET(req: NextRequest) {
     // ===== action=users (user profiles list) =====
     if (action === 'users') {
       const supabase = getSupabase();
-      const page = parseInt(searchParams.get('page') || '1');
-      const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100);
+      const page = parseInt(searchParams.get('page') || '1') || 1;
+      const limit = Math.min(parseInt(searchParams.get('limit') || '50') || 50, 100);
       const search = searchParams.get('search') || '';
 
       if (!supabase) return NextResponse.json({ users: [], total: 0 });
@@ -630,13 +632,20 @@ export async function GET(req: NextRequest) {
         // Aggregate by visitor
         const visitorAgg = new Map<string, { firstSeen: string; lastSeen: string; sessions: Set<string> }>();
         for (const s of allSessions) {
-          if (!visitorAgg.has(s.visitor_id)) {
-            visitorAgg.set(s.visitor_id, { firstSeen: s.first_seen_at, lastSeen: s.created_at, sessions: new Set() });
+          const visitorId = s.visitor_id;
+          const sessionId = s.session_id;
+          if (!visitorId || !sessionId) continue;
+
+          const firstSeen = s.first_seen_at || s.created_at || '';
+          const createdAt = s.created_at || '';
+
+          if (!visitorAgg.has(visitorId)) {
+            visitorAgg.set(visitorId, { firstSeen, lastSeen: createdAt, sessions: new Set() });
           }
-          const agg = visitorAgg.get(s.visitor_id)!;
-          agg.sessions.add(s.session_id);
-          if (s.first_seen_at < agg.firstSeen) agg.firstSeen = s.first_seen_at;
-          if (s.created_at > agg.lastSeen) agg.lastSeen = s.created_at;
+          const agg = visitorAgg.get(visitorId)!;
+          agg.sessions.add(sessionId);
+          if (firstSeen && firstSeen < agg.firstSeen) agg.firstSeen = firstSeen;
+          if (createdAt && createdAt > agg.lastSeen) agg.lastSeen = createdAt;
         }
 
         const allUsers = Array.from(visitorAgg.entries())
@@ -766,13 +775,17 @@ export async function GET(req: NextRequest) {
         }
 
         const nodes = Array.from(nodeSet).map(n => {
-          const [step, page] = n.split(':');
-          return { id: n, label: page, step: parseInt(step) };
+          const colonIdx = n.indexOf(':');
+          const step = colonIdx >= 0 ? n.substring(0, colonIdx) : '0';
+          const page = colonIdx >= 0 ? n.substring(colonIdx + 1) : n;
+          return { id: n, label: page, step: parseInt(step) || 0 };
         });
 
         const links = Array.from(linkMap.entries())
           .map(([key, value]) => {
-            const [from, to] = key.split('→');
+            const arrowIdx = key.indexOf('\u2192');
+            const from = arrowIdx >= 0 ? key.substring(0, arrowIdx) : key;
+            const to = arrowIdx >= 0 ? key.substring(arrowIdx + 1) : '';
             return { source: from, target: to, value };
           })
           .sort((a, b) => b.value - a.value)

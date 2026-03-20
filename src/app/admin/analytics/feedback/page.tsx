@@ -42,20 +42,22 @@ export default function FeedbackPage() {
     setLoading(true);
     try {
       const res = await fetch(`/api/feedback?category=${filter}&limit=200`);
+      if (!res.ok) { console.error('Failed to fetch feedback:', res.status); setFeedback([]); return; }
       const data = await res.json();
-      setFeedback(data.feedback || []);
-    } catch { /* ignore */ }
+      setFeedback(data?.feedback ?? []);
+    } catch (err) { console.error('Failed to fetch feedback:', err); }
     setLoading(false);
   }, [filter]);
 
   useEffect(() => { fetchFeedback(); }, [fetchFeedback]);
 
   const toggleResolved = async (id: string, current: boolean) => {
-    await fetch('/api/feedback', {
+    const res = await fetch('/api/feedback', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, resolved: !current }),
     });
+    if (!res.ok) { console.error('Failed to toggle resolved:', res.status); return; }
     setFeedback(prev => prev.map(f => f.id === id ? { ...f, resolved: !current } : f));
   };
 

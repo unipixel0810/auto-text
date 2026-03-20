@@ -56,6 +56,12 @@ const nextConfig = {
       },
     ];
   },
+  images: {
+    remotePatterns: [
+      { protocol: 'https', hostname: 'lh3.googleusercontent.com' },
+      { protocol: 'https', hostname: '*.googleusercontent.com' },
+    ],
+  },
   // Turbopack: root를 명시해서 한글 폴더명 경로 문제 우회
   turbopack: {
     root: __dirname,

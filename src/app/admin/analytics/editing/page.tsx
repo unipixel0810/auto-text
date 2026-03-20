@@ -51,48 +51,14 @@ export default function EditingDataPage() {
   useEffect(() => {
     setLoading(true);
     fetch(`/api/analytics/query?action=editing_data&days=${days}`)
-      .then(r => r.json())
-      .then(data => { setActionStats(data); setLoading(false); })
-      .catch(() => {
-        // Generate demo data when API not available
-        const actionTypes = ['clip_add', 'clip_trim_left', 'clip_trim_right', 'clip_split', 'clip_delete', 'subtitle_add', 'subtitle_edit', 'audio_add', 'audio_volume_change', 'effect_apply', 'export_complete', 'undo', 'redo'];
-        const breakdown = actionTypes.map(t => ({ action_type: t, count: Math.floor(Math.random() * 500) + 10 }));
-        const total = breakdown.reduce((s, b) => s + b.count, 0);
-        setActionStats({
-          total_actions: total,
-          unique_sessions: Math.floor(total / 45),
-          avg_actions_per_session: 45,
-          action_breakdown: breakdown.sort((a, b) => b.count - a.count),
-          hourly_activity: Array.from({ length: 24 }, (_, h) => ({ hour: h, count: Math.floor(Math.random() * 200) + (h >= 9 && h <= 22 ? 100 : 10) })),
-          top_projects: Array.from({ length: 5 }, (_, i) => ({
-            project_id: `proj_${String(i + 1).padStart(3, '0')}`,
-            total_actions: Math.floor(Math.random() * 300) + 50,
-            total_duration: Math.floor(Math.random() * 600) + 30,
-            clip_count: Math.floor(Math.random() * 20) + 3,
-          })),
-          media_type_distribution: [
-            { media_type: 'video', count: Math.floor(Math.random() * 300) + 100 },
-            { media_type: 'audio', count: Math.floor(Math.random() * 150) + 30 },
-            { media_type: 'image', count: Math.floor(Math.random() * 100) + 20 },
-            { media_type: 'subtitle', count: Math.floor(Math.random() * 200) + 50 },
-          ],
-          editing_efficiency: {
-            avg_actions_per_minute: +(Math.random() * 8 + 2).toFixed(1),
-            avg_editing_duration: Math.floor(Math.random() * 1800) + 300,
-            total_exports: Math.floor(Math.random() * 100) + 10,
-          },
-          templates: [
-            { id: '1', name: '유튜브 브이로그 컷편집', category: 'vlog', popularity_score: 92, is_premium: true },
-            { id: '2', name: '쇼츠 자동 자막', category: 'shorts', popularity_score: 88, is_premium: true },
-            { id: '3', name: '튜토리얼 챕터 구성', category: 'tutorial', popularity_score: 75, is_premium: false },
-            { id: '4', name: '광고 영상 15초 컷', category: 'commercial', popularity_score: 68, is_premium: true },
-            { id: '5', name: '팟캐스트 오디오 편집', category: 'podcast', popularity_score: 55, is_premium: false },
-          ],
-          daily_trend: Array.from({ length: Math.max(days, 7) }, (_, i) => {
-            const d = new Date(); d.setDate(d.getDate() - (Math.max(days, 7) - 1 - i));
-            return { date: d.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' }), actions: Math.floor(Math.random() * 500) + 100, sessions: Math.floor(Math.random() * 30) + 5 };
-          }),
-        });
+      .then(r => {
+        if (!r.ok) { console.error('Failed to fetch editing data:', r.status); setActionStats(null); setLoading(false); return null; }
+        return r.json();
+      })
+      .then(data => { if (data) { setActionStats(data); } setLoading(false); })
+      .catch((err) => {
+        console.error('Failed to fetch editing data:', err);
+        setActionStats(null);
         setLoading(false);
       });
   }, [days]);

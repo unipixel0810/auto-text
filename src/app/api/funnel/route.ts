@@ -5,7 +5,8 @@ import { getSupabase } from '@/lib/analytics/supabase';
 export async function POST(req: NextRequest) {
   const supabase = getSupabase();
   if (!supabase) {
-    return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
+    // Supabase 미설정 환경에서는 조용히 성공 응답 (analytics는 선택 기능)
+    return NextResponse.json({ success: true, skipped: true });
   }
 
   try {
@@ -37,7 +38,7 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const supabase = getSupabase();
   if (!supabase) {
-    return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
+    return NextResponse.json({ events: [] });
   }
 
   const { searchParams } = new URL(req.url);

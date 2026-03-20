@@ -10,6 +10,8 @@ export type AnalyticsEventType =
   | 'performance'
   | 'form_interaction';
 
+export type ClickElementCategory = 'cta' | 'navigation' | 'form' | 'interactive' | 'other';
+
 export interface AnalyticsEvent {
   id?: string;
   event_type: AnalyticsEventType;
@@ -23,7 +25,7 @@ export interface AnalyticsEvent {
   y_pos?: number;
   scroll_depth?: number;
   session_id: string;
-  visitor_id?: string;
+  visitor_id: string;
   user_agent?: string;
   referrer?: string;
   viewport_width?: number;
@@ -38,6 +40,11 @@ export interface AnalyticsEvent {
   browser?: string;
   os?: string;
   screen_width?: number;
+  // 클릭 요소 상세 정보 (click 이벤트 시)
+  css_selector?: string;
+  element_category?: ClickElementCategory;
+  // 인구통계 데이터 (page_view 시)
+  demographics?: Partial<DemographicData>;
 }
 
 export interface AnalyticsSession {

@@ -49,6 +49,7 @@ export default function HeatmapPage() {
   const fetchPages = useCallback(async () => {
     try {
       const res = await fetch(`/api/analytics/query?action=pages&days=${days}`);
+      if (!res.ok) { console.error('Failed to fetch pages:', res.status); return; }
       const data = await res.json();
       const analyticsPages: string[] = (data.pages || []).filter((p: string) => !p.startsWith('/admin'));
       const staticPaths = ALL_TRACKABLE_PAGES.map(p => p.path);
@@ -67,12 +68,14 @@ export default function HeatmapPage() {
   const fetchEvents = useCallback(async () => {
     if (!selectedPage) return;
     try {
-      const params = new URLSearchParams({ page_url: selectedPage, days: String(days), limit: '10000' });
+      const params = new URLSearchParams({ page_url: selectedPage, days: String(days), limit: '10000', event_type: 'click' });
       const res = await fetch(`/api/analytics/query?${params}`);
+      if (!res.ok) { console.error('Failed to fetch click events:', res.status); setClickEvents([]); return; }
       const data = await res.json();
       const allEvents: AnalyticsEvent[] = data.events || [];
       setClickEvents(allEvents.filter(e => e.event_type === 'click' && e.x_pos != null && e.y_pos != null));
-    } catch {
+    } catch (err) {
+      console.error('Failed to fetch click events:', err);
       setClickEvents([]);
     }
   }, [selectedPage, days]);
@@ -101,18 +104,21 @@ export default function HeatmapPage() {
         const pageParam = selectedPage ? `&page_url=${encodeURIComponent(selectedPage)}` : '';
         if (subTab === 'scroll') {
           const res = await fetch(`/api/analytics/query?action=scroll-depth&days=${days}${pageParam}`);
+          if (!res.ok) { console.error('Failed to fetch scroll data:', res.status); return; }
           const json = await res.json();
           setScrollData(json.scrollDepth || []);
         } else if (subTab === 'rage') {
           const res = await fetch(`/api/analytics/query?action=rage-clicks&days=${days}${pageParam}`);
+          if (!res.ok) { console.error('Failed to fetch rage clicks:', res.status); return; }
           const json = await res.json();
           setRageClicks(json.rageClicks || []);
         } else if (subTab === 'dead') {
           const res = await fetch(`/api/analytics/query?action=dead-clicks&days=${days}${pageParam}`);
+          if (!res.ok) { console.error('Failed to fetch dead clicks:', res.status); return; }
           const json = await res.json();
           setDeadClicks(json.deadClicks || []);
         }
-      } catch { /* ignore */ }
+      } catch (err) { console.error('Failed to fetch sub-tab data:', err); }
       finally { setSubLoading(false); }
     };
     load();

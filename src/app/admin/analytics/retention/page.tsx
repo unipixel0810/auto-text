@@ -54,6 +54,7 @@ export default function RetentionPage() {
       const res = await fetch(
         `/api/analytics/query?action=retention&days=${days}&granularity=${granularity}`,
       );
+      if (!res.ok) { console.error('Failed to fetch retention data:', res.status); setCohorts([]); return; }
       const json = await res.json();
       setCohorts(json.cohorts ?? []);
     } catch (err) {

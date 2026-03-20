@@ -160,9 +160,11 @@ const VisualLayer = React.memo(({
 
         if (isMainTrack) {
           // Main track: fills entire preview
+          // ★ key를 URL 기반으로 고정 — 장면 분할 클립 경계에서 DOM 재생성 방지
+          // (같은 영상 파일의 분할 클립은 같은 <video> 엘리먼트를 재사용)
           return (
             <div
-              key={clip.id}
+              key={`main-${clip.url}`}
               data-visual-box
               className="absolute inset-0 pointer-events-auto"
               style={{
@@ -175,14 +177,12 @@ const VisualLayer = React.memo(({
             >
               {!isImage ? (
                 <video
-                  ref={clip.id === activeVideoClipId ? videoRef : null}
+                  ref={videoRef}
                   src={clip.url || undefined}
                   className="w-full h-full object-contain"
                   preload="auto" playsInline
-                  muted={clip.id !== activeVideoClipId}
+                  muted={false}
                   onTimeUpdate={(e) => handleVideoTimeUpdate(e, clip.id)}
-                  onPlay={() => { if (clip.id === activeVideoClipId) onPlayingChange?.(true); }}
-                  onPause={() => { if (clip.id === activeVideoClipId) onPlayingChange?.(false); }}
                   style={{ pointerEvents: 'none' }}
                 />
               ) : (
@@ -255,21 +255,35 @@ const VisualLayer = React.memo(({
             onPointerDown={(e) => startDrag(e, clip, 'move')}
             onContextMenu={(e) => handleClipContextMenu(e, clip.id)}
           >
-            {!isImage ? (
-              <video
-                ref={clip.id === activeVideoClipId ? videoRef : null}
-                src={clip.url || undefined}
-                className="w-full h-full object-contain"
-                preload="auto" playsInline
-                muted={clip.id !== activeVideoClipId}
-                onTimeUpdate={(e) => handleVideoTimeUpdate(e, clip.id)}
-                onPlay={() => { if (clip.id === activeVideoClipId) onPlayingChange?.(true); }}
-                onPause={() => { if (clip.id === activeVideoClipId) onPlayingChange?.(false); }}
-                style={{ pointerEvents: 'none' }}
-              />
-            ) : (
-              <img src={clip.url || undefined} alt={clip.name} className="w-full h-full object-contain" style={{ pointerEvents: 'none' }} />
-            )}
+            {(() => {
+              // Build CSS filter string from clip color correction properties
+              const filters: string[] = [];
+              if (clip.brightness != null && clip.brightness !== 100) filters.push(`brightness(${clip.brightness / 100})`);
+              if (clip.contrast != null && clip.contrast !== 100) filters.push(`contrast(${clip.contrast / 100})`);
+              if (clip.saturate != null && clip.saturate !== 100) filters.push(`saturate(${clip.saturate / 100})`);
+              if (clip.temperature != null && clip.temperature !== 0) filters.push(`hue-rotate(${clip.temperature}deg)`);
+              if (clip.sharpen != null && clip.sharpen > 0) {
+                // CSS doesn't have a native sharpen — approximate with slight contrast boost
+                const sharpContrast = 1 + (clip.sharpen / 200);
+                filters.push(`contrast(${sharpContrast})`);
+              }
+              const filterStr = filters.length > 0 ? filters.join(' ') : undefined;
+              const mediaStyle: React.CSSProperties = { pointerEvents: 'none', filter: filterStr };
+
+              return !isImage ? (
+                <video
+                  ref={clip.id === activeVideoClipId ? videoRef : null}
+                  src={clip.url || undefined}
+                  className="w-full h-full object-contain"
+                  preload="auto" playsInline
+                  muted={clip.id !== activeVideoClipId}
+                  onTimeUpdate={(e) => handleVideoTimeUpdate(e, clip.id)}
+                  style={mediaStyle}
+                />
+              ) : (
+                <img src={clip.url || undefined} alt={clip.name} className="w-full h-full object-contain" style={mediaStyle} />
+              );
+            })()}
 
             {/* Selection handles */}
             {isClipSelected && (
@@ -439,12 +453,16 @@ const SubtitleOverlay = React.memo(({
           : '';
         const animDuration = clip.subtitleAnimationDuration ?? 0.3;
 
+        // 대본·AI 자막 동일 위치 (하단 3%)
+        const bottomPos = '3%';
+
         return (
           <div
             key={clip.id}
             data-subtitle-box
-            className={`absolute left-1/2 -translate-x-1/2 bottom-[6%] z-[110] max-w-[80%] text-center transition-none select-none${animClass ? ` ${animClass}` : ''}`}
+            className={`absolute left-1/2 -translate-x-1/2 z-[110] max-w-[80%] text-center transition-none select-none${animClass ? ` ${animClass}` : ''}`}
             style={{
+              bottom: bottomPos,
               transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
               left: '50%',
               cursor: selected ? 'grab' : 'pointer',
@@ -539,10 +557,11 @@ const SubtitleOverlay = React.memo(({
                   color: clip.color || '#FFFFFF',
                   fontFamily: clip.fontFamily || 'PaperlogyExtraBold, sans-serif',
                   fontWeight: clip.fontWeight || 800,
-                  fontSize: `${Math.round((clip.fontSize || 47) * aspectScale)}px`,
-                  lineHeight: clip.lineHeight ?? 1.3,
+                  fontSize: `${Math.round((clip.fontSize || 35) * aspectScale)}px`,
+                  lineHeight: clip.lineHeight ?? 1.4,
                   letterSpacing: clip.letterSpacing !== undefined ? `${clip.letterSpacing}em` : undefined,
-                  whiteSpace: 'pre-wrap',
+                  whiteSpace: (clip.trackIndex === 0 || (clip.trackIndex >= 5 && clip.trackIndex <= 8)) ? 'nowrap' : 'pre-wrap',
+                  overflow: 'visible',
                   textShadow: clip.glowColor
                     ? `0 0 ${clip.shadowBlur || 0}px ${clip.glowColor}, 0 0 ${(clip.shadowBlur || 0) * 2}px ${clip.glowColor}`
                     : (clip.shadowBlur || 0) > 0
@@ -585,6 +604,7 @@ interface PlayerProps {
   videoRefCallback?: (ref: HTMLVideoElement | null) => void;
   onPresetDrop?: (preset: SubtitlePreset, x: number, y: number) => void;
   onFileDrop?: (files: File[]) => void;
+  onLibraryItemDrop?: (libraryItemId: string) => void;
   viewerZoom?: number;
   onViewerZoomChange?: (zoom: number) => void;
   playbackQuality?: 'auto' | 'high' | 'medium' | 'low';
@@ -731,6 +751,7 @@ const Player = React.memo(({
   videoRefCallback,
   onPresetDrop,
   onFileDrop,
+  onLibraryItemDrop,
   viewerZoom = 100,
   onViewerZoomChange,
   playbackQuality = 'auto',
@@ -757,7 +778,14 @@ const Player = React.memo(({
   const lastSeekTimeRef = useRef(0);
 
   const currentTime = externalCurrentTime !== undefined ? externalCurrentTime : internalCurrentTime;
-  const displayTime = hoverTime !== null && hoverTime !== undefined ? hoverTime : currentTime;
+  // 재생 중: Player rAF(60fps)와 page.tsx rAF(20fps) 중 더 최신 값 사용
+  // → 비디오가 일시정지되어 internalCurrentTime이 멈춰도 page.tsx의 wall-clock이 계속 진행
+  // 정지 시: externalCurrentTime(파란 플레이헤드) 사용
+  const displayTime = hoverTime !== null && hoverTime !== undefined
+    ? hoverTime
+    : isPlaying
+      ? Math.max(internalCurrentTime, externalCurrentTime ?? 0)
+      : currentTime;
 
   // Track viewer area size with ResizeObserver for responsive canvas
   useEffect(() => {
@@ -776,7 +804,7 @@ const Player = React.memo(({
     const pad = 16; // p-2 = 8px each side
     const areaW = viewerAreaSize.w - pad;
     const areaH = viewerAreaSize.h - pad;
-    if (areaW <= 0 || areaH <= 0) return { width: '100%', maxHeight: '100%', aspectRatio: '16 / 9' };
+    if (areaW <= 0 || areaH <= 0) return { width: 640, height: 360 };
     const arMap: Record<string, number> = { '16:9': 16/9, '9:16': 9/16, '1:1': 1, '3:4': 3/4 };
     const ar = arMap[canvasAspectRatio] || 16/9;
     let w: number, h: number;
@@ -841,11 +869,16 @@ const Player = React.memo(({
         return a.trackIndex - b.trackIndex;
       });
 
-    // Stability Check: compare id AND mutable visual props
+    // Stability Check: compare visual identity AND mutable visual props
+    // For main-track (trackIndex 1) clips with same url, treat as equivalent
+    // for RENDERING purposes — but always update the ref with fresh clip objects
+    // so that time-mapping (trimStart/startTime) stays accurate
     const prev = prevVisualClipsRef.current;
-    const isSameSet = current.length === prev.length &&
-      current.every((c, i) =>
-        c.id === prev[i].id &&
+    const isSameSetForRender = current.length === prev.length &&
+      current.every((c, i) => {
+        const idMatch = c.id === prev[i].id ||
+          (c.trackIndex === 1 && prev[i].trackIndex === 1 && c.url === prev[i].url);
+        return idMatch &&
         c.scale === prev[i].scale &&
         c.positionX === prev[i].positionX &&
         c.positionY === prev[i].positionY &&
@@ -863,18 +896,32 @@ const Player = React.memo(({
         c.strokeColor === prev[i].strokeColor &&
         c.strokeWidth === prev[i].strokeWidth &&
         c.shadowBlur === prev[i].shadowBlur &&
-        c.name === prev[i].name
-      );
+        c.name === prev[i].name;
+      });
 
-    if (!isSameSet) prevVisualClipsRef.current = current;
-    return prevVisualClipsRef.current;
+    // ★ 핵심: 렌더링 안정성은 유지하되, 내부 clip 객체는 항상 최신으로 갱신
+    // (trimStart/startTime/duration이 바뀌어도 re-render는 안 하지만 ref는 업데이트)
+    prevVisualClipsRef.current = current;
+
+    // 렌더링에 영향 주는 시각적 속성만 바뀌었을 때 새 배열 반환 (re-render 유발)
+    // 같은 URL의 클립 경계 이동은 re-render하지 않음
+    return isSameSetForRender ? prev : current;
   }, [visualIndex, displayTime]);
 
   const prevSubtitleClipsRef = useRef<VideoClip[]>([]);
   const activeSubtitleClips = React.useMemo(() => {
     const bucketIdx = Math.floor(displayTime / BUCKET_SIZE);
     const candidates = subtitleIndex[bucketIdx] || [];
-    const current = candidates.filter(c => displayTime >= c.startTime && displayTime < c.startTime + c.duration);
+    const allActive = candidates.filter(c => displayTime >= c.startTime && displayTime < c.startTime + c.duration);
+    // AI 자막이 있으면 AI만, 없으면 대본만 표시 (상호 배타)
+    const aiSub = allActive.find(c => c.trackIndex >= 5 && c.trackIndex <= 8);
+    const dialogue = allActive.find(c => c.trackIndex === 0);
+    const current: VideoClip[] = [];
+    if (aiSub) {
+      current.push(aiSub);
+    } else if (dialogue) {
+      current.push(dialogue);
+    }
 
     // Stability Check — compare id AND mutable props (scale, position, rotation, style)
     const prev = prevSubtitleClipsRef.current;
@@ -909,9 +956,14 @@ const Player = React.memo(({
   }, [subtitleIndex, displayTime]);
 
 
-  const activeVideoClip = activeVisualClips.find(c => c.url && !((c.url.match(/\.(jpg|jpeg|png|gif|webp|svg)/i) || c.name.match(/\.(jpg|jpeg|png|gif|webp|svg)/i))));
+  // ★ 핵심: prevVisualClipsRef.current는 항상 최신 clip 객체를 가지고 있음
+  // activeVisualClips는 렌더링 안정성을 위해 stale prev를 반환할 수 있으므로
+  // 시간 매핑(startTime/trimStart)이 중요한 activeVideoClip은 반드시 ref에서 가져와야 함
+  const activeVideoClipFromTime = prevVisualClipsRef.current.find(c => c.url && !((c.url.match(/\.(jpg|jpeg|png|gif|webp|svg)/i) || c.name.match(/\.(jpg|jpeg|png|gif|webp|svg)/i))));
 
-  const firstVideoClip = clips.find(c => c.trackIndex === 1);
+  const firstVideoClip = clips.find(c => c.trackIndex === 1 && c.url && !(/\.(jpg|jpeg|png|gif|webp|svg)/i.test(c.url || '') || /\.(jpg|jpeg|png|gif|webp|svg)/i.test(c.name || '')));
+  // displayTime 범위 밖이어도 videoRef를 유지하기 위해 firstVideoClip을 fallback으로 사용
+  const activeVideoClip = activeVideoClipFromTime || firstVideoClip;
   const selectedVidClip = clips.find(c => selectedClipIds.includes(c.id));
 
   // Sync video ref
@@ -919,42 +971,106 @@ const Player = React.memo(({
     videoRefCallback?.(videoRef.current);
   }, [videoRef.current, videoRefCallback]);
 
-  // External play/pause sync with state machine guard
+  // Direct rAF-based time sync — bypasses React event system entirely
+  // Reads video.currentTime directly every frame during playback
+  const activeVideoClipRef = useRef(activeVideoClip);
+  activeVideoClipRef.current = activeVideoClip;
+  const hoverTimeRef = useRef(hoverTime);
+  hoverTimeRef.current = hoverTime;
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
+  const internalTimeRef = useRef(0);
+
+  useEffect(() => {
+    if (!isPlaying) return;
+
+    let rafId: number;
+    const tick = () => {
+      const video = videoRef.current;
+      const clip = activeVideoClipRef.current;
+
+      if (video && clip && !video.paused && hoverTimeRef.current === null) {
+        const mediaOffset = clip.trimStart ?? 0;
+        const newTime = clip.startTime + (video.currentTime - mediaOffset);
+        // Only update state when time actually changed (avoids unnecessary re-renders)
+        if (Math.abs(newTime - internalTimeRef.current) > 0.01) {
+          internalTimeRef.current = newTime;
+          setInternalCurrentTime(newTime);
+        }
+      }
+
+      if (isPlayingRef.current) {
+        rafId = requestAnimationFrame(tick);
+      }
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [isPlaying]);
+
+  // External play/pause sync — ONLY responds to isPlaying changes
+  // ★ deps에서 activeVideoClip?.id, externalCurrentTime 모두 제거
+  //   재생 중 클립 경계를 넘어도 같은 비디오 파일이 이미 재생 중이므로
+  //   play() 재호출 불필요 (play() 재호출이 2x 깜빡임의 원인이었음)
+  const activeVideoClipRef2 = useRef(activeVideoClip);
+  activeVideoClipRef2.current = activeVideoClip;
+  const externalCurrentTimeRef = useRef(externalCurrentTime);
+  externalCurrentTimeRef.current = externalCurrentTime;
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     const syncPlayback = async () => {
+      const clip = activeVideoClipRef2.current;
+      const extTime = externalCurrentTimeRef.current;
       try {
         if (isPlaying) {
-          // 재생할 클립이 없으면(전부 삭제됨) 자동으로 정지
-          if (!activeVideoClip) {
-            onPlayingChange?.(false);
-            return;
+          if (!clip) return;
+          // 재생 시작 전 video.currentTime을 올바른 미디어 위치로 설정
+          // (분할 클립 경계에서 처음으로 돌아가는 루프 버그 방지)
+          if (video.paused && extTime !== undefined) {
+            const mediaOffset = clip.trimStart ?? 0;
+            const targetMediaTime = (extTime - clip.startTime) + mediaOffset;
+            if (Math.abs(video.currentTime - targetMediaTime) > 0.2) {
+              video.currentTime = Math.max(0, targetMediaTime);
+            }
           }
-          if (video.paused) await video.play();
+          if (video.paused) {
+            await video.play();
+          }
         } else {
           if (!video.paused) video.pause();
         }
-      } catch (e) {
-        // Play was rejected (e.g., autoplay policy) — sync UI state back
-        if (isPlaying) {
-          onPlayingChange?.(false);
-        }
+      } catch (err) {
+        // Play rejected (autoplay policy) — wall-clock fallback will advance time
       }
     };
 
     syncPlayback();
-  }, [isPlaying, activeVideoClip?.id, activeVideoClip]);
+  }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Sync playback rate
+  // Sync playback rate — only when speed actually changes, not on every clip boundary
+  const prevPlaybackRate = useRef(1);
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     const isVisual = (idx?: number) => idx === 1 || (idx !== undefined && idx >= 10 && idx <= 14);
-    const clipToRate = isVisual(selectedVidClip?.trackIndex) ? selectedVidClip : activeVideoClip;
-    video.playbackRate = clipToRate?.speed ?? 1;
-  }, [activeVideoClip, selectedVidClip]);
+    const clip = activeVideoClipRef2.current;
+    const clipToRate = isVisual(selectedVidClip?.trackIndex) ? selectedVidClip : clip;
+    const rate = clipToRate?.speed ?? 1;
+    if (rate !== prevPlaybackRate.current) {
+      video.playbackRate = rate;
+      prevPlaybackRate.current = rate;
+    }
+  }, [selectedVidClip]);
+
+  // Seed internalCurrentTime from external time when playback starts
+  // so displayTime doesn't jump to 0
+  useEffect(() => {
+    if (isPlaying && externalCurrentTime !== undefined) {
+      setInternalCurrentTime(externalCurrentTime);
+    }
+  }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // External time sync - relaxed threshold during playback to avoid circular loops
   // Combined dependencies to ensure stable array size and logical grouping
@@ -981,11 +1097,15 @@ const Player = React.memo(({
     // 정지 직후에는 외부 시간 동기화 스킵 (onPause에서 이미 올바른 위치 설정됨)
     if (justPausedRef.current) return;
 
+    // ★ 재생 중에는 seek 하지 않음 — rAF 루프가 video→timeline 동기화를 처리
+    // 재생 중 seek하면 클립 경계에서 버벅임 발생 (video가 연속 재생 중인데 강제 seek)
+    if (isPlaying) return;
+
     const mediaOffset = activeVideoClip.trimStart ?? 0;
     const relativeTime = (externalCurrentTime - activeVideoClip.startTime) + mediaOffset;
     const diff = Math.abs(video.currentTime - relativeTime);
 
-    // Q/W trim 감지: trimStart·startTime·duration 중 하나라도 바뀌었으면 threshold 무시하고 강제 seek
+    // Q/W trim 감지: trimStart·startTime·duration 중 하나라도 바뀌었으면 강제 seek
     const prevGeom = prevClipGeomRef.current;
     const clipChanged =
       !prevGeom ||
@@ -1000,20 +1120,19 @@ const Player = React.memo(({
     };
 
     if (clipChanged) {
-      // trim/편집으로 클립 구조가 바뀌었음 → 무조건 seek (쿨다운 무시)
-      video.currentTime = Math.max(0, relativeTime);
-      lastSeekTimeRef.current = Date.now();
+      // 정지 상태에서 클립 구조 변경 (Q/W trim) → 새 위치로 seek
+      if (diff > 0.05) {
+        video.currentTime = Math.max(0, relativeTime);
+        lastSeekTimeRef.current = Date.now();
+      }
       return;
     }
 
-    // Small cooldown after manual seek/hover to prevent state-fighting induced stutter
+    // Small cooldown after manual seek/hover
     if (Date.now() - lastSeekTimeRef.current < 500) return;
 
-    // Increased threshold (0.8s) during playback to prevent "pull-back" stutters
-    // Tight threshold (0.15s) when scrubbing/paused for editing precision
-    const threshold = isPlaying ? 0.8 : 0.15;
-
-    if (diff > threshold) {
+    // 정지 상태: 타이트한 threshold로 정밀 seek
+    if (diff > 0.15) {
       video.currentTime = relativeTime;
     }
   }, [externalCurrentTime, activeVideoClip, hoverTime, isPlaying]);
@@ -1070,7 +1189,9 @@ const Player = React.memo(({
     const video = videoRef.current;
     if (!video) return;
     const handleEnded = () => {
-      onPlayingChange?.(false);
+      // 비디오 미디어가 끝나도 타임라인에 더 많은 콘텐츠(자막, 오디오)가 있을 수 있음
+      // → page.tsx rAF 루프의 timelineEnd 체크가 재생 종료를 담당하므로, 여기서는
+      //   wall-clock fallback이 이어받도록 비디오만 정지 (isPlaying은 건드리지 않음)
     };
     video.addEventListener('ended', handleEnded);
     return () => video.removeEventListener('ended', handleEnded);
@@ -1108,8 +1229,6 @@ const Player = React.memo(({
   const [isFileDragOver, setIsFileDragOver] = useState(false);
 
   const ACCEPTED_FILE_TYPES = ['video/', 'audio/', 'image/'];
-  const isAcceptedFile = (item: DataTransferItem) =>
-    item.kind === 'file' && ACCEPTED_FILE_TYPES.some(t => item.type.startsWith(t));
 
   const handleCanvasDragOver = useCallback((e: React.DragEvent) => {
     if (e.dataTransfer.types.includes('application/subtitle-preset')) {
@@ -1118,9 +1237,19 @@ const Player = React.memo(({
       setIsPresetDragOver(true);
       return;
     }
-    // 파일 드래그 감지
-    const hasFile = Array.from(e.dataTransfer.items).some(isAcceptedFile);
-    if (hasFile) {
+    // 라이브러리 아이템 드래그 (좌측 사이드바에서 프리뷰로)
+    if (e.dataTransfer.types.includes('application/library-item') || e.dataTransfer.types.includes('application/library-items')) {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsFileDragOver(true);
+      return;
+    }
+    // 파일 드래그 감지 — dragover 시 브라우저가 type을 빈 문자열로 보낼 수 있으므로
+    // kind === 'file'이면 일단 허용 (실제 필터링은 drop 시 수행)
+    const hasFile = Array.from(e.dataTransfer.items).some(
+      item => item.kind === 'file' && (item.type === '' || ACCEPTED_FILE_TYPES.some(t => item.type.startsWith(t)))
+    );
+    if (hasFile || e.dataTransfer.types.includes('Files')) {
       e.preventDefault();
       e.stopPropagation();
       setIsFileDragOver(true);
@@ -1128,9 +1257,13 @@ const Player = React.memo(({
   }, []);
 
   const handleCanvasDragLeave = useCallback((e: React.DragEvent) => {
-    e.stopPropagation();
-    setIsPresetDragOver(false);
-    setIsFileDragOver(false);
+    // main 영역 밖으로 나갈 때만 상태 리셋 (자식 요소 간 이동 시 깜빡임 방지)
+    const rect = e.currentTarget.getBoundingClientRect();
+    const { clientX, clientY } = e;
+    if (clientX <= rect.left || clientX >= rect.right || clientY <= rect.top || clientY >= rect.bottom) {
+      setIsPresetDragOver(false);
+      setIsFileDragOver(false);
+    }
   }, []);
 
   const handleCanvasDrop = useCallback((e: React.DragEvent) => {
@@ -1152,14 +1285,33 @@ const Player = React.memo(({
       return;
     }
 
-    // 파일 드롭
+    // 라이브러리 아이템 드롭 (좌측 사이드바에서 프리뷰로)
+    const libraryItemsData = e.dataTransfer.getData('application/library-items');
+    if (libraryItemsData && onLibraryItemDrop) {
+      try {
+        const items: { id: string }[] = JSON.parse(libraryItemsData);
+        for (const item of items) onLibraryItemDrop(item.id);
+      } catch { }
+      return;
+    }
+    const libraryData = e.dataTransfer.getData('application/library-item');
+    if (libraryData && onLibraryItemDrop) {
+      try {
+        const item = JSON.parse(libraryData);
+        onLibraryItemDrop(item.id);
+      } catch { }
+      return;
+    }
+
+    // 파일 드롭 — MIME 타입 또는 확장자로 필터링
     if (onFileDrop && e.dataTransfer.files.length > 0) {
+      const MEDIA_EXTS = /\.(mp4|mov|avi|mkv|webm|m4v|wmv|flv|mp3|wav|aac|m4a|ogg|flac|wma|jpg|jpeg|png|gif|webp|bmp|svg|heic)$/i;
       const files = Array.from(e.dataTransfer.files).filter(f =>
-        ACCEPTED_FILE_TYPES.some(t => f.type.startsWith(t))
+        ACCEPTED_FILE_TYPES.some(t => f.type.startsWith(t)) || MEDIA_EXTS.test(f.name)
       );
       if (files.length > 0) onFileDrop(files);
     }
-  }, [onPresetDrop, onFileDrop]);
+  }, [onPresetDrop, onFileDrop, onLibraryItemDrop]);
 
   const handleClipContextMenu = useCallback((e: React.MouseEvent, clipId: string) => {
     e.preventDefault();
@@ -1171,12 +1323,11 @@ const Player = React.memo(({
     if (clipId === activeVideoClip?.id && hoverTime === null) {
       const mediaOffset = activeVideoClip.trimStart ?? 0;
       const time = activeVideoClip.startTime + (e.currentTarget.currentTime - mediaOffset);
-      // Throttle updates: 33ms (30fps) for smooth playhead movement
+      // Always update internal time for subtitle display (no throttle — native onTimeUpdate is ~4Hz)
+      setInternalCurrentTime(time);
+      // Throttle parent callback to avoid expensive page re-renders
       const now = Date.now();
-      const throttleLimit = 33;
-      
-      if (now - lastUpdateRef.current > throttleLimit) {
-        setInternalCurrentTime(time);
+      if (now - lastUpdateRef.current > 50) {
         onTimeUpdate?.(time);
         lastUpdateRef.current = now;
       }
@@ -1184,7 +1335,12 @@ const Player = React.memo(({
   };
 
   return (
-    <main className="flex-1 flex flex-col bg-black relative min-h-0 min-w-0 h-full w-full">
+    <main
+      className="flex-1 flex flex-col bg-black relative min-h-0 min-w-0 h-full w-full"
+      onDragOver={handleCanvasDragOver}
+      onDragLeave={handleCanvasDragLeave}
+      onDrop={handleCanvasDrop}
+    >
       <div className="flex-1 flex items-center justify-center p-2 bg-editor-bg overflow-hidden min-h-0 min-w-0" ref={viewerAreaRef} onClick={handleCanvasClick}>
         <div
           ref={containerRef}
@@ -1194,9 +1350,6 @@ const Player = React.memo(({
             }`}
           onClick={(e) => handleVideoClick(e)}
           onContextMenu={handleContextMenu}
-          onDragOver={handleCanvasDragOver}
-          onDragLeave={handleCanvasDragLeave}
-          onDrop={handleCanvasDrop}
           style={{
             transformOrigin: 'center center',
             ...canvasSize,
@@ -1205,9 +1358,10 @@ const Player = React.memo(({
           }}
         >
           <div className="absolute inset-0 overflow-hidden" style={{ transform: `scale(${viewerZoom / 100})` }}>
-            {activeVisualClips.length > 0 ? (
+            {/* 비디오 클립이 타임라인에 있으면 항상 렌더 (displayTime 범위 밖이어도 videoRef 유지) */}
+            {(activeVisualClips.length > 0 || firstVideoClip) ? (
               <VisualLayer
-                activeVisualClips={activeVisualClips}
+                activeVisualClips={activeVisualClips.length > 0 ? activeVisualClips : (firstVideoClip ? [firstVideoClip] : [])}
                 activeVideoClipId={activeVideoClip?.id}
                 selectedClipIds={selectedClipIds}
                 videoRef={videoRef}
@@ -1249,6 +1403,26 @@ const Player = React.memo(({
             onInteractionEnd={onInteractionEnd}
           />
 
+          {/* 자막 타입 범례 (Legend) */}
+          <div className="absolute top-2 right-2 z-20 flex flex-col gap-1 bg-black/60 rounded px-2 py-1.5 pointer-events-none">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#FFFFFF' }} />
+              <span className="text-[9px] text-gray-300">대본</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#FFE066' }} />
+              <span className="text-[9px] text-gray-300">예능</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#A8E6CF' }} />
+              <span className="text-[9px] text-gray-300">상황</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#88D8FF' }} />
+              <span className="text-[9px] text-gray-300">설명</span>
+            </div>
+          </div>
+
           {/* Safe Zone Overlay */}
           {canvasAspectRatio === '9:16' && activeSafeZones.size > 0 && (
             <SafeZoneOverlay activePlatforms={activeSafeZones} />
@@ -1289,13 +1463,14 @@ const Player = React.memo(({
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
-          onDelete={() => {
-            if (contextMenu?.clipIds?.[0] && onClipDelete) {
-              onClipDelete(contextMenu.clipIds[0]);
-              setContextMenu(null);
-              onClipSelect?.([]);
-            }
-          }}
+          items={[
+            { label: '삭제', icon: 'delete', shortcut: 'Del', danger: true, action: () => {
+              if (contextMenu?.clipIds?.[0] && onClipDelete) {
+                onClipDelete(contextMenu.clipIds[0]);
+                onClipSelect?.([]);
+              }
+            }},
+          ]}
         />
       )}
 

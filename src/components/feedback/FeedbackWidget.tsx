@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { usePathname } from 'next/navigation';
 
 const EMOTIONS = [
   { value: 1, emoji: '😡', label: '매우 불만' },
@@ -21,6 +22,7 @@ const CATEGORIES = [
 type Step = 'emotion' | 'category' | 'message' | 'done';
 
 export default function FeedbackWidget() {
+  const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<Step>('emotion');
   const [emotion, setEmotion] = useState<number | null>(null);
@@ -91,6 +93,9 @@ export default function FeedbackWidget() {
     }
     setSubmitting(false);
   };
+
+  // 편집기 메인 화면(/)에서는 숨김
+  if (pathname === '/') return null;
 
   return (
     <div data-feedback-widget className="fixed bottom-6 right-6 z-[9999]">

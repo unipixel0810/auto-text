@@ -49,9 +49,11 @@ export default function CohortsPage() {
     setLoading(true);
     try {
       const res = await fetch('/api/cohorts');
+      if (!res.ok) { console.error('Failed to fetch cohorts:', res.status); setCohorts([]); return; }
       const json = await res.json();
       setCohorts(Array.isArray(json) ? json : []);
-    } catch {
+    } catch (err) {
+      console.error('Failed to fetch cohorts:', err);
       setCohorts([]);
     } finally {
       setLoading(false);
@@ -95,10 +97,12 @@ export default function CohortsPage() {
 
   const deleteCohort = async (id: string) => {
     try {
-      await fetch(`/api/cohorts/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/cohorts/${id}`, { method: 'DELETE' });
+      if (!res.ok) { console.error('Failed to delete cohort:', res.status); setError('삭제에 실패했습니다'); return; }
       setCohorts(cohorts.filter((c) => c.id !== id));
       if (selectedCohort === id) { setSelectedCohort(null); setMembers([]); }
-    } catch {
+    } catch (err) {
+      console.error('Failed to delete cohort:', err);
       setError('삭제에 실패했습니다');
     }
   };

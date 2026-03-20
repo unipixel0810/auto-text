@@ -31,6 +31,11 @@ export default function ExperimentsPage() {
   const fetchResults = useCallback(async () => {
     try {
       const res = await fetch('/api/ab/results');
+      if (!res.ok) {
+        console.error('Failed to fetch AB results:', res.status);
+        setError(`HTTP ${res.status}`);
+        return;
+      }
       const data = await res.json();
       if (data.error && !data.experiments) {
         setError(data.error);

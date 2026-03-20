@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 
 interface TooltipProps {
   label: string;
@@ -9,12 +10,27 @@ interface TooltipProps {
   delay?: number;
 }
 
-export default function Tooltip({ label, shortcut, children, delay = 300 }: TooltipProps) {
+export default function Tooltip({ label, shortcut, children, delay = 1000 }: TooltipProps) {
   const [visible, setVisible] = useState(false);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+
+  const updatePos = useCallback(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setPos({
+      x: rect.left + rect.width / 2,
+      y: rect.top,
+    });
+  }, []);
 
   const handleMouseEnter = () => {
-    timerRef.current = setTimeout(() => setVisible(true), delay);
+    timerRef.current = setTimeout(() => {
+      updatePos();
+      setVisible(true);
+    }, delay);
   };
 
   const handleMouseLeave = () => {
@@ -27,13 +43,16 @@ export default function Tooltip({ label, shortcut, children, delay = 300 }: Tool
   }, []);
 
   return (
-    <div className="relative inline-flex" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+    <div ref={triggerRef} className="relative inline-flex" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
       {children}
-      {visible && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-[60] pointer-events-none flex flex-col items-center">
+      {visible && pos && createPortal(
+        <div
+          className="fixed z-[99999] pointer-events-none flex flex-col items-center"
+          style={{ left: pos.x, top: pos.y, transform: 'translate(-50%, -100%)' }}
+        >
           {/* Tooltip body */}
           <div
-            className="px-2.5 py-1.5 rounded-md shadow-xl whitespace-nowrap flex items-center gap-2"
+            className="px-2.5 py-1.5 rounded-md shadow-xl whitespace-nowrap flex items-center gap-2 mb-0.5"
             style={{ backgroundColor: '#1a1a1a', border: '1px solid #333' }}
           >
             <span className="text-[11px] text-white font-medium leading-none">{label}</span>
@@ -50,7 +69,8 @@ export default function Tooltip({ label, shortcut, children, delay = 300 }: Tool
               borderTop: '5px solid #1a1a1a',
             }}
           />
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

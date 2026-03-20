@@ -1,4 +1,4 @@
-import type { AnalyticsEvent, AnalyticsEventType, DemographicData, PageView } from './types';
+import type { AnalyticsEvent, AnalyticsEventType, ClickElementCategory, DemographicData, PageView } from './types';
 import { getSessionId, getVisitorId } from './session';
 import { UAParser } from 'ua-parser-js';
 
@@ -99,6 +99,60 @@ function getElementInfo(el: HTMLElement) {
   return { element_tag: tag, element_class: cls, element_id: id, element_text: text };
 }
 
+function getCssSelector(el: HTMLElement, maxDepth = 5): string {
+  const parts: string[] = [];
+  let current: HTMLElement | null = el;
+  for (let i = 0; i < maxDepth && current && current !== document.body; i++) {
+    const tag = current.tagName.toLowerCase();
+    if (current.id) {
+      parts.unshift(`#${current.id}`);
+      break;
+    }
+    let selector = tag;
+    if (current.className && typeof current.className === 'string') {
+      const classes = current.className.trim().split(/\s+/).slice(0, 2).join('.');
+      if (classes) selector += `.${classes}`;
+    }
+    const parentEl: HTMLElement | null = current.parentElement;
+    if (parentEl) {
+      const siblings = Array.from(parentEl.children).filter(
+        (c: Element) => c.tagName === current!.tagName
+      );
+      if (siblings.length > 1) {
+        const index = siblings.indexOf(current) + 1;
+        selector += `:nth-of-type(${index})`;
+      }
+    }
+    parts.unshift(selector);
+    current = parentEl;
+  }
+  return parts.join(' > ').slice(0, 200);
+}
+
+function classifyElement(el: HTMLElement): ClickElementCategory {
+  const tag = el.tagName?.toLowerCase();
+
+  // CTA: buttons with CTA data attributes, or primary/action buttons
+  if (el.closest('[data-track="cta"]') || el.closest('[data-cta]')) return 'cta';
+  if (tag === 'button' || el.getAttribute('role') === 'button') {
+    const cls = (el.className || '').toLowerCase();
+    const text = (el.textContent || '').toLowerCase();
+    const ctaKeywords = ['buy', 'signup', 'sign up', 'subscribe', 'start', 'try', 'get', '구매', '가입', '시작', '구독'];
+    if (ctaKeywords.some(kw => text.includes(kw) || cls.includes(kw))) return 'cta';
+  }
+
+  // Navigation: links, nav elements
+  if (tag === 'a' || el.closest('nav') || el.closest('[role="navigation"]')) return 'navigation';
+
+  // Form: form elements
+  if (['input', 'select', 'textarea', 'label'].includes(tag) || el.closest('form')) return 'form';
+
+  // Interactive: other interactive elements
+  if (isInteractiveElement(el)) return 'interactive';
+
+  return 'other';
+}
+
 function detectRageClick(x: number, y: number): boolean {
   const now = Date.now();
   clickHistory.push({ x, y, time: now });
@@ -136,8 +190,14 @@ function handleClick(e: MouseEvent) {
   const x = Math.round(e.clientX);
   const y = Math.round(e.clientY);
   const info = getElementInfo(target);
+  const cssSelector = getCssSelector(target);
+  const elementCategory = classifyElement(target);
 
-  enqueue(buildEvent('click', { x_pos: x, y_pos: y, ...info }));
+  enqueue(buildEvent('click', {
+    x_pos: x, y_pos: y, ...info,
+    css_selector: cssSelector,
+    element_category: elementCategory,
+  }));
 
   const isCta = target.closest('[data-track="cta"]');
   if (isCta) {
@@ -467,7 +527,7 @@ export function initTracker() {
   demographicData = collectDemographics();
   const pageViewEvent = buildEvent('page_view');
   if (demographicData) {
-    (pageViewEvent as any).demographics = demographicData;
+    pageViewEvent.demographics = demographicData;
   }
   enqueue(pageViewEvent);
 
@@ -520,5 +580,9 @@ export function resetPageTracking() {
   pageEntryTime = Date.now();
   reachedScrollDepths = new Set();
   clickHistory = [];
-  enqueue(buildEvent('page_view'));
+  const pageViewEvent = buildEvent('page_view');
+  if (demographicData) {
+    pageViewEvent.demographics = demographicData;
+  }
+  enqueue(pageViewEvent);
 }

@@ -20,6 +20,7 @@ export async function insertEvents(events: AnalyticsEvent[]): Promise<boolean> {
       y_pos: e.y_pos ?? null,
       scroll_depth: e.scroll_depth ?? null,
       session_id: e.session_id,
+      visitor_id: e.visitor_id || null,
       user_agent: e.user_agent || null,
       referrer: e.referrer || null,
       viewport_width: e.viewport_width ?? null,
@@ -33,6 +34,8 @@ export async function insertEvents(events: AnalyticsEvent[]): Promise<boolean> {
       browser: e.browser || null,
       os: e.os || null,
       screen_width: e.screen_width ?? null,
+      css_selector: e.css_selector || null,
+      element_category: e.element_category || null,
     }));
 
     const { error: eventsError } = await supabase.from('analytics_events').insert(rows);
@@ -63,11 +66,49 @@ export async function insertEvents(events: AnalyticsEvent[]): Promise<boolean> {
       }
     }
 
-    // 2. page_view 이벤트가 있으면 page_views 테이블에 저장
+    // 2. page_view + demographics → visitor_profiles 저장
+    const pageViewsWithDemo = events.filter(
+      e => e.event_type === 'page_view' && e.demographics
+    );
+    if (pageViewsWithDemo.length > 0) {
+      for (const e of pageViewsWithDemo) {
+        const d = e.demographics!;
+        const visitorId = e.visitor_id || e.session_id;
+
+        // insert: 세션별 visitor_profile 레코드 생성
+        const { error: vpError } = await supabase
+          .from('visitor_profiles')
+          .insert({
+            session_id: e.session_id,
+            visitor_id: visitorId,
+            language: d.language || 'unknown',
+            timezone: d.timezone || 'unknown',
+            country: d.country || 'unknown',
+            region: d.region || 'unknown',
+            city: d.city || 'unknown',
+            connection_type: d.connectionType || 'unknown',
+            screen_resolution: d.screenResolution || 'unknown',
+            color_depth: d.colorDepth || 0,
+            touch_support: d.touchSupport || false,
+            cookies_enabled: d.cookiesEnabled ?? true,
+            do_not_track: d.doNotTrack || false,
+            estimated_age_group: d.estimatedAgeGroup || 'unknown',
+            estimated_gender: d.estimatedGender || 'unknown',
+            last_seen: new Date().toISOString(),
+          });
+
+        if (vpError) {
+          console.error('[Analytics] visitor_profiles upsert error:', vpError.message);
+        }
+      }
+    }
+
+    // 3. page_view 이벤트가 있으면 page_views 테이블에 저장
     const pageViews = events.filter(e => e.event_type === 'page_view');
     if (pageViews.length > 0) {
       const pvRows = pageViews.map(e => ({
         session_id: e.session_id,
+        visitor_id: e.visitor_id || null,
         page_url: e.page_url,
         referrer: e.referrer || null,
         utm_source: e.utm_source || null,

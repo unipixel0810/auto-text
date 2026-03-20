@@ -29,13 +29,14 @@ export default function RecordingsPage() {
     append ? setLoadingMore(true) : setLoading(true);
     try {
       const res = await fetch(
-        `/api/analytics/recordings?days=${dateFilter.days || 1}&offset=${pageNum * PAGE_SIZE}&limit=${PAGE_SIZE}`
+        `/api/analytics/recordings?days=${dateFilter.days}&offset=${pageNum * PAGE_SIZE}&limit=${PAGE_SIZE}`
       );
+      if (!res.ok) { console.error('Failed to fetch recordings:', res.status); return; }
       const data = await res.json();
       const items: Recording[] = data.recordings ?? [];
       setRecordings((prev) => (append ? [...prev, ...items] : items));
       setHasMore(items.length >= PAGE_SIZE);
-    } catch { /* ignore */ }
+    } catch (err) { console.error('Failed to fetch recordings:', err); }
     append ? setLoadingMore(false) : setLoading(false);
   }, [dateFilter]);
 

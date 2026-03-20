@@ -8,6 +8,8 @@ import Player from '@/components/layout/Player';
 import RightSidebar from '@/components/layout/RightSidebar';
 import Timeline from '@/components/layout/Timeline';
 import { parseSubtitleFile } from '@/lib/subtitleParser';
+import { buildSubtitlePlacements, SUBTITLE_GAP_SECONDS } from '@/lib/subtitlePlacer';
+import { detectSceneChanges } from '@/lib/sceneDetector';
 import type { TranscriptItem, SubtitleItem } from '@/types/subtitle';
 import type { VideoClip, HistoryEntry, ClipboardData, LibraryItem } from '@/types/video';
 import type { SubtitlePreset } from '@/lib/subtitlePresets';
@@ -18,6 +20,7 @@ import {
 } from '@/lib/projectStorage';
 import { useAuth } from '@/components/auth/AuthProvider';
 import { initEditingTracker, stopEditingTracker, trackEditingAction } from '@/lib/analytics/editingTracker';
+import { saveMediaBlob, loadMediaBlob, listMediaKeys } from '@/lib/mediaStorage';
 
 const FRAME_DURATION = 1 / 30;
 const MIN_ZOOM = 0.001;  // Shift+Z로 1시간 이상 영상도 한 화면에 표시 가능
@@ -93,12 +96,16 @@ export default function Home() {
   const currentTimeRef = useRef(currentTime);
   const clipboardRef = useRef(clipboard);
   const isPlayingRef = useRef(isPlaying);
+  const transcriptsRef = useRef(transcripts);
+  const [hoverSuppressed, setHoverSuppressed] = useState(false); // 정지 직후 hover 프리뷰 억제
   const playbackTimeRef = useRef(playbackTime);
   const isTimelineHoveredRef = useRef(isTimelineHovered);
   const rippleModeRef = useRef(rippleMode);
   const currentToolRef = useRef(currentTool);
   const historyRef = useRef(history);
   const historyIndexRef = useRef(historyIndex);
+  const selectedLibraryIdsRef = useRef(selectedLibraryIds);
+  const libraryItemsRef = useRef(libraryItems);
 
   // Synchronous ref wrappers — refs are always up-to-date for keyboard handlers
   const setClipsSynced: typeof setClips = useCallback((action) => {
@@ -133,6 +140,21 @@ export default function Home() {
     setHoverTime(val);
   }, []);
 
+  // 자막 트랙 fontSize 정규화: 레거시 값(47, 48)을 35px로 리셋
+  const DEFAULT_SUBTITLE_FONT_SIZE = 35;
+  const LEGACY_FONT_SIZES = new Set([47, 48]);
+  useEffect(() => {
+    const isSubtitleTrack = (ti: number) => ti === 0 || (ti >= 5 && ti <= 8);
+    const needsFix = clips.some(c => isSubtitleTrack(c.trackIndex) && c.fontSize !== undefined && LEGACY_FONT_SIZES.has(c.fontSize));
+    if (needsFix) {
+      setClips(prev => prev.map(c =>
+        isSubtitleTrack(c.trackIndex) && c.fontSize !== undefined && LEGACY_FONT_SIZES.has(c.fontSize)
+          ? { ...c, fontSize: DEFAULT_SUBTITLE_FONT_SIZE }
+          : c
+      ));
+    }
+  }, [clips]);
+
   // Keep ALL refs in sync — catches mutations from non-synced setters (Timeline, Player, etc.)
   useEffect(() => { clipsRef.current = clips; }, [clips]);
   useEffect(() => { currentTimeRef.current = currentTime; }, [currentTime]);
@@ -143,15 +165,23 @@ export default function Home() {
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
   useEffect(() => { playbackTimeRef.current = playbackTime; }, [playbackTime]);
+  useEffect(() => { selectedLibraryIdsRef.current = selectedLibraryIds; }, [selectedLibraryIds]);
+  useEffect(() => { libraryItemsRef.current = libraryItems; }, [libraryItems]);
+  useEffect(() => { transcriptsRef.current = transcripts; }, [transcripts]);
 
   // ===== onPause 이벤트 =====
-  // 비디오가 멈추면:
-  //  1) 파란 선(currentTime)을 멈춘 위치로 이동
-  //  2) playbackTime도 같은 위치로 맞춤 → 다음 재생 시 흰색 선이 정확한 위치에서 출발
+  // "재생 중" → "정지" 전환 시에만 파란 선 위치를 멈춘 곳으로 동기화.
+  // wasPlayingRef로 실제 재생→정지 전환만 감지. 단순 seek/load 시 pause 이벤트는 무시.
+  const wasPlayingRef = useRef(false);
+  useEffect(() => { wasPlayingRef.current = isPlaying; }, [isPlaying]);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     const handlePause = () => {
+      // 재생 중이 아니었거나, 아직 재생 중(rAF가 돌고 있음)이면 무시
+      if (!wasPlayingRef.current || isPlayingRef.current) return;
+
       const allClips = clipsRef.current;
       const isVideoTrack = (ti: number) => ti === 1 || (ti >= 10 && ti <= 14);
       const currentVideoTime = video.currentTime;
@@ -163,20 +193,16 @@ export default function Home() {
         return currentVideoTime >= mediaOffset && currentVideoTime <= mediaEnd;
       });
 
-      // 멈춘 타임라인 시간 계산
       let stoppedAt: number;
       if (activeClip) {
         const mediaOffset = activeClip.trimStart ?? 0;
         stoppedAt = activeClip.startTime + (currentVideoTime - mediaOffset);
       } else {
-        // 비디오 트랙 없거나 범위 밖 → rAF 루프가 마지막으로 기록한 위치
         stoppedAt = playbackTimeRef.current;
       }
 
-      // ① 파란 선을 멈춘 위치로 (사용자가 편집을 시작할 기준점)
       setCurrentTime(stoppedAt);
       currentTimeRef.current = stoppedAt;
-      // ② playbackTime도 동기화 (흰색 선이 숨겨진 상태에서 위치 유지 → 다음 재생 정확한 시작)
       setPlaybackTime(stoppedAt);
       playbackTimeRef.current = stoppedAt;
     };
@@ -184,35 +210,39 @@ export default function Home() {
     return () => video.removeEventListener('pause', handlePause);
   }, [clips]);
 
-  // ===== rAF loop: smooth 60fps white playback line + end-of-timeline stop =====
+  // ===== rAF loop: white playback line + end-of-timeline stop =====
+  // Ref updates every frame (for Player's rAF to read), but setState throttled to ~20fps
+  // to avoid expensive full-page re-renders that freeze subtitles.
+  const lastRafTimestampRef = useRef(0);
+  const lastStateUpdateRef = useRef(0);
+  const PLAYBACK_STATE_INTERVAL = 50; // ms between setState calls (20fps for timeline line)
   useEffect(() => {
     if (!isPlaying) return;
     let rafId: number;
+    let frameCount = 0;
+    lastRafTimestampRef.current = performance.now();
+    lastStateUpdateRef.current = 0;
+
     const isVideoTrack = (ti: number) => ti === 1 || (ti >= 10 && ti <= 14);
     const isImageFile = (c: { url?: string; name?: string }) =>
       (c.url && /\.(jpg|jpeg|png|gif|webp|svg)/i.test(c.url)) ||
       (c.name && /\.(jpg|jpeg|png|gif|webp|svg)/i.test(c.name));
 
-    const tick = () => {
+    const tick = (now: number) => {
       const video = videoRef.current;
       const allClips = clipsRef.current;
-
-      // ─── 타임라인 끝 감지: 재생 가능한 비디오 클립이 없거나 video.ended면 정지 ───
-      const videoClips = allClips.filter(c => isVideoTrack(c.trackIndex) && !isImageFile(c) && c.url);
-      if (videoClips.length === 0 || (video && video.ended)) {
-        setIsPlaying(false);
-        rafId = requestAnimationFrame(tick); // 한 프레임 더 돌려서 정리 후 종료
-        cancelAnimationFrame(rafId);
-        return;
-      }
+      const deltaMs = now - lastRafTimestampRef.current;
+      lastRafTimestampRef.current = now;
 
       // 타임라인의 전체 끝 시간
-      const timelineEnd = Math.max(...allClips.map(c => c.startTime + c.duration));
+      const timelineEnd = allClips.length > 0
+        ? Math.max(...allClips.map(c => c.startTime + c.duration))
+        : 0;
+
+      let newTime: number | null = null;
 
       if (video && !video.paused) {
         const videoTime = video.currentTime;
-
-        // video.currentTime(미디어 좌표)으로 직접 클립을 검색 — stale ref 문제 완전 회피
         const activeClip = allClips.find(c => {
           if (!isVideoTrack(c.trackIndex)) return false;
           if (isImageFile(c)) return false;
@@ -223,18 +253,37 @@ export default function Home() {
 
         if (activeClip) {
           const mediaOffset = activeClip.trimStart ?? 0;
-          const timelineTime = activeClip.startTime + (videoTime - mediaOffset);
-          setPlaybackTime(timelineTime);
-          playbackTimeRef.current = timelineTime;
-
-          // ─── 타임라인 끝 도달 시 자동 정지 ───
-          if (timelineTime >= timelineEnd - 0.05) {
-            setIsPlaying(false);
-            setCurrentTime(timelineEnd);
-            currentTimeRef.current = timelineEnd;
-            return; // rafId 등록 없이 종료
-          }
+          newTime = activeClip.startTime + (videoTime - mediaOffset);
+        } else {
+          newTime = videoTime;
         }
+      }
+
+      // video가 없거나 paused 상태여도, 재생 중이면 wall-clock으로 시간 전진
+      if (newTime === null) {
+        const deltaSec = Math.min(deltaMs / 1000, 0.1);
+        newTime = playbackTimeRef.current + deltaSec;
+      }
+
+      // 타임라인 끝 도달 시 자동 정지
+      if (timelineEnd > 0 && newTime >= timelineEnd - 0.05) {
+        setIsPlaying(false);
+        setCurrentTime(timelineEnd);
+        currentTimeRef.current = timelineEnd;
+        setPlaybackTime(timelineEnd);
+        playbackTimeRef.current = timelineEnd;
+        setHoverSuppressed(true); setTimeout(() => setHoverSuppressed(false), 500);
+        return;
+      }
+
+      // Always update ref (Player's rAF reads this)
+      playbackTimeRef.current = newTime;
+      frameCount++;
+
+      // Throttle setState to avoid 60fps full-page re-renders (timeline white line only needs ~20fps)
+      if (now - lastStateUpdateRef.current > PLAYBACK_STATE_INTERVAL) {
+        setPlaybackTime(newTime);
+        lastStateUpdateRef.current = now;
       }
 
       rafId = requestAnimationFrame(tick);
@@ -249,6 +298,30 @@ export default function Home() {
   useEffect(() => { historyRef.current = history; }, [history]);
   useEffect(() => { historyIndexRef.current = historyIndex; }, [historyIndex]);
   useEffect(() => { isAuthenticatedRef.current = isAuthenticated; }, [isAuthenticated]);
+  const activeSectionRef = useRef(activeSection);
+  useEffect(() => { activeSectionRef.current = activeSection; }, [activeSection]);
+
+  // ===== videoFile 자동 복원 =====
+  // 타임라인에 비디오 URL이 있지만 currentVideoFile이 없으면 URL에서 fetch하여 File 복원
+  // → RightSidebar의 "통합 AI 자막 마스터" 버튼이 활성화됨
+  useEffect(() => {
+    if (currentVideoFile || !currentVideoUrl) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(currentVideoUrl);
+        if (cancelled) return;
+        const blob = await res.blob();
+        if (cancelled) return;
+        const name = activeFileName || 'restored-video.mp4';
+        const file = new File([blob], name, { type: blob.type || 'video/mp4' });
+        setCurrentVideoFile(file);
+      } catch {
+        // blob URL이 만료되었거나 fetch 실패 — 무시
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [currentVideoUrl, currentVideoFile, activeFileName]);
 
   // ===== Editing Tracker Init =====
   useEffect(() => {
@@ -364,51 +437,154 @@ export default function Home() {
 
   // ===== Project ID & Auto-Save =====
   const [projectId, setProjectId] = useState<string>('');
+  const projectIdRef = useRef<string>('');
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Initialize project ID
+  // Initialize project ID & restore state (IndexedDB 미디어 복원 포함)
   useEffect(() => {
     const savedId = getCurrentProjectId();
-    if (savedId) {
-      setProjectId(savedId);
-      // Restore project data
-      const project = getProject(savedId);
-      if (project) {
-        setActiveFileName(project.name);
-        if (project.transcripts.length > 0) setTranscripts(project.transcripts);
-        if (project.subtitles.length > 0) setSubtitles(project.subtitles);
-        if (project.clips && Array.isArray(project.clips) && project.clips.length > 0) {
-          setClips(project.clips as VideoClip[]);
-        }
-        // UI 상태 복원 (관리자 모드 전환 후 돌아와도 유지)
-        if (project.uiState) {
-          const ui = project.uiState;
-          setLeftPct(ui.leftPct);
-          setRightPct(ui.rightPct);
-          setTimelinePct(ui.timelinePct);
-          setViewerZoom(ui.viewerZoom);
-          setTimelineZoom(ui.timelineZoom);
-          setPlaybackQuality(ui.playbackQuality);
-          setCanvasAspectRatio(ui.canvasAspectRatio);
-          setActiveTab(ui.activeTab);
-          setCurrentTool(ui.currentTool);
-          setCurrentTime(ui.currentTime);
-          setSnapEnabled(ui.snapEnabled);
-          setRippleMode(ui.rippleMode);
-        }
-      }
-    } else {
+    if (!savedId) {
       const newId = generateProjectId();
       setProjectId(newId);
+      projectIdRef.current = newId;
       setCurrentProjectId(newId);
+      return;
     }
+
+    setProjectId(savedId);
+    projectIdRef.current = savedId;
+    const project = getProject(savedId);
+    if (!project) return;
+
+    setActiveFileName(project.name);
+    if (project.transcripts.length > 0) setTranscripts(project.transcripts);
+    if (project.subtitles.length > 0) setSubtitles(project.subtitles);
+
+    // UI 상태 복원 (관리자 모드 전환 후 돌아와도 유지)
+    if (project.uiState) {
+      const ui = project.uiState;
+      setLeftPct(ui.leftPct);
+      setRightPct(ui.rightPct);
+      setTimelinePct(ui.timelinePct);
+      setTimelineZoom(ui.timelineZoom);
+      setPlaybackQuality(ui.playbackQuality);
+      setCanvasAspectRatio(ui.canvasAspectRatio);
+      setActiveTab(ui.activeTab);
+      setCurrentTool(ui.currentTool);
+      setCurrentTime(ui.currentTime);
+      setSnapEnabled(ui.snapEnabled);
+      setRippleMode(ui.rippleMode);
+    }
+
+    if (!project.clips || !Array.isArray(project.clips) || project.clips.length === 0) return;
+
+    const restoredClips = project.clips as VideoClip[];
+
+    // IndexedDB에서 미디어 Blob을 복원하여 새 Blob URL 생성
+    (async () => {
+      const mediaKeys = await listMediaKeys(`${savedId}:`);
+      // clipId → IndexedDB key 매핑
+      const keyByClipId = new Map<string, string>();
+      for (const key of mediaKeys) {
+        const clipId = key.replace(`${savedId}:`, '');
+        keyByClipId.set(clipId, key);
+      }
+
+      // 기존 blob URL이 아직 유효한지 테스트 (SPA 이동 시 유효할 수 있음)
+      const testBlobUrl = async (url: string): Promise<boolean> => {
+        if (!url || !url.startsWith('blob:')) return false;
+        try {
+          const res = await fetch(url, { method: 'HEAD' });
+          return res.ok;
+        } catch { return false; }
+      };
+
+      // 첫 번째 미디어 클립의 blob URL로 유효성 테스트
+      const firstMediaClip = restoredClips.find(c =>
+        c.url && c.trackIndex !== 0 && !(c.trackIndex >= 5 && c.trackIndex <= 8)
+      );
+      const blobStillValid = firstMediaClip ? await testBlobUrl(firstMediaClip.url) : false;
+
+      if (blobStillValid) {
+        // SPA 네비게이션 복귀 — blob URL이 아직 유효하므로 그대로 사용
+        setClips(restoredClips);
+      } else if (mediaKeys.length > 0) {
+        // 전체 리로드 또는 blob 만료 — IndexedDB에서 복원
+        const urlMap = new Map<string, string>(); // oldUrl → newUrl
+        const fileMap = new Map<string, File>(); // clipId → File
+
+        for (const clip of restoredClips) {
+          if (!clip.url || urlMap.has(clip.url)) continue;
+          if (clip.trackIndex === 0 || (clip.trackIndex >= 5 && clip.trackIndex <= 8)) continue;
+
+          const dbKey = keyByClipId.get(clip.id);
+          if (!dbKey) continue;
+
+          const media = await loadMediaBlob(dbKey);
+          if (media) {
+            urlMap.set(clip.url, media.url);
+            fileMap.set(clip.id, media.file);
+          }
+        }
+
+        // 클립의 URL을 새 blob URL로 교체
+        const fixedClips = restoredClips.map(c => {
+          const newUrl = urlMap.get(c.url);
+          return newUrl ? { ...c, url: newUrl } : c;
+        });
+        setClips(fixedClips);
+
+        // currentVideoFile 복원
+        const firstVideoClip = fixedClips.find(c => c.trackIndex === 1 && c.url);
+        if (firstVideoClip) {
+          const file = fileMap.get(firstVideoClip.id);
+          if (file) setCurrentVideoFile(file);
+        }
+      } else {
+        // IndexedDB에도 없음 — 클립 구조만 복원 (URL은 무효)
+        setClips(restoredClips);
+      }
+
+      // clips state가 업데이트된 후 라이브러리 구성을 위해 약간 지연
+      setTimeout(() => {
+        const latestClips = clipsRef.current;
+        const seen = new Set<string>();
+        const lib: LibraryItem[] = [];
+        for (const clip of latestClips) {
+          if (!clip.url || seen.has(clip.url)) continue;
+          if (clip.trackIndex === 0 || (clip.trackIndex >= 5 && clip.trackIndex <= 8)) continue;
+          seen.add(clip.url);
+          const isAudio = clip.trackIndex >= 20 && clip.trackIndex <= 22;
+          const isImage = /\.(jpg|jpeg|png|gif|webp|svg)/i.test(clip.url || clip.name || '');
+          lib.push({
+            id: clip.id + '_lib',
+            name: clip.name || 'Untitled',
+            url: clip.url,
+            type: isImage ? 'image' : isAudio ? 'audio' : 'video',
+            duration: clip.originalDuration || clip.duration || 0,
+            file: new File([], clip.name || 'restored', { type: isImage ? 'image/png' : isAudio ? 'audio/mp3' : 'video/mp4' }),
+          });
+        }
+        if (lib.length > 0) {
+          setLibraryItems(lib);
+          const firstVideo = lib.find(i => i.type === 'video');
+          if (firstVideo) {
+            setCurrentVideoUrl(firstVideo.url);
+            setActiveFileDuration(firstVideo.duration);
+          }
+        }
+      }, 100);
+    })();
   }, []);
 
-  // Auto-save project every 5 seconds
+  // projectIdRef 동기화
+  useEffect(() => { projectIdRef.current = projectId; }, [projectId]);
+
+  // 즉시 저장 함수 (ref 기반으로 최신 상태 접근)
+  const saveNowRef = useRef<() => void>(() => {});
   useEffect(() => {
-    if (!projectId) return;
-    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    autoSaveTimerRef.current = setTimeout(() => {
+    saveNowRef.current = () => {
+      if (!projectId) return;
       const uiState: EditorUIState = {
         leftPct, rightPct, timelinePct,
         viewerZoom, timelineZoom,
@@ -429,12 +605,33 @@ export default function Home() {
         uiState,
       };
       saveProject(project);
-    }, 3000);
+    };
+  }, [projectId, activeFileName, activeFileDuration, transcripts, subtitles, clips,
+      leftPct, rightPct, timelinePct, viewerZoom, timelineZoom,
+      playbackQuality, canvasAspectRatio, activeTab, currentTool,
+      currentTime, snapEnabled, rippleMode]);
+
+  // Auto-save project every 3 seconds (debounced)
+  useEffect(() => {
+    if (!projectId) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => saveNowRef.current(), 3000);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
   }, [projectId, activeFileName, activeFileDuration, transcripts, subtitles, clips,
       leftPct, rightPct, timelinePct, viewerZoom, timelineZoom,
       playbackQuality, canvasAspectRatio, activeTab, currentTool,
       currentTime, snapEnabled, rippleMode]);
+
+  // 페이지 떠날 때 즉시 저장 (beforeunload + unmount)
+  useEffect(() => {
+    const handleBeforeUnload = () => saveNowRef.current();
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      // 컴포넌트 unmount 시에도 즉시 저장 (관리자 모드 이동 시)
+      saveNowRef.current();
+    };
+  }, []);
 
   // ===== Resizable Panel Handler (percentage-based) =====
   useEffect(() => {
@@ -556,6 +753,9 @@ export default function Home() {
       const isAudio = (file.type.startsWith('audio/') || file.name.endsWith('.m4a') || file.name.endsWith('.aac') || file.name.endsWith('.wav'));
       const isImage = file.type.startsWith('image/');
       type = isImage ? 'image' : isAudio ? 'audio' : 'video';
+      // IndexedDB에 미디어 파일 저장 (페이지 이동 후 복원용)
+      const pid = projectIdRef.current || 'default';
+      saveMediaBlob(`${pid}:${clipId}`, file, name, file.type);
     } else {
       return;
     }
@@ -671,19 +871,24 @@ export default function Home() {
       return () => { cancelled = true; };
     };
 
-    // Helper: extract lightweight waveform proxy (100 samples for timeline display only)
+    // Helper: extract high-density waveform for timeline display
     const extractWaveform = (fileUrl: string, cid: string) => {
       const audioCtx = new AudioContext();
       fetch(fileUrl).then(r => r.arrayBuffer()).then(buf => audioCtx.decodeAudioData(buf)).then(audioBuf => {
         const raw = audioBuf.getChannelData(0);
-        const samples = 100; // reduced from 200 — enough for timeline display
-        const blockSize = Math.floor(raw.length / samples);
+        // 초당 약 20샘플 (10초=200, 60초=1200, 5분=6000) — 촘촘한 파형
+        const samples = Math.min(8000, Math.max(400, Math.round(audioBuf.duration * 20)));
+        const blockSize = Math.max(1, Math.floor(raw.length / samples));
         const waveform: number[] = [];
         for (let s = 0; s < samples; s++) {
-          let sum = 0;
+          let peak = 0;
           const start = s * blockSize;
-          for (let j = 0; j < blockSize; j++) sum += Math.abs(raw[start + j]);
-          waveform.push(sum / blockSize);
+          const end = Math.min(start + blockSize, raw.length);
+          for (let j = start; j < end; j++) {
+            const v = Math.abs(raw[j]);
+            if (v > peak) peak = v;
+          }
+          waveform.push(peak);
         }
         const max = Math.max(...waveform, 0.001);
         const normalized = waveform.map(v => v / max);
@@ -692,24 +897,37 @@ export default function Home() {
       }).catch(() => audioCtx.close());
     };
 
+    // 메인 트랙 클립 추가 시 ripple 모드면 갭 없이 순차 배치 (0:00부터 시작)
+    const addClipWithRipple = (newClip: VideoClip) => {
+      setClips(prev => {
+        const next = [...prev, newClip];
+        if (finalTrackIndex === 1 && rippleModeRef.current) {
+          const mainClips = next.filter(c => c.trackIndex === 1).sort((a, b) => a.startTime - b.startTime);
+          const others = next.filter(c => c.trackIndex !== 1);
+          let cursor = 0;
+          const adjusted = mainClips.map(c => { const u = { ...c, startTime: cursor }; cursor += c.duration; return u; });
+          return [...others, ...adjusted];
+        }
+        return next;
+      });
+    };
+
     if (type === 'image') {
       const img = new Image();
       img.src = url;
       img.onload = () => {
-        // Main track (1): renderer uses object-contain in inset-0 div, scale 100 = full fit
-        // Overlay tracks (10+): renderer sizes to 50% of contain-fit, so scale 200 = full height
         const initialScale = finalTrackIndex === 1 ? 100 : 200;
-        setClips(prev => [...prev, {
+        addClipWithRipple({
           id: clipId, name, url, startTime, duration, originalDuration: duration,
-          trackIndex: finalTrackIndex, scale: initialScale, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true,
+          trackIndex: finalTrackIndex, scale: initialScale, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true, linkGroupId: clipId,
           mediaWidth: img.naturalWidth, mediaHeight: img.naturalHeight,
-        }]);
+        });
       };
       img.onerror = () => {
-        setClips(prev => [...prev, {
+        addClipWithRipple({
           id: clipId, name, url, startTime, duration, originalDuration: duration,
-          trackIndex: finalTrackIndex, scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true,
-        }]);
+          trackIndex: finalTrackIndex, scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true, linkGroupId: clipId,
+        });
       };
     } else {
       const video = document.createElement('video');
@@ -720,18 +938,30 @@ export default function Home() {
         const dur = video.duration || duration;
         const vw = video.videoWidth || 1920;
         const vh = video.videoHeight || 1080;
-        // Main track: object-contain handles fitting, scale 100 = full fit
-        // Overlay tracks: renderer sizes to 50% of contain-fit, scale 200 = full height
         const videoInitScale = finalTrackIndex === 1 ? 100 : 200;
-        setClips(prev => [...prev, {
+        addClipWithRipple({
           id: clipId, name, url, startTime, duration: dur, originalDuration: dur,
-          trackIndex: finalTrackIndex, scale: videoInitScale, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true, volume: 100,
+          trackIndex: finalTrackIndex, scale: videoInitScale, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true, linkGroupId: clipId, volume: 100,
           mediaWidth: vw, mediaHeight: vh,
-        }]);
+        });
         if (type === 'video' && !currentVideoUrl) {
           setCurrentVideoUrl(url);
           setActiveFileName(name);
           setActiveFileDuration(dur);
+        }
+        // 메인 트랙 영상 배치 시 영상 비율에 맞춰 캔버스 비율 자동 변경
+        if (finalTrackIndex === 1 && vw > 0 && vh > 0) {
+          const videoAR = vw / vh;
+          const ratios: { key: '16:9' | '9:16' | '1:1' | '3:4'; value: number }[] = [
+            { key: '16:9', value: 16/9 },
+            { key: '9:16', value: 9/16 },
+            { key: '1:1', value: 1 },
+            { key: '3:4', value: 3/4 },
+          ];
+          const closest = ratios.reduce((best, r) =>
+            Math.abs(r.value - videoAR) < Math.abs(best.value - videoAR) ? r : best
+          );
+          setCanvasAspectRatio(closest.key);
         }
         // Generate thumbnails for video clips
         if (type === 'video') {
@@ -746,10 +976,11 @@ export default function Home() {
         extractWaveform(url, clipId);
       };
       video.onerror = () => {
-        setClips(prev => [...prev, {
+        // 메타데이터 로드 실패 — 기본값으로 클립 추가 (일부 코덱은 메타데이터 없이도 재생 가능)
+        addClipWithRipple({
           id: clipId, name, url, startTime, duration, originalDuration: duration,
-          trackIndex: finalTrackIndex, scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true,
-        }]);
+          trackIndex: finalTrackIndex, scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: true, linkGroupId: clipId,
+        });
       };
     }
   }, [libraryItems, currentVideoUrl]);
@@ -775,20 +1006,28 @@ export default function Home() {
   }, [handleClipAdd]);
 
   // Video add handler (now adds to Media Library)
-  const handleVideoAdd = useCallback((file: File): string => {
+  const handleVideoAdd = useCallback(async (file: File): Promise<string> => {
     const id = genId();
-    const url = URL.createObjectURL(file);
-    const isAudio = (file.type.startsWith('audio/') || file.name.endsWith('.m4a') || file.name.endsWith('.aac') || file.name.endsWith('.wav'));
-    const isImage = file.type.startsWith('image/');
+    // 파일 데이터를 메모리에 실제 복사 (원본 File 참조 GC 시 blob URL 무효화 방지)
+    let memFile: File;
+    try {
+      const buf = await file.arrayBuffer();
+      memFile = new File([buf], file.name, { type: file.type || 'video/mp4', lastModified: file.lastModified });
+    } catch {
+      memFile = new File([file], file.name, { type: file.type || 'video/mp4', lastModified: file.lastModified });
+    }
+    const url = URL.createObjectURL(memFile);
+    const isAudio = (memFile.type.startsWith('audio/') || memFile.name.endsWith('.m4a') || memFile.name.endsWith('.aac') || memFile.name.endsWith('.wav'));
+    const isImage = memFile.type.startsWith('image/');
     const type = isImage ? 'image' : isAudio ? 'audio' : 'video';
 
     const item: LibraryItem = {
       id,
-      name: file.name,
+      name: memFile.name,
       url,
       type,
       duration: isImage ? 10 : 0,
-      file,
+      file: memFile,
     };
 
     if (type !== 'image') {
@@ -799,16 +1038,25 @@ export default function Home() {
         setLibraryItems(prev => prev.map(i => i.id === id ? { ...i, duration: tempVideo.duration } : i));
         if (type === 'video' && !currentVideoUrl) {
           setCurrentVideoUrl(url);
-          setCurrentVideoFile(file);
-          setActiveFileName(file.name);
+          setCurrentVideoFile(memFile);
+          setActiveFileName(memFile.name);
           setActiveFileDuration(tempVideo.duration);
         }
+      };
+      // 재생 불가능한 파일은 자동 삭제
+      tempVideo.onerror = () => {
+        URL.revokeObjectURL(url);
+        setLibraryItems(prev => prev.filter(i => i.id !== id));
+        setImportToast(`⚠️ ${file.name} — 지원하지 않는 형식이라 삭제되었습니다`);
+        setTimeout(() => setImportToast(null), 3000);
       };
     }
 
     setLibraryItems(prev => [...prev, item]);
-    setTranscripts([]);
-    setSubtitles([]);
+
+    // IndexedDB에 미디어 파일 저장 (페이지 이동 후 복원용)
+    const pid = projectIdRef.current || 'default';
+    saveMediaBlob(`${pid}:${id}`, memFile, memFile.name, memFile.type);
 
     setImportToast(`${file.name} 라이브러리에 추가됨 — 타임라인에 드래그하여 배치하세요`);
     setTimeout(() => setImportToast(null), 3000);
@@ -825,18 +1073,33 @@ export default function Home() {
     type FileInfo = { file: File; url: string; type: 'video' | 'audio' | 'image'; duration: number; libId: string; clipId: string; };
     const infos: FileInfo[] = [];
     for (const file of files) {
-      const isAudio = file.type.startsWith('audio/') || /\.(m4a|aac|wav)$/i.test(file.name);
-      const isImage = file.type.startsWith('image/');
+      const isAudio = file.type.startsWith('audio/') || /\.(mp3|m4a|aac|wav|ogg|flac|wma)$/i.test(file.name);
+      const isImage = file.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp|svg|heic)$/i.test(file.name);
       const type: 'video' | 'audio' | 'image' = isImage ? 'image' : isAudio ? 'audio' : 'video';
-      const url = URL.createObjectURL(file);
-      const duration = isImage ? 10 : await new Promise<number>(resolve => {
+      // 파일 데이터를 메모리에 실제 복사 (원본 참조 GC 방지)
+      let memFile: File;
+      try {
+        const buf = await file.arrayBuffer();
+        memFile = new File([buf], file.name, { type: file.type || 'video/mp4', lastModified: file.lastModified });
+      } catch {
+        memFile = file;
+      }
+      const url = URL.createObjectURL(memFile);
+      const duration = isImage ? 10 : await new Promise<number>((resolve, reject) => {
         const el = document.createElement('video');
         el.preload = 'metadata';
         el.src = url;
         el.onloadedmetadata = () => resolve(el.duration || 10);
-        el.onerror = () => resolve(10);
-      });
-      infos.push({ file, url, type, duration, libId: genId(), clipId: genId() });
+        el.onerror = () => reject(new Error('unsupported'));
+      }).catch(() => -1) as number;
+      // 재생 불가능한 파일은 건너뛰기
+      if (duration < 0) {
+        URL.revokeObjectURL(url);
+        setImportToast(`⚠️ ${file.name} — 지원하지 않는 형식입니다`);
+        setTimeout(() => setImportToast(null), 3000);
+        continue;
+      }
+      infos.push({ file: memFile, url, type, duration, libId: genId(), clipId: genId() });
     }
 
     // 2. 현재 main 트랙 끝 시간 (모든 duration 수집 후 한 번만 읽기)
@@ -879,6 +1142,7 @@ export default function Home() {
         blendMode: false,
         speed: 1,
         linked: true,
+        linkGroupId: clipId,
         volume: 100,
       };
     });
@@ -1032,32 +1296,90 @@ export default function Home() {
 
   const handlePlayheadChange = useCallback((position: number) => {
     setCurrentTime(position);
-    // Also sync playback to the new edit position when not playing
-    if (!isPlayingRef.current) setPlaybackTime(position);
+    currentTimeRef.current = position;
+    setPlaybackTime(position);
+    playbackTimeRef.current = position;
   }, []);
   const handleSeek = useCallback((time: number) => {
+    // 재생 중에 클릭하면 정지 + 파란선으로 전환
+    if (isPlayingRef.current) {
+      setIsPlaying(false);
+      setHoverSuppressed(true);
+      setTimeout(() => setHoverSuppressed(false), 500);
+    }
     setCurrentTime(time);
-    if (!isPlayingRef.current) setPlaybackTime(time);
+    currentTimeRef.current = time;
+    setPlaybackTime(time);
+    playbackTimeRef.current = time;
   }, []);
   // Player reports actual video time during playback → update white playback line only
   const handlePlaybackTimeUpdate = useCallback((time: number) => {
     setPlaybackTime(time);
   }, []);
-  const handleClipSelect = useCallback((clipIds: string[]) => {
-    setSelectedClipIds(clipIds);
+  // Player/Timeline에서 재생/정지 전환 시
+  const handlePlayingChange = useCallback((playing: boolean) => {
+    if (playing && !isPlayingRef.current) {
+      // 재생 시작: blue line 우선, blue=0이고 hover가 있으면 hover 위치 사용
+      const startAt = (currentTimeRef.current > 0 || hoverTimeRef.current == null)
+        ? currentTimeRef.current
+        : hoverTimeRef.current;
+      setPlaybackTime(startAt);
+      playbackTimeRef.current = startAt;
+      setCurrentTime(startAt);
+      currentTimeRef.current = startAt;
+    } else if (!playing && isPlayingRef.current) {
+      // 정지: 흰선(playback) 위치를 파란선(edit) 위치로 동기화
+      const stoppedAt = playbackTimeRef.current;
+      setCurrentTime(stoppedAt);
+      currentTimeRef.current = stoppedAt;
+      setHoverSuppressed(true); setTimeout(() => setHoverSuppressed(false), 500);
+    }
+    setIsPlaying(playing);
   }, []);
+  const handleClipSelect = useCallback((clipIds: string[]) => {
+    setSelectedClipIdsSynced(clipIds); // ref 즉시 동기화 — Q/W 등 키보드 핸들러가 바로 읽을 수 있도록
+    // 타임라인 클립 선택 시 라이브러리 선택 해제 — Delete 키가 라이브러리까지 삭제하는 버그 방지
+    if (clipIds.length > 0) setSelectedLibraryIds([]);
+  }, [setSelectedClipIdsSynced]);
 
   // Close gaps on main track: sort by startTime, shift each to end of previous
   const rippleCloseGaps = useCallback((clips: VideoClip[]): VideoClip[] => {
     const mainClips = clips.filter(c => c.trackIndex === 1).sort((a, b) => a.startTime - b.startTime);
     const others = clips.filter(c => c.trackIndex !== 1);
+
+    // 메인 트랙 갭 닫기 + 각 클립의 이동량(delta) 기록
+    const deltas = new Map<number, { oldStart: number; newStart: number }>();
     let cursor = 0;
     const adjusted = mainClips.map(c => {
       const updated = { ...c, startTime: cursor };
+      if (cursor !== c.startTime) {
+        deltas.set(c.startTime, { oldStart: c.startTime, newStart: cursor });
+      }
       cursor += c.duration;
       return updated;
     });
-    return [...others, ...adjusted];
+
+    // 메인 트랙이 이동했으면 자막/오디오 클립도 같이 이동
+    if (deltas.size === 0) return [...others, ...adjusted];
+
+    // 전체 이동량 계산 (간단히: 첫 번째 이동의 delta 적용)
+    // 더 정확하게: 각 자막이 속한 메인 클립 구간 기준으로 이동
+    const shiftedOthers = others.map(c => {
+      // 이 클립의 시작시간이 어느 메인 클립의 원래 구간에 속하는지 찾기
+      for (const mainC of mainClips) {
+        if (c.startTime >= mainC.startTime && c.startTime < mainC.startTime + mainC.duration) {
+          const d = deltas.get(mainC.startTime);
+          if (d) {
+            const shift = d.newStart - d.oldStart;
+            return { ...c, startTime: Math.max(0, c.startTime + shift) };
+          }
+          break;
+        }
+      }
+      return c;
+    });
+
+    return [...shiftedOthers, ...adjusted];
   }, []);
 
   const handleLibraryDelete = useCallback((ids: string[]) => {
@@ -1066,18 +1388,32 @@ export default function Home() {
       libraryItems.filter(item => ids.includes(item.id)).map(item => item.url)
     );
 
-    setLibraryItems(prev => prev.filter(item => !ids.includes(item.id)));
+    const remaining = libraryItems.filter(item => !ids.includes(item.id));
+    setLibraryItems(remaining);
     setSelectedLibraryIds([]);
+
+    // 라이브러리가 완전히 비면 타임라인 전체 초기화 (자막 포함)
+    if (remaining.length === 0) {
+      setClipsSynced([]);
+      setSelectedClipIdsSynced([]);
+      setCurrentVideoUrl(undefined);
+      setCurrentVideoFile(null);
+      setActiveFileName('');
+      setActiveFileDuration(0);
+      setTranscripts([]);
+      setSubtitles([]);
+      return;
+    }
 
     // 타임라인에서 해당 URL을 사용하는 클립도 함께 삭제
     if (deletedUrls.size > 0) {
       setClipsSynced(prev => {
-        const remaining = prev.filter(c => !c.url || !deletedUrls.has(c.url));
+        const kept = prev.filter(c => !c.url || !deletedUrls.has(c.url));
         if (currentVideoUrl && deletedUrls.has(currentVideoUrl)) {
-          const next = remaining.find(c => c.trackIndex === 1 && c.url);
+          const next = kept.find(c => c.trackIndex === 1 && c.url);
           setCurrentVideoUrl(next?.url);
         }
-        return rippleModeRef.current ? rippleCloseGaps(remaining) : remaining;
+        return rippleModeRef.current ? rippleCloseGaps(kept) : kept;
       });
       setSelectedClipIdsSynced([]);
     }
@@ -1094,7 +1430,7 @@ export default function Home() {
    */
   const handleClipDelete = useCallback((clipId: string, forceRipple?: boolean) => {
     const clip = clipsRef.current.find(c => c.id === clipId);
-    if (!clip) return; // 이미 삭제됐거나 없는 클립 → 무동작 (이게 "그대로야" 버그의 핵심 방어선)
+    if (!clip) return; // 이미 삭제됐거나 없는 클립 → 무동작
 
     trackEditingAction('clip_delete', {
       targetTrack: clip.trackIndex,
@@ -1103,7 +1439,34 @@ export default function Home() {
     });
 
     setClipsSynced(prev => {
-      let updated = prev.filter(c => c.id !== clipId);
+      const deleteIds = new Set<string>([clipId]);
+
+      const isSubtitleTrack = clip.trackIndex === 0 || (clip.trackIndex >= 5 && clip.trackIndex <= 8);
+
+      // 자막 삭제 → 자막만 삭제 (영상/오디오는 유지)
+      // 영상/오디오 삭제 → 해당 클립의 시간 범위와 겹치는 자막만 함께 삭제
+      //   ※ 같은 linkGroupId라도 다른 영상/오디오 클립은 삭제하지 않음 (분할 클립 보호)
+      if (clip.linked && !isSubtitleTrack) {
+        const clipStart = clip.startTime;
+        const clipEnd = clip.startTime + clip.duration;
+        const isSubTrackFn = (ti: number) => ti === 0 || (ti >= 5 && ti <= 8);
+
+        for (const c of prev) {
+          if (c.id === clipId) continue;
+          // 자막 트랙만 연동 삭제 (영상/오디오 클립은 건드리지 않음)
+          if (!isSubTrackFn(c.trackIndex)) continue;
+          if (!c.linked) continue;
+
+          const cEnd = c.startTime + c.duration;
+          // 삭제되는 클립의 시간 범위와 겹치는 자막만 삭제
+          const overlaps = c.startTime < clipEnd && cEnd > clipStart;
+          if (overlaps) {
+            deleteIds.add(c.id);
+          }
+        }
+      }
+
+      let updated = prev.filter(c => !deleteIds.has(c.id));
 
       // 삭제된 클립이 현재 비디오 URL과 같으면 다음 비디오 클립으로 전환
       if (clip.url && clip.url === currentVideoUrl) {
@@ -1147,62 +1510,70 @@ export default function Home() {
     if (selIds.length > 0) handleClipUpdate(selIds[0], { name: newName });
   }, [handleClipUpdate]);
 
-  // Add subtitle clips to timeline from parsed SRT/ASS or AI results
-  const handleAddSubtitleClips = useCallback((items: TranscriptItem[], trackIndex: number = 0, replaceTrack: boolean = false) => {
-    // Sort items by startTime to ensure orderly placement
-    const sortedItems = [...items].sort((a, b) => a.startTime - b.startTime);
-
-    const MIN_GAP = 0.05; // 자막 사이 최소 간격 (50ms)
-
-    // 1단계: 각 자막의 startTime 결정 (겹침 방지)
-    const resolved: { startTime: number; duration: number; item: TranscriptItem }[] = [];
-    let lastEndTime = 0;
-
-    for (let i = 0; i < sortedItems.length; i++) {
-      const item = sortedItems[i];
-      let startTime = item.startTime;
-      const rawDuration = Math.max(0.5, item.endTime - item.startTime);
-
-      // 이전 자막과 겹치면 밀어냄
-      if (startTime < lastEndTime + MIN_GAP) {
-        startTime = lastEndTime + MIN_GAP;
+  // 클립들을 exclusion 구간에서 잘라내는 헬퍼
+  const trimClipsAgainstRanges = (clipsToTrim: VideoClip[], exclusionClips: VideoClip[]): VideoClip[] => {
+    const trimmed: VideoClip[] = [];
+    for (const clip of clipsToTrim) {
+      let segments: { start: number; end: number }[] = [{ start: clip.startTime, end: clip.startTime + clip.duration }];
+      for (const ex of exclusionClips) {
+        const exStart = ex.startTime;
+        const exEnd = ex.startTime + ex.duration;
+        const next: { start: number; end: number }[] = [];
+        for (const seg of segments) {
+          if (exEnd <= seg.start || exStart >= seg.end) { next.push(seg); continue; }
+          if (exStart > seg.start) next.push({ start: seg.start, end: exStart });
+          if (exEnd < seg.end) next.push({ start: exEnd, end: seg.end });
+        }
+        segments = next;
       }
-
-      resolved.push({ startTime, duration: rawDuration, item });
-      lastEndTime = startTime + rawDuration;
-    }
-
-    // 2단계: 다음 자막 startTime까지 duration 늘려서 빈 공간 채우기
-    const newClips: VideoClip[] = resolved.map(({ startTime, duration, item }, i) => {
-      let finalDuration = duration;
-      if (i + 1 < resolved.length) {
-        const nextStart = resolved[i + 1].startTime;
-        // 다음 자막 시작 직전까지 늘림 (MIN_GAP 여유)
-        const stretched = nextStart - startTime - MIN_GAP;
-        if (stretched > finalDuration) {
-          finalDuration = stretched;
+      for (const seg of segments) {
+        if (seg.end - seg.start >= 0.3) {
+          trimmed.push({ ...clip, id: genId(), startTime: seg.start, duration: seg.end - seg.start });
         }
       }
+    }
+    return trimmed;
+  };
 
-      return {
-        id: genId(),
-        name: item.editedText || item.originalText,
-        url: '',
-        startTime,
-        duration: finalDuration,
-        trackIndex,
-        scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1, linked: false,
-        fontFamily: 'PaperlogyExtraBold, sans-serif', fontSize: 47,
-        color: item.color || '#FFFFFF', strokeColor: item.strokeColor || '#000000', strokeWidth: 2, fontWeight: 800, shadowColor: 'rgba(0,0,0,0.8)', shadowBlur: 4, shadowOffsetX: 2, shadowOffsetY: 2,
-      };
+  // Add subtitle clips to timeline from parsed SRT/ASS or AI results
+  const handleAddSubtitleClips = useCallback((items: TranscriptItem[], trackIndex: number = 0, replaceTrack: boolean = false) => {
+    const isDialogueTrack = trackIndex === 0;
+    const gap = isDialogueTrack ? 0 : SUBTITLE_GAP_SECONDS;
+
+    // 비디오/오버레이 트랙의 끝 시간 = 자막이 넘으면 안 되는 한계
+    const videoClips = clipsRef.current.filter(c => c.trackIndex === 1 || (c.trackIndex >= 10 && c.trackIndex <= 14));
+    const tlEnd = videoClips.length > 0
+      ? Math.max(...videoClips.map(c => c.startTime + c.duration))
+      : 0;
+
+    // 자막과 연결할 비디오 클립의 linkGroupId 찾기 (메인 비디오 트랙 기준)
+    const mainVideo = clipsRef.current.find(c => c.trackIndex === 1);
+    const groupId = mainVideo?.linkGroupId || mainVideo?.id;
+
+    const placements = buildSubtitlePlacements(items, {
+      gap,
+      continuous: isDialogueTrack,
+      timelineEnd: tlEnd > 0 ? tlEnd : undefined,
     });
 
-    if (replaceTrack) {
-      // Remove all existing clips on this track, then add new ones
-      setClips(prev => [...prev.filter(c => c.trackIndex !== trackIndex), ...newClips]);
-    } else {
-      setClips(prev => [...prev, ...newClips]);
-    }
+    const newClips: VideoClip[] = placements.map(({ startTime, duration, item }) => ({
+      id: genId(),
+      name: item.editedText || item.originalText,
+      url: '',
+      startTime,
+      duration,
+      trackIndex,
+      scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1,
+      linked: true, linkGroupId: groupId,
+      fontFamily: 'PaperlogyExtraBold, sans-serif', fontSize: 35,
+      color: item.color || '#FFFFFF', strokeColor: item.strokeColor || '#000000', strokeWidth: 2, fontWeight: 800, shadowColor: 'rgba(0,0,0,0.8)', shadowBlur: 4, shadowOffsetX: 2, shadowOffsetY: 2,
+    }));
+
+    setClips(prev => {
+      // 오케스트레이터가 이미 대본-AI 겹침을 해결했으므로 추가 제거 불필요
+      const base = replaceTrack ? prev.filter(c => c.trackIndex !== trackIndex) : prev;
+      return [...base, ...newClips];
+    });
   }, []);
 
   // Handle SRT/ASS file import
@@ -1256,9 +1627,10 @@ export default function Home() {
   }, []);
 
   const handleToggleEnable = useCallback(() => {
-    const selId = selectedClipIdsRef.current[0];
-    if (!selId) return;
-    setClips(prev => prev.map(c => c.id === selId ? { ...c, disabled: !c.disabled } : c));
+    const selIds = selectedClipIdsRef.current;
+    if (selIds.length === 0) return;
+    const selSet = new Set(selIds);
+    setClips(prev => prev.map(c => selSet.has(c.id) ? { ...c, disabled: !c.disabled } : c));
   }, []);
 
   // ===== DEFINITIVE GLOBAL KEYBOARD SHORTCUTS =====
@@ -1272,32 +1644,38 @@ export default function Home() {
       const cmd = e.metaKey || e.ctrlKey;
       const shift = e.shiftKey;
 
-      // --- FIT TIMELINE TO SCREEN (Shift+Z — 최우선 체크, Final Cut Pro style) ---
+      // --- FIT TO SCREEN (Shift+Z — activeSection에 따라 분기) ---
       if (e.shiftKey && !cmd && !e.altKey && e.key.toLowerCase() === 'z' && !isTyping) {
         e.preventDefault();
-        handleFitToScreen();
+        if (activeSectionRef.current === 'viewer') {
+          setViewerZoom(100);
+        } else {
+          handleFitToScreen();
+        }
         return;
       }
 
       // --- Cmd+/- : activeSection에 따라 각 패널 줌 ---
       if (cmd && !shift && (e.key === '=' || e.key === '+')) {
         e.preventDefault();
-        if (activeSection === 'library') {
-          setLibraryColumns(prev => Math.max(1, prev - 1)); // 컬럼 줄임 = 확대
-        } else if (activeSection === 'viewer') {
+        const section = activeSectionRef.current;
+        if (section === 'library') {
+          setLibraryColumns(prev => Math.max(1, prev - 1));
+        } else if (section === 'viewer') {
           setViewerZoom(prev => Math.min(200, prev + 25));
-        } else if (activeSection === 'timeline') {
+        } else {
           setTimelineZoom(prev => Math.min(MAX_ZOOM, prev * ZOOM_STEP));
         }
         return;
       }
       if (cmd && !shift && e.key === '-') {
         e.preventDefault();
-        if (activeSection === 'library') {
-          setLibraryColumns(prev => Math.min(5, prev + 1)); // 컬럼 늘림 = 축소
-        } else if (activeSection === 'viewer') {
+        const section = activeSectionRef.current;
+        if (section === 'library') {
+          setLibraryColumns(prev => Math.min(5, prev + 1));
+        } else if (section === 'viewer') {
           setViewerZoom(prev => Math.max(25, prev - 25));
-        } else if (activeSection === 'timeline') {
+        } else {
           setTimelineZoom(prev => Math.max(MIN_ZOOM, prev / ZOOM_STEP));
         }
         return;
@@ -1321,22 +1699,30 @@ export default function Home() {
       }
 
       // Skip remaining shortcuts when typing
-      if (isTyping) return;
+      if (isTyping) {
+        return;
+      }
 
       // --- PLAYBACK ---
       if (e.code === 'Space' && !cmd) {
         e.preventDefault();
         setIsPlaying(prev => {
           if (!prev) {
-            // Starting playback: sync white line to blue line position
-            setPlaybackTime(currentTimeRef.current);
-            playbackTimeRef.current = currentTimeRef.current;
+            // Starting playback: blue line 우선, blue=0이고 hover가 있으면 hover 위치 사용
+            const startAt = (currentTimeRef.current > 0 || hoverTimeRef.current == null)
+              ? currentTimeRef.current
+              : hoverTimeRef.current;
+            setPlaybackTime(startAt);
+            playbackTimeRef.current = startAt;
+            setCurrentTime(startAt);
+            currentTimeRef.current = startAt;
           } else {
             // Stopping playback: 멈춘 위치를 새 편집 기준점(파란 선)으로 즉시 동기화
             // React 배치 덕분에 isPlaying=false와 currentTime 업데이트가 같은 렌더에 반영됨
             const stoppedAt = playbackTimeRef.current;
             setCurrentTime(stoppedAt);
             currentTimeRef.current = stoppedAt;
+            setHoverSuppressed(true); setTimeout(() => setHoverSuppressed(false), 500);
           }
           return !prev;
         });
@@ -1355,6 +1741,11 @@ export default function Home() {
         e.preventDefault();
         setCurrentTool('blade');
         splitAtPlayhead();
+        return;
+      }
+      if (cmd && e.shiftKey && e.code === 'KeyB') {
+        e.preventDefault();
+        autoSplitByTranscript();
         return;
       }
       if (cmd && e.code === 'KeyB') {
@@ -1423,8 +1814,8 @@ export default function Home() {
         return;
       }
 
-      // --- SELECT ALL ---
-      if (cmd && e.code === 'KeyA') {
+      // --- SELECT ALL (타임라인 활성 시 → 클립 전체 선택) ---
+      if (cmd && e.code === 'KeyA' && activeSectionRef.current === 'timeline') {
         e.preventDefault();
         const all = clipsRef.current;
         if (all.length > 0) setSelectedClipIdsSynced(all.map(c => c.id));
@@ -1512,6 +1903,67 @@ export default function Home() {
         return;
       }
 
+      // --- AUTO COLOR CORRECTION (C) ---
+      if (e.code === 'KeyC' && !cmd && !shift) {
+        e.preventDefault();
+        const selId = selectedClipIdsRef.current[0];
+        const clip = selId
+          ? clipsRef.current.find(c => c.id === selId)
+          : clipsRef.current.find(c => c.trackIndex === 1);
+        if (!clip) return;
+        const isOn = clip.autoColorCorrection;
+        const updates = isOn
+          ? { autoColorCorrection: false, brightness: 100, contrast: 100, saturate: 100, temperature: 0, sharpen: 0 }
+          : { autoColorCorrection: true, brightness: 115, contrast: 120, saturate: 130, temperature: 5, sharpen: 35 };
+        setClipsSynced(prev => prev.map(c => c.id === clip.id ? { ...c, ...updates } : c));
+        setImportToast(isOn ? '색상 보정 해제 ✓' : '자동 색상 보정 적용 ✓');
+        setTimeout(() => setImportToast(null), 2000);
+        return;
+      }
+
+      // --- INSERT SELECTED LIBRARY ITEMS TO TIMELINE (E) ---
+      if (e.code === 'KeyE' && !cmd) {
+        e.preventDefault();
+        const selLibIds = selectedLibraryIdsRef.current;
+        const libItems = libraryItemsRef.current;
+        if (selLibIds.length === 0) return;
+        const selected = selLibIds
+          .map(id => libItems.find(i => i.id === id))
+          .filter(Boolean) as typeof libItems;
+        if (selected.length === 0) return;
+        // 타임라인 트랙1 끝 시간 계산
+        let insertAt = clipsRef.current
+          .filter(c => c.trackIndex === 1)
+          .reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
+        const newClips: VideoClip[] = [];
+        for (const item of selected) {
+          const id = genId();
+          newClips.push({
+            id,
+            name: item.name,
+            url: item.url,
+            startTime: insertAt,
+            duration: item.duration || 10,
+            originalDuration: item.duration || 10,
+            trackIndex: 1,
+            scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100,
+            blendMode: false, speed: 1, linked: true, linkGroupId: id, volume: 100,
+          });
+          insertAt += item.duration || 10;
+        }
+        setClipsSynced(prev => [...prev, ...newClips]);
+        // 첫 번째 영상이면 currentVideoUrl 세팅
+        const firstVideo = selected.find(i => i.type === 'video');
+        if (firstVideo && !currentVideoUrlRef.current) {
+          currentVideoUrlRef.current = firstVideo.url;
+          setCurrentVideoUrl(firstVideo.url);
+          setCurrentVideoFile(firstVideo.file || null);
+          setActiveFileName(firstVideo.name);
+          setActiveFileDuration(firstVideo.duration);
+        }
+        return;
+      }
+
       // --- ESCAPE ---
       if (e.key === 'Escape') {
         setSelectedClipIdsSynced([]);
@@ -1556,12 +2008,17 @@ export default function Home() {
 
     function syncSubtitlesForTrimLeft(prev: typeof clips, trimTime: number, parentTrack: number) {
       if (isSubTrack(parentTrack)) return prev;
-      return prev.map(c => {
+      // trimLeft: 영상의 trimTime 이전 부분이 잘림 → 자막도 동기화
+      return prev.filter(c => {
+        if (!isSubTrack(c.trackIndex)) return true;
+        const cEnd = c.startTime + c.duration;
+        // 자막이 잘린 구간 안에 완전히 있으면 제거
+        if (cEnd <= trimTime) return false;
+        return true;
+      }).map(c => {
         if (!isSubTrack(c.trackIndex)) return c;
         const cEnd = c.startTime + c.duration;
-        // Subtitle fully before trim point → remove
-        if (cEnd <= trimTime) return c; // keep — it's outside the clip range
-        // Subtitle starts before trim point but extends past → trim its start
+        // 자막이 trimTime에 걸쳐있으면 시작을 잘라줌
         if (c.startTime < trimTime && cEnd > trimTime) {
           return { ...c, startTime: trimTime, duration: cEnd - trimTime };
         }
@@ -1571,9 +2028,15 @@ export default function Home() {
 
     function syncSubtitlesForTrimRight(prev: typeof clips, trimTime: number, parentTrack: number) {
       if (isSubTrack(parentTrack)) return prev;
-      return prev.map(c => {
+      // trimRight: 영상의 trimTime 이후 부분이 잘림 → 자막도 동기화
+      return prev.filter(c => {
+        if (!isSubTrack(c.trackIndex)) return true;
+        // 자막이 잘린 구간 안에 완전히 있으면 제거
+        if (c.startTime >= trimTime) return false;
+        return true;
+      }).map(c => {
         if (!isSubTrack(c.trackIndex)) return c;
-        // Subtitle extends past trim point → trim its end
+        // 자막이 trimTime에 걸쳐있으면 끝을 잘라줌
         if (c.startTime < trimTime && c.startTime + c.duration > trimTime) {
           return { ...c, duration: trimTime - c.startTime };
         }
@@ -1610,60 +2073,144 @@ export default function Home() {
       setSelectedClipIdsSynced([secondId]);
     }
 
+    // ⌘⇧B: 대본 기반 자동 분할 (Auto Split by Transcript)
+    // 비디오 클립을 대본의 문장 경계에서 자동으로 칼선(컷)을 넣어줌
+    function autoSplitByTranscript() {
+      const videoClips = clipsRef.current.filter(c => c.trackIndex === 1);
+      if (videoClips.length === 0) { alert('타임라인에 비디오 클립이 없습니다.'); return; }
+
+      const currentTranscripts = transcriptsRef.current;
+      if (!currentTranscripts || currentTranscripts.length === 0) { alert('대본(STT) 결과가 없습니다. 먼저 음성 인식을 실행해주세요.'); return; }
+
+      // 대본의 문장 경계 시간들 수집 (각 transcript의 startTime)
+      const cutPoints = currentTranscripts
+        .map(t => t.startTime)
+        .filter(t => t > 0)
+        .sort((a, b) => a - b);
+
+      if (cutPoints.length === 0) { alert('분할할 경계점이 없습니다.'); return; }
+
+      setClipsSynced(prev => {
+        let result = [...prev];
+
+        // 각 컷 포인트에서 비디오 클립을 분할
+        for (const cutTime of cutPoints) {
+          // 이 cutTime을 포함하는 비디오 클립 찾기
+          const clipIdx = result.findIndex(c =>
+            c.trackIndex === 1 &&
+            c.startTime + 0.05 < cutTime &&
+            cutTime < c.startTime + c.duration - 0.05
+          );
+          if (clipIdx === -1) continue;
+
+          const clip = result[clipIdx];
+          const firstDur = cutTime - clip.startTime;
+          const secondDur = clip.duration - firstDur;
+          const secondId = `clip_${Date.now()}_${clipIdCounter.current++}`;
+          const originalTrimStart = clip.trimStart ?? 0;
+          const speed = clip.speed ?? 1;
+          const secondTrimStart = originalTrimStart + (firstDur * speed);
+
+          const firstClip = { ...clip, duration: firstDur };
+          const secondClip = { ...clip, id: secondId, startTime: cutTime, duration: secondDur, trimStart: secondTrimStart };
+          result[clipIdx] = firstClip;
+          result.splice(clipIdx + 1, 0, secondClip);
+
+          // 자막도 같이 분할
+          result = syncSubtitlesForSplit(result, cutTime, clip.trackIndex);
+        }
+
+        return result;
+      });
+
+      setImportToast(`자동 분할 완료: ${cutPoints.length}개 컷 생성 ✓`);
+      setTimeout(() => setImportToast(null), 2500);
+    }
+
     // Q: trim left — targetTime 앞부분 날리기 (startTime → targetTime으로 이동)
     // 우선순위: 오렌지 호버선(마우스 위치) > 파란 플레이헤드(편집 기준점)
     function trimLeft() {
       const targetTime = getCutTime();
+      const EPS = 0.001;
 
+      // ① 먼저 현재 클립 정보로 cutAmount 계산 (setClipsSynced 밖에서)
+      const currentClips = clipsRef.current;
+      const inRangeCheck = (c: typeof currentClips[0]) =>
+        c.startTime <= targetTime + EPS && targetTime - EPS < c.startTime + c.duration;
+      const selId = selectedClipIdsRef.current[0];
+      const selClip = selId ? currentClips.find(c => c.id === selId) : null;
+      const targetClip = (selClip && inRangeCheck(selClip))
+        ? selClip
+        : currentClips.find(c => !isSubTrack(c.trackIndex) && inRangeCheck(c))
+          ?? currentClips.find(c => inRangeCheck(c));
+      if (!targetClip) return;
+      const cutAmount = targetTime - targetClip.startTime;
+      if (cutAmount < EPS) return;
+
+      // ② 클립 트림 + ripple + 자막 동기화
       setClipsSynced(prev => {
-        // ① 선택된 클립이 있고 targetTime이 그 안에 있으면 우선 사용
-        // ② 아니면 targetTime이 내부를 지나는 클립을 찾기
-        const selId = selectedClipIdsRef.current[0];
-        const selClip = selId ? prev.find(c => c.id === selId) : null;
-        const clip = (selClip && selClip.startTime < targetTime && targetTime < selClip.startTime + selClip.duration)
-          ? selClip
-          : prev.find(c => c.startTime < targetTime && targetTime < c.startTime + c.duration);
+        const clip = prev.find(c => c.id === targetClip.id);
         if (!clip) return prev;
 
         const clipEnd = clip.startTime + clip.duration;
         const speed = clip.speed ?? 1;
-        const cutAmount = targetTime - clip.startTime;
+        const ca = targetTime - clip.startTime;
 
-        // ⭐ 새 mediaOffset = 기존 mediaOffset + (잘린 양 × speed)
         let trimmed = prev.map(c => c.id === clip.id ? {
           ...c,
           startTime: targetTime,
           duration: clipEnd - targetTime,
-          trimStart: (c.trimStart ?? 0) + (cutAmount * speed),
+          trimStart: (c.trimStart ?? 0) + (ca * speed),
         } : c);
 
         trimmed = syncSubtitlesForTrimLeft(trimmed, targetTime, clip.trackIndex);
-        return rippleModeRef.current ? rippleCloseGaps(trimmed) : trimmed;
+
+        // ripple: 갭 닫기
+        if (rippleModeRef.current) {
+          trimmed = rippleCloseGaps(trimmed);
+        }
+        return trimmed;
       });
+
+      // ③ ripple일 때 플레이헤드도 cutAmount만큼 왼쪽으로 (setClipsSynced 밖에서!)
+      if (rippleModeRef.current) {
+        const newTime = Math.max(0, targetTime - cutAmount);
+        setCurrentTimeSynced(newTime);
+      }
     }
 
-    // W: trim right — targetTime 뒷부분 날리기 (endTime → targetTime으로 축소)
-    // 우선순위: 오렌지 호버선(마우스 위치) > 파란 플레이헤드(편집 기준점)
     function trimRight() {
       const targetTime = getCutTime();
+      const EPS = 0.001;
 
       setClipsSynced(prev => {
+        const inRange = (c: typeof prev[0]) =>
+          c.startTime <= targetTime + EPS && targetTime - EPS < c.startTime + c.duration;
+
         const selId = selectedClipIdsRef.current[0];
         const selClip = selId ? prev.find(c => c.id === selId) : null;
-        const clip = (selClip && selClip.startTime < targetTime && targetTime < selClip.startTime + selClip.duration)
+        const clip = (selClip && inRange(selClip))
           ? selClip
-          : prev.find(c => c.startTime < targetTime && targetTime < c.startTime + c.duration);
+          : prev.find(c => !isSubTrack(c.trackIndex) && inRange(c))
+            ?? prev.find(c => inRange(c));
         if (!clip) return prev;
 
-        // mediaOffset은 변경 불필요 — 앞부분은 그대로, 뒤만 잘림
+        const clipEnd = clip.startTime + clip.duration;
+        if (clipEnd - targetTime < EPS) return prev;
+
         let trimmed = prev.map(c => c.id === clip.id ? {
           ...c,
           duration: targetTime - clip.startTime,
         } : c);
 
         trimmed = syncSubtitlesForTrimRight(trimmed, targetTime, clip.trackIndex);
-        return rippleModeRef.current ? rippleCloseGaps(trimmed) : trimmed;
+
+        if (rippleModeRef.current) {
+          trimmed = rippleCloseGaps(trimmed);
+        }
+        return trimmed;
       });
+      // W는 오른쪽 잘림 → 플레이헤드 위치 변경 불필요
     }
 
     // 모든 클립 경계(start, start+duration)를 오름차순으로 반환
@@ -1717,8 +2264,34 @@ export default function Home() {
   const handleSoundEffect = useCallback(() => alert('효과음 라이브러리'), []);
   const handleSticker = useCallback(() => alert('스티커 라이브러리'), []);
   const handleAutoColorCorrection = useCallback(() => {
-    if (selectedClip) { handleClipUpdate(selectedClip.id, { autoColorCorrection: true }); alert('자동 색상 보정 적용'); }
-    else alert('영상을 선택해주세요.');
+    // 선택된 비디오 클립에 자동 색보정 적용/해제
+    const clip = selectedClip || clipsRef.current.find(c => c.trackIndex === 1);
+    if (!clip) { alert('영상 클립을 선택해주세요.'); return; }
+
+    if (clip.autoColorCorrection) {
+      // 이미 적용됨 → 해제 (기본값으로 복원)
+      handleClipUpdate(clip.id, {
+        autoColorCorrection: false,
+        brightness: 100,
+        contrast: 100,
+        saturate: 100,
+        temperature: 0,
+        sharpen: 0,
+      });
+      setImportToast('색상 보정 해제 ✓');
+    } else {
+      // 자동 보정 적용: 캡컷 스타일 — 밝기↑ 대비↑ 채도↑ 약간 따뜻한 톤
+      handleClipUpdate(clip.id, {
+        autoColorCorrection: true,
+        brightness: 115,    // +15% 밝기
+        contrast: 120,      // +20% 대비
+        saturate: 130,       // +30% 채도
+        temperature: 5,      // 따뜻한 톤
+        sharpen: 35,         // 선명
+      });
+      setImportToast('자동 색상 보정 적용 ✓');
+    }
+    setTimeout(() => setImportToast(null), 2000);
   }, [selectedClip, handleClipUpdate]);
   const handleAnimationEffect = useCallback(() => {
     if (selectedClip) {
@@ -1733,7 +2306,8 @@ export default function Home() {
     // no-op
   }, []);
 
-  // Import trigger via file input
+  // Import trigger — 기본 file input (가장 안정적)
+  const importFileRef = useRef<(file: File) => void>(() => {});
   const handleImportClick = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
@@ -1902,19 +2476,20 @@ export default function Home() {
   }, [handleAddTextClip]);
 
   // ===== DRAG & DROP on entire app =====
-  const importFile = useCallback((file: File) => {
+  const importFile = useCallback(async (file: File) => {
     const fileName = file.name.toLowerCase();
     if (fileName.endsWith('.srt') || fileName.endsWith('.ass') || fileName.endsWith('.ssa')) {
       handleSubtitleImport(file);
       setImportToast('자막 파일이 추가되었습니다 ✓');
     } else if (file.type.startsWith('video/') || file.type.startsWith('audio/') || file.type.startsWith('image/')) {
-      handleVideoAdd(file);
+      await handleVideoAdd(file);
       setImportToast('파일이 추가되었습니다 ✓');
     } else {
       setImportToast('지원하지 않는 파일 형식입니다');
     }
     setTimeout(() => setImportToast(null), 2500);
   }, [handleVideoAdd, handleSubtitleImport]);
+  importFileRef.current = importFile;
 
   const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -1924,19 +2499,33 @@ export default function Home() {
     e.target.value = '';
   }, [importFile]);
 
+  const dragCounterRef = useRef(0);
   const handleGlobalDragOver = useCallback((e: React.DragEvent) => {
-    // 파일 드래그일 때만 브라우저 기본 동작 막기 (오버레이 없이 처리)
     if (e.dataTransfer.types.includes('Files')) {
       e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    }
+  }, []);
+
+  const handleGlobalDragEnter = useCallback((e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes('Files')) {
+      e.preventDefault();
+      dragCounterRef.current++;
+      setIsDraggingFile(true);
     }
   }, []);
 
   const handleGlobalDragLeave = useCallback((e: React.DragEvent) => {
-    // 오버레이 없으므로 아무것도 하지 않음
+    dragCounterRef.current--;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDraggingFile(false);
+    }
   }, []);
 
   const handleGlobalDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    dragCounterRef.current = 0;
     setIsDraggingFile(false);
     Array.from(e.dataTransfer.files).forEach(importFile);
   }, [importFile]);
@@ -1960,47 +2549,184 @@ export default function Home() {
     setSelectedClipIds([secondId]);
   }, []);
 
-  // Close gaps on main track: sort by startTime, shift each to end of previous
+  // 대본 기반 자동 분할 (toolbar button handler)
+  const handleAutoSplit = useCallback(() => {
+    const videoClips = clipsRef.current.filter(c => c.trackIndex === 1);
+    if (videoClips.length === 0) { alert('타임라인에 비디오 클립이 없습니다.'); return; }
+    const trs = transcriptsRef.current;
+    if (!trs || trs.length === 0) { alert('대본(STT) 결과가 없습니다. 먼저 음성 인식을 실행해주세요.'); return; }
+
+    const cutPoints = trs.map(t => t.startTime).filter(t => t > 0).sort((a, b) => a - b);
+    if (cutPoints.length === 0) return;
+
+    setClips(prev => {
+      let result = [...prev];
+      for (const cutTime of cutPoints) {
+        const clipIdx = result.findIndex(c =>
+          c.trackIndex === 1 &&
+          c.startTime + 0.05 < cutTime &&
+          cutTime < c.startTime + c.duration - 0.05
+        );
+        if (clipIdx === -1) continue;
+        const clip = result[clipIdx];
+        const firstDur = cutTime - clip.startTime;
+        const secondDur = clip.duration - firstDur;
+        const secondId = genId();
+        const originalTrimStart = clip.trimStart ?? 0;
+        const speed = clip.speed ?? 1;
+        const secondTrimStart = originalTrimStart + (firstDur * speed);
+        result[clipIdx] = { ...clip, duration: firstDur };
+        result.splice(clipIdx + 1, 0, { ...clip, id: secondId, startTime: cutTime, duration: secondDur, trimStart: secondTrimStart });
+      }
+      return result;
+    });
+    setImportToast(`자동 분할 완료: ${cutPoints.length}개 컷 ✓`);
+    setTimeout(() => setImportToast(null), 2500);
+  }, []);
+
+  // 장면 전환 감지 기반 자동 분할 (Canvas 프레임 비교 — 토큰 불필요)
+  const handleSceneSplit = useCallback(async () => {
+    const videoClips = clipsRef.current.filter(c => c.trackIndex === 1);
+    if (videoClips.length === 0) { alert('타임라인에 비디오 클립이 없습니다.'); return; }
+
+    const mainClip = videoClips[0];
+    const videoUrl = mainClip.url;
+    if (!videoUrl) { alert('비디오 URL이 없습니다.'); return; }
+
+    setImportToast('장면 전환 감지 중...');
+
+    try {
+      const cutPoints = await detectSceneChanges(videoUrl, mainClip.duration, mainClip.trimStart ?? 0);
+
+      if (cutPoints.length === 0) {
+        setImportToast('장면 전환이 감지되지 않았습니다.');
+        setTimeout(() => setImportToast(null), 2500);
+        return;
+      }
+
+      // 타임라인 시간으로 변환 (mainClip.startTime 기준)
+      const timelineCuts = cutPoints.map(t => mainClip.startTime + t);
+
+      setClipsSynced(prev => {
+        let result = [...prev];
+        for (const cutTime of timelineCuts) {
+          const clipIdx = result.findIndex(c =>
+            c.trackIndex === 1 &&
+            c.startTime + 0.05 < cutTime &&
+            cutTime < c.startTime + c.duration - 0.05
+          );
+          if (clipIdx === -1) continue;
+          const clip = result[clipIdx];
+          const firstDur = cutTime - clip.startTime;
+          const secondDur = clip.duration - firstDur;
+          const secondId = genId();
+          const originalTrimStart = clip.trimStart ?? 0;
+          const speed = clip.speed ?? 1;
+          const secondTrimStart = originalTrimStart + (firstDur * speed);
+          result[clipIdx] = { ...clip, duration: firstDur };
+          result.splice(clipIdx + 1, 0, { ...clip, id: secondId, startTime: cutTime, duration: secondDur, trimStart: secondTrimStart });
+        }
+        return result;
+      });
+
+      setImportToast(`장면 분할 완료: ${cutPoints.length}개 컷 생성 ✓`);
+      setTimeout(() => setImportToast(null), 2500);
+    } catch (err) {
+      console.error('Scene detection error:', err);
+      setImportToast('장면 감지 실패');
+      setTimeout(() => setImportToast(null), 2500);
+    }
+  }, [setClipsSynced]);
+
+  // 자막 트랙 판별 (useEffect 밖에서도 사용)
+  const isSubTrackOuter = useCallback((ti: number) => ti === 0 || (ti >= 5 && ti <= 8), []);
+
   const handleTrimLeft = useCallback(() => {
     const t = hoverTimeRef.current ?? currentTimeRef.current;
-    setClips(prev => {
-      const selId = selectedClipIdsRef.current[0];
-      const selClip = selId ? prev.find(c => c.id === selId) : null;
-      const clip = (selClip && selClip.startTime < t && t < selClip.startTime + selClip.duration)
-        ? selClip
-        : prev.find(c => c.startTime < t && t < c.startTime + c.duration);
+    const EPS = 0.001;
+    // cutAmount 먼저 계산 (setClipsSynced 밖)
+    const currentClips = clipsRef.current;
+    const inRangeChk = (c: VideoClip) => c.startTime <= t + EPS && t - EPS < c.startTime + c.duration;
+    const selId = selectedClipIdsRef.current[0];
+    const selClip = selId ? currentClips.find(c => c.id === selId) : null;
+    const targetClip = (selClip && inRangeChk(selClip))
+      ? selClip
+      : currentClips.find(c => !isSubTrackOuter(c.trackIndex) && inRangeChk(c))
+        ?? currentClips.find(c => inRangeChk(c));
+    if (!targetClip || t - targetClip.startTime < EPS) return;
+    const cutAmount = t - targetClip.startTime;
+
+    setClipsSynced(prev => {
+      const clip = prev.find(c => c.id === targetClip.id);
       if (!clip) return prev;
       const clipEnd = clip.startTime + clip.duration;
       const speed = clip.speed ?? 1;
-      const cutAmount = t - clip.startTime;
+      const ca = t - clip.startTime;
       trackEditingAction('clip_trim_left', { targetTrack: clip.trackIndex, clipDuration: clip.duration, timelinePosition: t });
-      const trimmed = prev.map(c => c.id === clip.id ? {
-        ...c,
-        startTime: t,
-        duration: clipEnd - t,
-        trimStart: (c.trimStart ?? 0) + (cutAmount * speed),
+      let trimmed = prev.map(c => c.id === clip.id ? {
+        ...c, startTime: t, duration: clipEnd - t, trimStart: (c.trimStart ?? 0) + (ca * speed),
       } : c);
-      return rippleModeRef.current ? rippleCloseGaps(trimmed) : trimmed;
+      if (!isSubTrackOuter(clip.trackIndex)) {
+        trimmed = trimmed.filter(c => {
+          if (!isSubTrackOuter(c.trackIndex)) return true;
+          return c.startTime + c.duration > t;
+        }).map(c => {
+          if (!isSubTrackOuter(c.trackIndex)) return c;
+          if (c.startTime < t && c.startTime + c.duration > t) {
+            return { ...c, startTime: t, duration: c.startTime + c.duration - t };
+          }
+          return c;
+        });
+      }
+      if (rippleModeRef.current) trimmed = rippleCloseGaps(trimmed);
+      return trimmed;
     });
-  }, [rippleCloseGaps]);
+    // ripple: 플레이헤드를 잘린만큼 왼쪽으로
+    if (rippleModeRef.current) {
+      setCurrentTimeSynced(Math.max(0, t - cutAmount));
+    }
+  }, [rippleCloseGaps, setClipsSynced, isSubTrackOuter, setCurrentTimeSynced]);
 
   const handleTrimRight = useCallback(() => {
     const t = hoverTimeRef.current ?? currentTimeRef.current;
-    setClips(prev => {
+    const EPS = 0.001;
+    setClipsSynced(prev => {
+      const inRange = (c: VideoClip) => c.startTime <= t + EPS && t - EPS < c.startTime + c.duration;
       const selId = selectedClipIdsRef.current[0];
       const selClip = selId ? prev.find(c => c.id === selId) : null;
-      const clip = (selClip && selClip.startTime < t && t < selClip.startTime + selClip.duration)
+      const clip = (selClip && inRange(selClip))
         ? selClip
-        : prev.find(c => c.startTime < t && t < c.startTime + c.duration);
+        : prev.find(c => !isSubTrackOuter(c.trackIndex) && inRange(c))
+          ?? prev.find(c => inRange(c));
       if (!clip) return prev;
+      const clipEnd = clip.startTime + clip.duration;
+      if (clipEnd - t < EPS) return prev;
       trackEditingAction('clip_trim_right', { targetTrack: clip.trackIndex, clipDuration: clip.duration, timelinePosition: t });
-      const trimmed = prev.map(c => c.id === clip.id ? {
-        ...c,
-        duration: t - clip.startTime,
+      let trimmed = prev.map(c => c.id === clip.id ? {
+        ...c, duration: t - clip.startTime,
       } : c);
-      return rippleModeRef.current ? rippleCloseGaps(trimmed) : trimmed;
+      if (!isSubTrackOuter(clip.trackIndex)) {
+        trimmed = trimmed.filter(c => {
+          if (!isSubTrackOuter(c.trackIndex)) return true;
+          return c.startTime < t;
+        }).map(c => {
+          if (!isSubTrackOuter(c.trackIndex)) return c;
+          if (c.startTime < t && c.startTime + c.duration > t) {
+            return { ...c, duration: t - c.startTime };
+          }
+          return c;
+        });
+      }
+      if (rippleModeRef.current) trimmed = rippleCloseGaps(trimmed);
+      return trimmed;
     });
-  }, [rippleCloseGaps]);
+  }, [rippleCloseGaps, setClipsSynced, isSubTrackOuter]);
+
+  // Refs for keyboard shortcuts (avoid stale closures in useEffect)
+  const handleTrimLeftRef = useRef(handleTrimLeft);
+  useEffect(() => { handleTrimLeftRef.current = handleTrimLeft; }, [handleTrimLeft]);
+  const handleTrimRightRef = useRef(handleTrimRight);
+  useEffect(() => { handleTrimRightRef.current = handleTrimRight; }, [handleTrimRight]);
 
   const handleResizeEnd = useCallback(() => {
     if (rippleModeRef.current) {
@@ -2024,15 +2750,27 @@ export default function Home() {
         className="bg-editor-bg text-white font-display fixed inset-0 flex flex-col overflow-hidden selection:bg-primary/30"
         tabIndex={-1}
         onDragOver={handleGlobalDragOver}
+        onDragEnter={handleGlobalDragEnter}
         onDragLeave={handleGlobalDragLeave}
         onDrop={handleGlobalDrop}
       >
+        {/* 드래그 앤 드롭 오버레이 (외장하드에서 Finder로 드래그 시 안내) */}
+        {isDraggingFile && (
+          <div className="fixed inset-0 z-[9999] bg-black/60 flex items-center justify-center pointer-events-none">
+            <div className="border-4 border-dashed border-primary rounded-2xl p-12 text-center">
+              <span className="material-icons text-6xl text-primary mb-4 block">cloud_upload</span>
+              <p className="text-xl font-bold text-white mb-2">파일을 여기에 놓으세요</p>
+              <p className="text-sm text-text-secondary">영상, 오디오, 이미지, 자막 파일 지원</p>
+              <p className="text-xs text-text-secondary mt-1">외장하드 파일도 Finder에서 드래그하면 바로 가져올 수 있습니다</p>
+            </div>
+          </div>
+        )}
+
         {/* Hidden file input for import */}
         <input
           ref={fileInputRef}
           type="file"
           multiple
-          accept="video/*,audio/*,image/*,.srt,.ass,.ssa,.m4a,.wav,.aac"
           className="hidden"
           onChange={handleFileInputChange}
         />
@@ -2058,12 +2796,15 @@ export default function Home() {
           onExport={handleExportClick}
           onImport={handleImportClick}
           onOpenShortcuts={() => setShortcutsModalOpen(true)}
+          videoFile={currentVideoFile}
+          videoDuration={activeFileDuration}
+          clips={clips}
+          transcripts={transcripts}
         />
         <SecondaryToolbar
           onTabChange={setActiveTab}
           onSoundEffect={handleSoundEffect}
           onSticker={handleSticker}
-          onAutoColorCorrection={handleAutoColorCorrection}
           onAnimationEffect={handleAnimationEffect}
         />
         <div
@@ -2075,7 +2816,7 @@ export default function Home() {
           <div
             style={{ width: `${leftPct}%`, minWidth: 160 }}
             className="shrink-0 relative overflow-hidden"
-            onMouseDown={() => setActiveSection('library')}
+            onPointerDownCapture={() => setActiveSection('library')}
           >
             <SectionBorder active={activeSection === 'library'} />
             <LeftSidebar
@@ -2084,9 +2825,10 @@ export default function Home() {
               libraryItems={libraryItems}
               clips={clips}
               selectedLibraryIds={selectedLibraryIds}
-              onLibrarySelect={setSelectedLibraryIds}
+              onLibrarySelect={(ids: string[]) => { setSelectedLibraryIds(ids); if (ids.length > 0) setSelectedClipIdsSynced([]); }}
               onLibraryDelete={handleLibraryDelete}
               columns={libraryColumns}
+              isActive={activeSection === 'library'}
             />
           </div>
           {/* Left Divider */}
@@ -2104,17 +2846,17 @@ export default function Home() {
           </div>
           <div
             className="flex-1 min-w-0 min-h-0 relative"
-            onMouseDown={() => setActiveSection('viewer')}
+            onPointerDownCapture={() => setActiveSection('viewer')}
           >
             <SectionBorder active={activeSection === 'viewer'} />
           <Player
             videoUrl={currentVideoUrl}
             currentTime={isPlaying ? playbackTime : currentTime}
-            hoverTime={hoverTime}
+            hoverTime={isPlaying || hoverSuppressed ? null : hoverTime}
             selectedClipIds={selectedClipIds}
             clips={clips}
             isPlaying={isPlaying}
-            onPlayingChange={setIsPlaying}
+            onPlayingChange={handlePlayingChange}
             onTimeUpdate={handlePlaybackTimeUpdate}
             onSeek={handleSeek}
             onClipSelect={handleClipSelect}
@@ -2123,6 +2865,12 @@ export default function Home() {
             videoRefCallback={(ref) => { videoRef.current = ref; }}
             onPresetDrop={handlePresetDrop}
             onFileDrop={handlePlayerFileDrop}
+            onLibraryItemDrop={(libId: string) => {
+              const insertAt = clipsRef.current
+                .filter(c => c.trackIndex === 1)
+                .reduce((maxEnd, c) => Math.max(maxEnd, c.startTime + c.duration), 0);
+              handleClipAdd(null, 1, insertAt, libId);
+            }}
             isDraggingPlayhead={isDraggingPlayhead}
             viewerZoom={viewerZoom}
             onViewerZoomChange={setViewerZoom}
@@ -2151,7 +2899,7 @@ export default function Home() {
           <div
             style={{ width: `${rightPct}%`, minWidth: 160 }}
             className="shrink-0 relative overflow-hidden"
-            onMouseDown={() => setActiveSection('inspector')}
+            onPointerDownCapture={() => setActiveSection('inspector')}
           >
             <SectionBorder active={activeSection === 'inspector'} />
             <RightSidebar
@@ -2171,6 +2919,7 @@ export default function Home() {
               onAddSubtitleClips={handleAddSubtitleClips}
               onAddTextClip={handleAddTextClip}
               onExport={handleExportClick}
+              onResetViewerZoom={() => setViewerZoom(100)}
             />
           </div>
         </div>
@@ -2190,7 +2939,7 @@ export default function Home() {
         <div
           style={{ flex: `0 0 ${timelinePct}%`, minHeight: 120 }}
           className="relative flex flex-col"
-          onMouseDown={() => setActiveSection('timeline')}
+          onPointerDownCapture={() => setActiveSection('timeline')}
         >
           <SectionBorder active={activeSection === 'timeline'} />
           <Timeline
@@ -2214,6 +2963,9 @@ export default function Home() {
             onClipSelect={handleClipSelect}
             onClipDelete={handleClipDelete}
             onSplit={handleSplit}
+            onAutoSplit={handleAutoSplit}
+            onSceneSplit={handleSceneSplit}
+            onAutoColorCorrection={handleAutoColorCorrection}
             onUndo={handleUndo}
             onRedo={handleRedo}
             onSpeedChange={handleSpeedChange}

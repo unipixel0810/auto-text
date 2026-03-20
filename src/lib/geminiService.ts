@@ -28,31 +28,34 @@ export interface GeneratedSubtitle {
 
 function buildPrompt(transcripts: TranscriptItem[]): string {
   const transcriptText = transcripts
-    .map(t => `[${t.startTime.toFixed(1)}s - ${t.endTime.toFixed(1)}s] ${t.editedText || t.originalText}`)
+    .map(t => `[${(t.startTime ?? 0).toFixed(1)}s - ${(t.endTime ?? 0).toFixed(1)}s] ${t.editedText || t.originalText}`)
     .join('\n');
 
-  return `당신은 예능 PD입니다. 영상의 **핵심 메시지**에만 자막을 넣어 가독성을 높여주세요.
+  return `당신은 예능 PD입니다. 영상에 연출 자막(예능/상황/설명)을 넣어주세요.
 
 ## 원본 대본
 ${transcriptText}
 
-## 핵심 원칙: 적게, 임팩트 있게!
-모든 음성을 자막으로 만들지 마세요. 추임새, 중복, 의미 없는 발화는 삭제합니다.
+## 핵심 원칙
+- 대본(말자막)은 이미 별도로 있으므로 대본 내용을 반복/요약하지 마세요.
+- 대본과 같은 시간대에 겹쳐도 OK — 시스템이 자동으로 분리합니다.
 
-## 자막 유형 & 비율
-1. **ENTERTAINMENT** [15%] - 결정적 순간에만 크게 한 번 ("실화?? 🤯")
-2. **SITUATION** [15%] - 분위기 전환 시만 ("(분위기 급반전)")
-3. **EXPLANATION** [20%] - 정보 전달 구간만 ("⚡ 핵심 포인트!")
-4. **TRANSCRIPT** [50%] - 핵심 발언을 깔끔하게 정리
+## 자막 유형 3가지
+- **예능** (35%): 리액션/감탄 — "실화?? 🤯", "ㅋㅋ 진심?", "소름 돋았다"
+- **상황** (30%): 분위기 내레이션 — "[숨 참는 중]", "[갑자기 진지]"
+- **설명** (35%): 핵심 정보 — "무려 3배 차이", "★핵심 포인트★"
 
-## ⚠️ 필수 규칙
-- **7~12초에 하나씩** 자막 생성 (과하게 X)
-- 각 자막 최소 **2초 이상** 노출
-- **자막끼리 시간 겹침 금지** (동시 2줄 이상 X)
-- 10~25자 적당한 길이
-- ⛔ 텍스트에 시간 넣지 말 것!
+## 규칙
+- 2~3초에 하나씩 자막 생성
+- 각 자막 최소 3초 이상 노출
+- 자막끼리 시간 겹침 금지
+- ★ 영상 처음~끝까지 균등하게 분배하세요! 앞/뒤/중간에 몰리면 안 됩니다 ★
+- 전체 영상 시간의 30% 이하만 AI 자막으로 채우세요 (나머지는 대본이 나옵니다)
+- ⛔ 대본 반복 금지, 시간 넣지 말 것
 
-출력: [{"startTime": 0.0, "endTime": 2.5, "text": "자막", "type": "TRANSCRIPT", "reason": "이유"}]`;
+★★★ 모든 text는 한국어로만. ★★★
+type은 "예능", "상황", "설명" 중 하나:
+출력: [{"startTime": 0.0, "endTime": 3.5, "text": "자막내용", "type": "예능", "reason": "이유"}]`;
 }
 
 // ============================================
@@ -131,23 +134,39 @@ const RANDOM_STYLES = [
   { color: '#000000', backgroundColor: '#FF9900', strokeColor: '#000000', strokeWidth: 0 },
 ];
 
+// 한국어 → 영어 타입 매핑 (AI 응답은 한국어, 내부 시스템은 영어)
+const TYPE_KR_TO_EN: Record<string, string> = {
+  '예능': 'ENTERTAINMENT', '예능자막': 'ENTERTAINMENT',
+  '상황': 'SITUATION', '상황자막': 'SITUATION',
+  '설명': 'EXPLANATION', '설명자막': 'EXPLANATION',
+  '대본': 'TRANSCRIPT', '맥락': 'CONTEXT',
+};
+
+function normalizeType(raw: string): SubtitleType {
+  if (!raw) return 'TRANSCRIPT';
+  const upper = raw.toUpperCase();
+  if (['ENTERTAINMENT', 'SITUATION', 'EXPLANATION', 'CONTEXT', 'TRANSCRIPT'].includes(upper)) return upper as SubtitleType;
+  return (TYPE_KR_TO_EN[raw] as SubtitleType) || 'TRANSCRIPT';
+}
+
 export function convertToSubtitleItems(
   generated: GeneratedSubtitle[]
 ): SubtitleItem[] {
   return generated.map((item, index) => {
     // 랜덤 스타일 선택
     const randomStyle = RANDOM_STYLES[Math.floor(Math.random() * RANDOM_STYLES.length)];
-    
+    const normalizedType = normalizeType(item.type);
+
     return {
       id: `ai_${Date.now()}_${index}`,
       startTime: item.startTime,
       endTime: item.endTime,
       text: item.text,
-      type: item.type,
+      type: normalizedType,
       confidence: 0.9,
       style: randomStyle, // 랜덤 스타일 적용
       metadata: {
-        type: item.type,
+        type: normalizedType,
         summary: item.reason,
         detail: '',
         keywords: [],

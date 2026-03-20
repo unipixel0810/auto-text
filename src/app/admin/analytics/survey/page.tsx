@@ -44,9 +44,12 @@ export default function SurveyResultsPage() {
 
   useEffect(() => {
     fetch('/api/survey')
-      .then(r => r.json())
-      .then(d => setResponses(d.responses || []))
-      .catch(() => {})
+      .then(r => {
+        if (!r.ok) { console.error('Failed to fetch survey:', r.status); return null; }
+        return r.json();
+      })
+      .then(d => { if (d) setResponses(d?.responses ?? []); })
+      .catch((err) => { console.error('Failed to fetch survey:', err); })
       .finally(() => setLoading(false));
   }, []);
 

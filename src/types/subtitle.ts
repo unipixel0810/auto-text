@@ -75,7 +75,7 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   x: 50,
   y: 85,
   fontFamily: 'PaperlogyExtraBold, sans-serif',
-  fontSize: 48,
+  fontSize: 35,
   fontWeight: 800,
   color: '#FFFFFF',
   backgroundColor: 'transparent',
@@ -92,34 +92,34 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
 export const TYPE_STYLE_PRESETS: Record<SubtitleType, Partial<SubtitleStyle>> = {
   ENTERTAINMENT: {
     color: '#FFE066',
-    fontSize: 56,
+    fontSize: 42,
     fontWeight: 800,
     strokeColor: '#FF6B6B',
     strokeWidth: 3,
   },
   SITUATION: {
     color: '#A8E6CF',
-    fontSize: 40,
+    fontSize: 32,
     fontWeight: 500,
     y: 15,
     backgroundColor: 'rgba(0,0,0,0.6)',
   },
   EXPLANATION: {
     color: '#88D8FF',
-    fontSize: 44,
+    fontSize: 36,
     fontWeight: 600,
     strokeColor: '#0066CC',
   },
   CONTEXT: {
     color: '#C9A0FF',
-    fontSize: 42,
+    fontSize: 34,
     fontWeight: 600,
     strokeColor: '#6B21A8',
     backgroundColor: 'rgba(107,33,168,0.3)',
   },
   TRANSCRIPT: {
     color: '#FFFFFF',
-    fontSize: 42,
+    fontSize: 35,
     fontWeight: 500,
   },
 };
@@ -188,6 +188,12 @@ export interface SubtitleItem {
 // 원본 대본 (Transcript) 아이템
 // ============================================
 
+export interface WordTiming {
+  word: string;
+  startTime: number;
+  endTime: number;
+}
+
 export interface TranscriptItem {
   id: string;
   startTime: number;
@@ -202,6 +208,8 @@ export interface TranscriptItem {
   color?: string;
   /** 자막 테두리 색상 */
   strokeColor?: string;
+  /** STT 단어별 타이밍 (음성 싱크용) */
+  words?: WordTiming[];
 }
 
 // ============================================

@@ -24,10 +24,16 @@ export default function DemographicsPage() {
     const load = async () => {
       setLoading(true);
       try {
-        const res = await fetch(`/api/analytics/query?type=demographics&days=${days}`);
+        const res = await fetch(`/api/analytics/query?action=demographics&days=${days}`);
+        if (!res.ok) {
+          console.error('Failed to fetch demographics:', res.status);
+          setData(null);
+          return;
+        }
         const json = await res.json();
         setData(json);
-      } catch {
+      } catch (err) {
+        console.error('Failed to fetch demographics:', err);
         setData(null);
       } finally {
         setLoading(false);
@@ -41,16 +47,16 @@ export default function DemographicsPage() {
     { name: '35-44', value: 0 }, { name: '45-54', value: 0 },
     { name: '55+', value: 0 },
   ];
-  const genderData: { name: string; value: number }[] = data?.gender || [
+  const genderData: { name: string; value: number }[] = data?.genders || [
     { name: '남성', value: 0 }, { name: '여성', value: 0 }, { name: '미확인', value: 0 },
   ];
   const languages: { name: string; value: number }[] = data?.languages || [];
   const resolutions: { name: string; value: number }[] = data?.screenResolutions || [];
   const browsers: { name: string; value: number }[] = data?.browsers || [];
-  const osList: { name: string; value: number }[] = data?.os || [];
+  const osList: { name: string; value: number }[] = data?.operatingSystems || [];
   const connectionTypes: { name: string; value: number }[] = data?.connectionTypes || [];
-  const touchPct: number = data?.touchSupportPct ?? 0;
-  const cookiePct: number = data?.cookieEnabledPct ?? 0;
+  const touchPct: number = data?.touchSupport ?? 0;
+  const cookiePct: number = data?.cookiesEnabled ?? 0;
 
   return (
     <div className="min-h-screen bg-[#0d0d14] text-white">

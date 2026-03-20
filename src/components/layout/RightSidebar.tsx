@@ -1,13 +1,18 @@
 'use client';
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { transcribeVideo } from '@/lib/sttService';
+import { transcribeVideo, type STTProvider } from '@/lib/sttService';
+import { splitSubtitles } from '@/lib/subtitleSplitter';
 import { parseSubtitleFile } from '@/lib/subtitleParser';
-import { generateSubtitlesFromAudio, type TranscriptDataForAI } from '@/lib/geminiAudioService';
+import { generateSubtitlesFromAudio, type TranscriptDataForAI, type MediaRange } from '@/lib/geminiAudioService';
+import { orchestrate, removeOverlaps, AI_STYLE_COLORS } from '@/lib/subtitleOrchestrator';
 import type { TranscriptItem, SubtitleItem, SubtitleAnimation } from '@/types/subtitle';
 import type { VideoClip } from '@/types/video';
+import { saveSttCorrection, loadSttDictionary, applySttCorrections } from '@/lib/sttCorrections';
+
 import { SUBTITLE_PRESETS, FONT_FAMILIES, type SubtitlePreset, loadCustomPresets, addCustomPreset, deleteCustomPreset } from '@/lib/subtitlePresets';
 import UpgradeModal from '@/components/payment/UpgradeModal';
+import ContextMenu from '@/components/ui/ContextMenu';
 import SubtitleAnimationPanel from '@/components/editor/SubtitleAnimationPanel';
 
 interface RightSidebarProps {
@@ -27,9 +32,10 @@ interface RightSidebarProps {
   onAddSubtitleClips?: (items: TranscriptItem[], trackIndex?: number, replaceTrack?: boolean) => void;
   onAddTextClip?: (preset: SubtitlePreset) => void;
   onExport?: () => void;
+  onResetViewerZoom?: () => void;
 }
 
-const TranscriptItem = React.memo(({ t, isActive, isSelected, onSelect, onEdit, onDragStart, onMergeWithPrevious, onSplitAtCursor }: {
+const TranscriptItem = React.memo(({ t, isActive, isSelected, onSelect, onEdit, onDragStart, onMergeWithPrevious, onSplitAtCursor, onContextMenu }: {
   t: TranscriptItem,
   isActive: boolean,
   isSelected: boolean,
@@ -38,26 +44,44 @@ const TranscriptItem = React.memo(({ t, isActive, isSelected, onSelect, onEdit, 
   onDragStart: (e: React.DragEvent, text: string) => void,
   onMergeWithPrevious?: (id: string) => void,
   onSplitAtCursor?: (id: string, cursorPos: number) => void,
+  onContextMenu?: (e: React.MouseEvent, id: string) => void,
 }) => {
   const text = t.editedText || t.originalText;
+  // 자막 유형별 색상 (예능=노랑, 상황=초록, 설명=파랑, 대본=기본)
+  const typeColor = t.color || '#FFFFFF';
+  const isAiSubtitle = t.id?.startsWith('gem_') || t.id?.startsWith('intgem_') || t.id?.startsWith('aigap_');
+  const typeLabel = typeColor === '#FFE066' ? '예능' : typeColor === '#A8E6CF' ? '상황' : typeColor === '#88D8FF' ? '설명' : typeColor === '#C9A0FF' ? '맥락' : null;
+  // 편집 완료 시 원본과 다르면 교정 사전에 저장
+  const handleBlur = useCallback(() => {
+    const current = t.editedText || t.originalText;
+    if (t.originalText && current !== t.originalText) {
+      saveSttCorrection(t.originalText, current);
+    }
+  }, [t.originalText, t.editedText]);
   return (
     <div
       draggable
       onDragStart={(e) => onDragStart(e, text)}
       onClick={() => onSelect(t.id, t.startTime)}
+      onContextMenu={(e) => onContextMenu?.(e, t.id)}
       className={`group p-3 rounded-xl border transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] ${isActive
         ? 'bg-primary/10 border-primary/50 shadow-lg shadow-primary/10'
         : 'bg-white/5 border-white/5 hover:bg-white/10 hover:border-white/10'
         }`}
+      style={isAiSubtitle ? { borderLeftWidth: 3, borderLeftColor: typeColor } : undefined}
     >
       <div className="flex items-start gap-3">
-        <div className={`mt-1 h-2 w-2 rounded-full shrink-0 transition-all ${isActive ? 'bg-primary shadow-[0_0_8px_rgba(0,212,212,0.6)] animate-pulse' : 'bg-gray-700'}`} />
+        <div
+          className={`mt-1 h-2 w-2 rounded-full shrink-0 transition-all ${isActive ? 'shadow-[0_0_8px_rgba(0,212,212,0.6)] animate-pulse' : ''}`}
+          style={{ backgroundColor: isActive ? (isAiSubtitle ? typeColor : 'rgb(0,212,212)') : (isAiSubtitle ? typeColor : '#374151') }}
+        />
         <div className="flex-1 min-w-0">
           {isSelected ? (
             <textarea
               rows={2}
               value={text}
               onChange={(e) => onEdit(t.id, e.target.value)}
+              onBlur={handleBlur}
               onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
                 if (e.key === 'Backspace' && onMergeWithPrevious) {
@@ -84,6 +108,14 @@ const TranscriptItem = React.memo(({ t, isActive, isSelected, onSelect, onEdit, 
             <span className="text-[9px] text-gray-500 font-mono tracking-tighter">
               {fmtTimestamp(t.startTime)}
             </span>
+            {typeLabel && (
+              <span
+                className="text-[9px] px-1.5 py-0.5 rounded-full font-medium"
+                style={{ backgroundColor: typeColor + '30', color: typeColor }}
+              >
+                {typeLabel}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -93,15 +125,19 @@ const TranscriptItem = React.memo(({ t, isActive, isSelected, onSelect, onEdit, 
 
 const RightSidebar = React.memo(({
   transcripts = [], subtitles = [], currentTime = 0, selectedClip = null, selectedClipIds = [], videoFile = null, videoDuration, clips = [],
-  onTranscriptsUpdate, onSubtitlesUpdate, onSeek, onClipUpdate, onClipsBatchUpdate, onAddSubtitleClips, onAddTextClip, onExport,
+  onTranscriptsUpdate, onSubtitlesUpdate, onSeek, onClipUpdate, onClipsBatchUpdate, onAddSubtitleClips, onAddTextClip, onExport, onResetViewerZoom,
 }: RightSidebarProps) => {
-  const [activeTab, setActiveTab] = useState<'details' | 'export' | 'caption'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'caption'>('details');
   const [scale, setScale] = useState(selectedClip?.scale ?? 100);
   const [positionX, setPositionX] = useState(selectedClip?.positionX ?? 0);
   const [positionY, setPositionY] = useState(selectedClip?.positionY ?? 0);
   const [rotation, setRotation] = useState(selectedClip?.rotation ?? 0);
   const [opacity, setOpacity] = useState(selectedClip?.opacity ?? 100);
   const [blendMode, setBlendMode] = useState(selectedClip?.blendMode ?? false);
+  const [brightness, setBrightness] = useState(selectedClip?.brightness ?? 100);
+  const [contrast, setContrast] = useState(selectedClip?.contrast ?? 100);
+  const [saturate, setSaturate] = useState(selectedClip?.saturate ?? 100);
+  const [temperature, setTemperature] = useState(selectedClip?.temperature ?? 0);
   const [selectedPresetId, setSelectedPresetId] = useState<number>(1);
 
   // Quota and Payment
@@ -114,6 +150,8 @@ const RightSidebar = React.memo(({
   const [isIntegratedGenerating, setIsIntegratedGenerating] = useState(false);
   const [integratedProgress, setIntegratedProgress] = useState(0);
   const [integratedStatus, setIntegratedStatus] = useState('');
+  const [customAIPrompt, setCustomAIPrompt] = useState('');
+  const [transcriptContextMenu, setTranscriptContextMenu] = useState<{ x: number; y: number; id: string } | null>(null);
 
   useEffect(() => {
     if (selectedClip) {
@@ -123,6 +161,10 @@ const RightSidebar = React.memo(({
       setRotation(selectedClip.rotation ?? 0);
       setOpacity(selectedClip.opacity ?? 100);
       setBlendMode(selectedClip.blendMode ?? false);
+      setBrightness(selectedClip.brightness ?? 100);
+      setContrast(selectedClip.contrast ?? 100);
+      setSaturate(selectedClip.saturate ?? 100);
+      setTemperature(selectedClip.temperature ?? 0);
     }
   }, [selectedClip]);
 
@@ -164,6 +206,10 @@ const RightSidebar = React.memo(({
   const [selectedTranscriptId, setSelectedTranscriptId] = useState<string | null>(null);
   const [userScript, setUserScript] = useState('');
   const [aiScript, setAiScript] = useState('');
+  // Gemini STT 확정 — 환청 없이 정교한 한국어 분석
+  const sttProvider: STTProvider = 'gemini';
+  // AI 연출자막 엔진: Gemini 고정
+  const aiSubtitleProvider = 'gemini';
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcriptionProgress, setTranscriptionProgress] = useState(0);
   const [transcriptionStatus, setTranscriptionStatus] = useState('');
@@ -188,32 +234,116 @@ const RightSidebar = React.memo(({
     const mainClips = (clips || []).filter(c => c.trackIndex === 1).sort((a, b) => a.startTime - b.startTime);
     if (mainClips.length === 0) return items;
 
+    // ★ 클립이 1개이고 trimStart=0이면 → 전체 영상을 그대로 사용 중 → 리매핑 불필요
+    if (mainClips.length === 1) {
+      const clip = mainClips[0];
+      const trimStart = clip.trimStart ?? 0;
+      if (trimStart === 0 && clip.startTime === 0) {
+        console.log('[클립 필터] 단일 클립, 트림 없음 → 리매핑 스킵');
+        return items;
+      }
+    }
+
+    // ★ 장면 분할만 했고 삭제 안 한 경우 체크: 모든 클립이 연속적이고 전체를 커버하면 리매핑 스킵
+    const allSimple = mainClips.every(c => (c.speed || 1) === 1);
+    if (allSimple && mainClips.length > 0) {
+      let isContiguous = true;
+      for (let i = 1; i < mainClips.length; i++) {
+        const prevEnd = (mainClips[i - 1].trimStart ?? 0) + mainClips[i - 1].duration;
+        const currStart = mainClips[i].trimStart ?? 0;
+        // 0.1초 이내 차이는 연속으로 간주
+        if (Math.abs(currStart - prevEnd) > 0.1) { isContiguous = false; break; }
+      }
+      const firstTrim = mainClips[0].trimStart ?? 0;
+      if (isContiguous && firstTrim < 0.1 && mainClips[0].startTime < 0.1) {
+        // 장면 분할만 하고 삭제/이동 안 함 → 미디어 시간 ≈ 타임라인 시간
+        console.log('[클립 필터] 연속 클립, 트림=0 → 리매핑 스킵 (장면 분할만 된 상태)');
+        return items;
+      }
+    }
+
+    // ★ 디버그 로그
+    let totalCoverage = 0;
+    for (const clip of mainClips) {
+      const speed = clip.speed || 1;
+      totalCoverage += clip.duration * speed;
+    }
+    console.log(`[클립 필터] 클립 ${mainClips.length}개, 미디어 커버리지: ${totalCoverage.toFixed(1)}초`);
+    mainClips.forEach((c, i) => {
+      const speed = c.speed || 1;
+      const ms = c.trimStart ?? 0;
+      const me = ms + (c.duration * speed);
+      console.log(`  클립${i}: timeline=${c.startTime.toFixed(1)}~${(c.startTime + c.duration).toFixed(1)}, media=${ms.toFixed(1)}~${me.toFixed(1)}`);
+    });
+
     const filtered: T[] = [];
     for (const item of items) {
+      // 아이템의 중간점 기준으로 매칭 (시작점만으로 매칭하면 경계에서 누락)
+      const itemMid = (item.startTime + item.endTime) / 2;
+      let bestClip: (typeof mainClips)[0] | null = null;
+      let bestDist = Infinity;
+
       for (const clip of mainClips) {
         const speed = clip.speed || 1;
         const mediaStart = clip.trimStart ?? 0;
-        // Media duration covered = timeline duration * speed
         const mediaEnd = mediaStart + (clip.duration * speed);
 
-        // 아이템이 이 클립의 미디어 범위 안에 있는지 확인
-        if (item.startTime >= mediaStart && item.startTime < mediaEnd) {
-          // 미디어 시간 → 타임라인 시간으로 변환 (account for speed)
-          const timelineStart = clip.startTime + (item.startTime - mediaStart) / speed;
-          const timelineEnd = Math.min(
-            clip.startTime + clip.duration,
-            clip.startTime + (item.endTime - mediaStart) / speed,
-          );
-          if (timelineEnd > timelineStart) {
-            filtered.push({ ...item, startTime: timelineStart, endTime: timelineEnd });
-          }
+        // 범위 안에 있으면 바로 매칭
+        if (itemMid >= mediaStart - 0.05 && itemMid <= mediaEnd + 0.05) {
+          bestClip = clip;
+          bestDist = 0;
           break;
         }
+        // 가장 가까운 클립 추적 (경계 근처 아이템용)
+        const dist = Math.min(Math.abs(itemMid - mediaStart), Math.abs(itemMid - mediaEnd));
+        if (dist < bestDist) { bestDist = dist; bestClip = clip; }
       }
+
+      // 범위 안(dist=0) 또는 가장 가까운 클립이 2초 이내면 매칭
+      if (bestClip && bestDist <= 2.0) {
+        const speed = bestClip.speed || 1;
+        const mediaStart = bestClip.trimStart ?? 0;
+        const timelineStart = bestClip.startTime + (Math.max(0, item.startTime - mediaStart)) / speed;
+        const timelineEnd = Math.min(
+          bestClip.startTime + bestClip.duration,
+          bestClip.startTime + (Math.max(0, item.endTime - mediaStart)) / speed,
+        );
+        if (timelineEnd > timelineStart) {
+          filtered.push({ ...item, startTime: timelineStart, endTime: timelineEnd });
+        }
+      }
+      // 매칭 안 되면 해당 항목은 타임라인에 없는 구간이므로 제외
     }
+    // ★ 커버리지 확인: 마지막 세그먼트가 타임라인 끝까지 도달하는지 로그
+    const timelineEnd = mainClips.reduce((max, c) => Math.max(max, c.startTime + c.duration), 0);
+    const lastSeg = filtered.length > 0 ? filtered[filtered.length - 1] : null;
+    const coverage = lastSeg ? (lastSeg.endTime / timelineEnd * 100).toFixed(1) : '0';
+    console.log(`[클립 필터] ${items.length}개 → ${filtered.length}개 매핑 (커버리지: ${coverage}%, 타임라인 끝: ${timelineEnd.toFixed(1)}초, 마지막 세그: ${lastSeg?.endTime.toFixed(1) ?? 'N/A'}초)`);
     return filtered;
   }, [clips]);
 
+  // 타임라인 트랙1 클립에서 실제 사용 중인 미디어 구간 추출
+  // ★ 각 클립의 trimStart ~ trimStart + duration*speed 전체를 빠짐없이 커버
+  const getMediaRangesFromClips = useCallback((): MediaRange[] | undefined => {
+    const mainClips = (clips || []).filter(c => c.trackIndex === 1);
+    if (mainClips.length === 0) return undefined;
+    return mainClips.map(c => {
+      const speed = c.speed || 1;
+      const mediaStart = c.trimStart ?? 0;
+      // trimEnd가 있으면 사용, 없으면 duration*speed로 계산
+      const mediaEnd = c.trimEnd != null
+        ? c.trimEnd
+        : mediaStart + c.duration * speed;
+      return { start: mediaStart, end: mediaEnd };
+    });
+  }, [clips]);
+
+  // 타임라인의 실제 끝 시간 (클립 기준) — videoDuration(원본 파일 길이)이 아닌 타임라인 길이
+  const getTimelineEnd = useCallback((): number => {
+    const mainClips = (clips || []).filter(c => c.trackIndex === 1);
+    if (mainClips.length === 0) return videoDuration || 0;
+    return Math.max(...mainClips.map(c => c.startTime + c.duration));
+  }, [clips, videoDuration]);
 
   // Handle SRT/ASS file import
   // Stabilized callbacks for TranscriptItem performance
@@ -299,12 +429,54 @@ const RightSidebar = React.memo(({
     setSelectedTranscriptId(second.id);
   }, [transcripts, onTranscriptsUpdate]);
 
+  const handleTranscriptDelete = useCallback((id: string) => {
+    onTranscriptsUpdate?.(transcripts.filter(t => t.id !== id));
+    if (selectedTranscriptId === id) setSelectedTranscriptId(null);
+  }, [transcripts, onTranscriptsUpdate, selectedTranscriptId]);
+
+  const handleTranscriptContextMenu = useCallback((e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setTranscriptContextMenu({ x: e.clientX, y: e.clientY, id });
+  }, []);
+
   const handleAutoTranscribe = useCallback(async () => {
-    if (!videoFile) { alert('비디오 파일이 필요합니다.'); return; }
     setIsTranscribing(true); setTranscriptionProgress(0); setTranscriptionStatus('음성 인식 준비 중...');
     transcriptionAbortController.current = new AbortController();
+
+    // ★ 타임라인 클립에서 영상 가져오기 (videoFile보다 우선)
+    let safeFile: File | null = null;
+    const videoClip = (clips || []).find(c => c.trackIndex === 1 && c.url);
+    if (videoClip?.url) {
+      try {
+        const res = await fetch(videoClip.url);
+        if (res.ok) {
+          const blob = await res.blob();
+          safeFile = new File([blob], videoClip.name || 'video.mp4', { type: blob.type || 'video/mp4' });
+          console.log('[대본 분석] 타임라인 클립에서 영상 로드 성공');
+        }
+      } catch { /* fallback to videoFile below */ }
+    }
+    // 클립 URL 실패 시 videoFile 폴백
+    if (!safeFile && videoFile) {
+      try {
+        const buf = await videoFile.arrayBuffer();
+        safeFile = new File([buf], videoFile.name, { type: videoFile.type, lastModified: videoFile.lastModified });
+        console.log('[대본 분석] videoFile에서 영상 로드 (폴백)');
+      } catch { /* handled below */ }
+    }
+    if (!safeFile) {
+      alert('비디오 파일이 필요합니다. 파일을 다시 불러온 뒤 시도해주세요.');
+      setIsTranscribing(false);
+      return;
+    }
+
     try {
-      const result = await transcribeVideo(videoFile, 'backend-proxy', (status) => {
+      // ★ 타임라인 클립의 미디어 범위만 분석 (불필요한 구간 제외)
+      const sttMediaRanges = getMediaRangesFromClips();
+      console.log(`[대본 분석] mediaRanges:`, sttMediaRanges);
+      console.log(`[대본 분석] STT 엔진: ${sttProvider}`);
+      const result = await transcribeVideo(safeFile, 'backend-proxy', (status) => {
         setTranscriptionStatus(status);
         if (status.includes('오디오 추출')) setTranscriptionProgress(20);
         else if (status.includes('파일 처리')) setTranscriptionProgress(40);
@@ -313,30 +485,43 @@ const RightSidebar = React.memo(({
           if (m) setTranscriptionProgress(40 + (parseInt(m[1]) / parseInt(m[2])) * 50);
         } else if (status.includes('결과 병합')) setTranscriptionProgress(90);
         else if (status.includes('완료')) setTranscriptionProgress(100);
-      });
-      const newT: TranscriptItem[] = [];
-      let seg: { words: typeof result.words; startTime: number } | null = null;
-      for (const word of result.words) {
-        if (!seg || word.startTime - seg.startTime >= 3) {
-          if (seg) {
-            newT.push({ id: `t_${Date.now()}_${newT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
-          }
-          seg = { words: [word], startTime: word.startTime };
-        } else seg.words.push(word);
+      }, sttMediaRanges, sttProvider);
+      // subtitleSplitter를 사용하여 문장 단위로 분할
+      console.log(`[대본 분석] STT 결과: words=${result.words.length}, sentences=${result.sentences?.length ?? 0}, fullText="${result.fullText.slice(0, 100)}"`);
+      const segments = splitSubtitles(result);
+      console.log(`[대본 분석] splitSubtitles 결과: ${segments.length}개 세그먼트`);
+      if (segments.length === 0) {
+        console.warn('[대본 분석] ⚠️ 세그먼트가 0개! STT는 성공했으나 분할 결과 없음');
       }
-      if (seg) newT.push({ id: `t_${Date.now()}_${newT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
+      // 교정 사전 로드 → STT 결과에 자동 적용
+      const dict = await loadSttDictionary();
+      const newT: TranscriptItem[] = segments.map((seg, i) => {
+        const corrected = dict.length > 0 ? applySttCorrections(seg.text, dict) : seg.text;
+        return {
+          id: `t_${Date.now()}_${i}`,
+          startTime: seg.startTime,
+          endTime: seg.endTime,
+          originalText: seg.text,
+          editedText: corrected,
+          isEdited: corrected !== seg.text,
+          words: seg.words.map(w => ({ word: w.word, startTime: w.startTime, endTime: w.endTime })),
+        };
+      });
 
-      // 트림된 클립 범위에 맞게 필터링 (잘라낸 부분 제외)
-      const mappedT = filterResultsToClipRanges(newT);
-      const finalT = mappedT.length > 0 ? mappedT : newT; // 클립이 없으면 원본 사용
-      onTranscriptsUpdate?.([...transcripts, ...finalT]);
+      // ★ 미디어 시간 → 타임라인 시간 변환 (장면 분할/트림 반영)
+      const mapped = filterResultsToClipRanges(newT);
+      console.log(`[대본 분석] ${newT.length}개 → 매핑 후 ${mapped.length}개 대본`);
+
+      // 대본만 교체 (AI 자막 잔여물 방지 — 대본 전용 모드)
+      onTranscriptsUpdate?.(mapped);
 
       // Auto-add to timeline (Dialogue -> Track 0)
-      if (onAddSubtitleClips && finalT.length > 0) {
-        onAddSubtitleClips(finalT, 0);
+      if (onAddSubtitleClips && mapped.length > 0) {
+        onAddSubtitleClips(mapped, 0, true);
       }
 
       setTranscriptionStatus('완료!');
+      onResetViewerZoom?.();
       setTimeout(() => { setIsTranscribing(false); setTranscriptionProgress(0); setTranscriptionStatus(''); }, 2000);
     } catch (error: any) {
       if (error.message === 'PAYMENT_REQUIRED') {
@@ -346,7 +531,7 @@ const RightSidebar = React.memo(({
       }
       setIsTranscribing(false); setTranscriptionProgress(0); setTranscriptionStatus('');
     }
-  }, [videoFile, transcripts, onTranscriptsUpdate, filterResultsToClipRanges]);
+  }, [videoFile, clips, transcripts, sttProvider, onTranscriptsUpdate, onAddSubtitleClips, onResetViewerZoom, filterResultsToClipRanges, getMediaRangesFromClips]);
 
   const handleCancelTranscription = useCallback(() => {
     transcriptionAbortController.current?.abort();
@@ -358,53 +543,108 @@ const RightSidebar = React.memo(({
     setIsGeminiGenerating(false); setGeminiProgress(0); setGeminiStatus('');
   }, []);
 
-  // Gemini Audio-based subtitle generation (creative mode if transcripts exist)
+  // AI 연출 자막 전용 — 기존 대본은 건드리지 않고 AI 자막만 생성/교체
   const handleGeminiAudioGenerate = useCallback(async () => {
-    if (!videoFile) { alert('비디오 파일이 필요합니다.'); return; }
+    const hasTranscripts = transcripts.length > 0;
 
     geminiAbortController.current = new AbortController();
-    setIsGeminiGenerating(true); setGeminiProgress(0); setGeminiStatus('시작...');
-
-    // If transcripts exist, use creative mode (don't clear them)
-    const hasTranscripts = transcripts.length > 0;
-    if (!hasTranscripts) {
-      onTranscriptsUpdate?.([]);
-    }
+    setIsGeminiGenerating(true); setGeminiProgress(0); setGeminiStatus('AI 연출 자막 생성 중 (Gemini)...');
     onSubtitlesUpdate?.([]);
 
     try {
-      const options = hasTranscripts
-        ? {
-            mode: 'creative' as const,
-            transcriptData: transcripts.map(t => ({
-              startTime: t.startTime,
-              endTime: t.endTime,
-              text: t.editedText || t.originalText,
+      let results: { start_time: number; end_time: number; text: string; style_type: string }[];
+
+      // 텍스트 기반 Gemini AI 자막 생성 (오디오 실패 시 fallback)
+      const genTextBased = async () => {
+        if (!hasTranscripts) throw new Error('대본이 필요합니다. 먼저 대본을 생성하세요.');
+        setGeminiStatus('Gemini로 대본 분석 중...');
+        const resp = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transcripts: transcripts.map(t => ({
+              startTime: t.startTime, endTime: t.endTime, text: t.editedText || t.originalText,
             })),
-            duration: videoDuration,
+            customPrompt: customAIPrompt || undefined,
+          }),
+          signal: geminiAbortController.current?.signal,
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ error: resp.statusText }));
+          throw new Error(err?.error || `Gemini AI 자막 생성 실패 (${resp.status})`);
+        }
+        const data = await resp.json();
+        return (data.subtitles || []).map((r: any) => ({
+          start_time: r.startTime ?? r.start_time ?? r.start ?? 0,
+          end_time: r.endTime ?? r.end_time ?? r.end ?? 0,
+          text: r.text || '', style_type: r.type || r.style_type || '상황',
+        }));
+      };
+
+      // Gemini: 오디오 기반 + 실패 시 텍스트 기반 fallback
+      let geminiFile: File | null = null;
+      const geminiClip = (clips || []).find(c => c.trackIndex === 1 && c.url);
+      if (geminiClip?.url) {
+        try {
+          const res = await fetch(geminiClip.url);
+          if (res.ok) {
+            const blob = await res.blob();
+            geminiFile = new File([blob], geminiClip.name || 'video.mp4', { type: blob.type || 'video/mp4' });
           }
-        : { duration: videoDuration };
+        } catch { /* fallback */ }
+      }
+      if (!geminiFile && videoFile) geminiFile = videoFile;
 
-      const rawResults = await generateSubtitlesFromAudio(videoFile, 'backend-proxy', (pct, msg) => {
-        setGeminiProgress(pct);
-        setGeminiStatus(msg);
-      }, geminiAbortController.current.signal, options);
+      if (geminiFile) {
+        try {
+          const options = hasTranscripts
+            ? {
+                mode: 'creative' as const,
+                transcriptData: transcripts.map(t => ({ startTime: t.startTime, endTime: t.endTime, text: t.editedText || t.originalText })),
+                duration: videoDuration, mediaRanges: getMediaRangesFromClips(), customPrompt: customAIPrompt,
+              }
+            : { duration: videoDuration, mediaRanges: getMediaRangesFromClips(), customPrompt: customAIPrompt };
 
-      // 트림된 클립 범위에 맞게 필터링 (잘라낸 구간 제외)
-      const mappedResults = filterResultsToClipRanges(
-        rawResults.map(r => ({ ...r, startTime: r.start_time, endTime: r.end_time }))
-      );
-      const results = mappedResults.length > 0
-        ? mappedResults.map(r => ({ ...r, start_time: r.startTime, end_time: r.endTime }))
-        : rawResults;
+          const rawResults = await generateSubtitlesFromAudio(geminiFile, 'backend-proxy', (pct, msg) => {
+            setGeminiProgress(pct); setGeminiStatus(msg);
+          }, geminiAbortController.current.signal, options);
 
-      // Separate by type with colors (supports both old "예능자막" and new "예능" formats)
-      const entertainmentItems: TranscriptItem[] = [];
-      const situationItems: TranscriptItem[] = [];
-      const explanationItems: TranscriptItem[] = [];
-      const contextItems: TranscriptItem[] = [];
+          const mappedResults = filterResultsToClipRanges(
+            rawResults.map(r => ({ ...r, startTime: r.start_time, endTime: r.end_time }))
+          );
+          results = mappedResults.length > 0
+            ? mappedResults.map(r => ({ ...r, start_time: r.startTime, end_time: r.endTime, text: r.text ?? (r as any).originalText ?? '', style_type: (r as any).style_type ?? '상황' }))
+            : rawResults;
 
-      results.forEach((r, i) => {
+          // 결과 0개 → 텍스트 기반 재시도
+          if (results.length === 0 && hasTranscripts) {
+            console.warn('[AI 연출] Gemini 오디오 결과 0개 → 텍스트 fallback');
+            setGeminiStatus('오디오 분석 결과 없음, 텍스트 기반 재시도...');
+            results = await genTextBased();
+          }
+        } catch (audioErr: any) {
+          if (audioErr.message === 'PAYMENT_REQUIRED') throw audioErr;
+          if (audioErr.name === 'AbortError') throw audioErr;
+          console.warn('[AI 연출] Gemini 오디오 실패, 텍스트 fallback:', audioErr.message);
+          setGeminiStatus('오디오 분석 실패, 텍스트 기반으로 전환...');
+          results = await genTextBased();
+        }
+      } else if (hasTranscripts) {
+        results = await genTextBased();
+      } else {
+        alert('비디오 파일이 필요합니다.'); setIsGeminiGenerating(false); return;
+      }
+      setGeminiProgress(90);
+      console.log(`[AI 연출] API 결과: ${results.length}개`, results.slice(0, 3));
+
+      if (results.length === 0) {
+        alert('AI가 자막을 생성하지 못했습니다. 다시 시도해주세요.');
+        setIsGeminiGenerating(false); setGeminiProgress(0); setGeminiStatus('');
+        return;
+      }
+
+      // 예능/상황/설명 분류
+      const aiItems: TranscriptItem[] = results.map((r, i) => {
         const base: TranscriptItem = {
           id: `gem_${Date.now()}_${i}`,
           startTime: r.start_time,
@@ -416,53 +656,48 @@ const RightSidebar = React.memo(({
           strokeColor: '#000000',
         };
         const st = r.style_type;
-        if (st === '예능자막' || st === '예능') {
-          entertainmentItems.push({ ...base, color: '#FFE066', strokeColor: '#FF6B6B' });
-        } else if (st === '상황자막' || st === '상황') {
-          situationItems.push({ ...base, color: '#A8E6CF' });
-        } else if (st === '설명자막' || st === '설명') {
-          explanationItems.push({ ...base, color: '#88D8FF', strokeColor: '#0066CC' });
-        } else if (st === '맥락') {
-          contextItems.push({ ...base, color: '#C9A0FF', strokeColor: '#6B21A8' });
-        } else {
-          situationItems.push({ ...base, color: '#A8E6CF' });
-        }
+        if (st === '예능자막' || st === '예능') return { ...base, color: '#FFE066', strokeColor: '#FF6B6B' };
+        if (st === '상황자막' || st === '상황') return { ...base, color: '#A8E6CF' };
+        if (st === '설명자막' || st === '설명') return { ...base, color: '#88D8FF', strokeColor: '#0066CC' };
+        if (st === '맥락') return { ...base, color: '#C9A0FF', strokeColor: '#6B21A8' };
+        return { ...base, color: '#A8E6CF' };
       });
 
-      const allNewT = [...entertainmentItems, ...situationItems, ...explanationItems, ...contextItems];
-      // Remove transcript segments that overlap with AI subtitles
-      const filteredTranscripts = hasTranscripts ? removeOverlappingTranscripts(transcripts, allNewT) : [];
-      onTranscriptsUpdate?.([...filteredTranscripts, ...allNewT]);
+      // AI 자막 골고루 분배 + AI 자막 구간의 대본 제거
+      const timelineEnd = getTimelineEnd();
+      console.log(`[AI 연출] orchestrate 입력: 대본 ${hasTranscripts ? transcripts.length : 0}개, AI ${aiItems.length}개, timelineEnd=${timelineEnd}`);
+      const { dialogueItems: trimmedDialogue, aiItems: finalAi } = orchestrate(
+        hasTranscripts ? transcripts : [],
+        aiItems,
+        timelineEnd,
+        clips,
+      );
+      console.log(`[AI 연출] orchestrate 결과: 대본=${trimmedDialogue.length}, AI=${finalAi.length}`);
 
-      const newSubs: SubtitleItem[] = results.map((r, i) => {
-        const st = r.style_type;
-        const type = (st === '예능자막' || st === '예능') ? 'ENTERTAINMENT' as const
-          : (st === '설명자막' || st === '설명') ? 'EXPLANATION' as const
-          : st === '맥락' ? 'CONTEXT' as const
-          : 'SITUATION' as const;
-        return {
-          id: `gemsub_${Date.now()}_${i}`,
-          startTime: r.start_time,
-          endTime: r.end_time,
-          text: r.text,
-          type,
-          confidence: 0.9,
-        };
-      });
+      const effectiveAi = finalAi.length > 0 ? finalAi : aiItems;
+
+      // ★ AI 자막 구간의 대본은 제거된 trimmedDialogue + AI 자막 합침
+      onTranscriptsUpdate?.([...trimmedDialogue, ...effectiveAi]);
+
+      const newSubs: SubtitleItem[] = effectiveAi.map((r, i) => ({
+        id: `gemsub_${Date.now()}_${i}`,
+        startTime: r.startTime,
+        endTime: r.endTime,
+        text: r.editedText || r.originalText,
+        type: 'SITUATION' as const,
+        confidence: 0.9,
+      }));
       onSubtitlesUpdate?.(newSubs);
       setAiScript(results.map(r => `[${r.style_type}] ${r.text}`).join('\n'));
 
-      // Add to timeline — all AI subtitles on single track 5 (replace existing)
+      // ★ 대본 Track 0 갱신 (AI 구간 대본 제거) + AI Track 5 배치
       if (onAddSubtitleClips) {
-        if (hasTranscripts && filteredTranscripts.length > 0) {
-          onAddSubtitleClips(filteredTranscripts, 0, true);
-        }
-        const allAiItems = [...entertainmentItems, ...situationItems, ...explanationItems, ...contextItems]
-          .sort((a, b) => a.startTime - b.startTime);
-        if (allAiItems.length > 0) onAddSubtitleClips(allAiItems, 5, true);
+        onAddSubtitleClips(trimmedDialogue, 0, true);
+        if (effectiveAi.length > 0) onAddSubtitleClips(effectiveAi, 5, true);
       }
 
       setGeminiStatus('완료!');
+      onResetViewerZoom?.();
       setTimeout(() => { setIsGeminiGenerating(false); setGeminiProgress(0); setGeminiStatus(''); }, 2000);
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -470,16 +705,23 @@ const RightSidebar = React.memo(({
       } else if (err.message === 'PAYMENT_REQUIRED') {
         setShowPaymentModal(true);
       } else {
-        const is503 = err.message.includes('503') || err.message.toLowerCase().includes('high demand') || err.message.toLowerCase().includes('service unavailable');
+        console.error('[AI 연출] 에러 상세:', err);
+        const is503 = err.message?.includes('503') || err.message?.toLowerCase().includes('high demand') || err.message?.toLowerCase().includes('service unavailable');
         if (is503) {
-          alert('현재 Gemini AI 서버에 사용자가 많아 잠시 서비스가 지연되고 있습니다. 잠시 후 다시 시도해 주세요.');
+          alert('현재 AI 서버에 사용자가 많아 잠시 서비스가 지연되고 있습니다. 잠시 후 다시 시도해 주세요.');
         } else {
-          alert(err.message || '자막 생성에 실패했습니다.');
+          alert(`AI 자막 생성 실패: ${err.message || '알 수 없는 오류'}`);
         }
       }
       setIsGeminiGenerating(false); setGeminiProgress(0); setGeminiStatus('');
     }
-  }, [videoFile, videoDuration, transcripts, subtitles, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges]);
+  }, [videoFile, clips, videoDuration, transcripts, customAIPrompt, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges, getTimelineEnd, getMediaRangesFromClips, onResetViewerZoom]);
+
+  // 타임라인에 비디오 클립이 있거나 videoFile이 있으면 AI 자막 버튼 활성화
+  const hasVideoForAI = !!videoFile || clips.some(c => c.trackIndex === 1 && !!c.url);
+  // Gemini: 비디오 있거나 대본 있으면 AI 연출 가능 (오디오 기반 + 텍스트 fallback)
+  const canGenerateAI = hasVideoForAI || transcripts.length > 0;
+  const isAIBusy = isIntegratedGenerating || isTranscribing || isGeminiGenerating;
 
   const filteredTranscripts = React.useMemo(() => {
     if (!searchQuery) return transcripts;
@@ -496,72 +738,183 @@ const RightSidebar = React.memo(({
 
   // Integrated Generation (STT + Gemini)
   const handleIntegratedGenerate = useCallback(async () => {
-    if (!videoFile) { alert('비디오 파일이 필요합니다.'); return; }
+    // ★ 타임라인 클립에서 영상 가져오기 (videoFile보다 우선)
+    let effectiveFile: File | null = null;
+    const videoClip = (clips || []).find(c => c.trackIndex === 1 && c.url);
+    if (videoClip?.url) {
+      try {
+        const res = await fetch(videoClip.url);
+        if (res.ok) {
+          const blob = await res.blob();
+          effectiveFile = new File([blob], videoClip.name || 'video.mp4', { type: blob.type || 'video/mp4' });
+          console.log('[통합 생성] 타임라인 클립에서 영상 로드 성공');
+        }
+      } catch {
+        // 2순위: video 엘리먼트의 src에서 복원
+        const videoEl = document.querySelector('video[src]') as HTMLVideoElement | null;
+        if (videoEl?.src) {
+          try {
+            const res2 = await fetch(videoEl.src);
+            if (res2.ok) {
+              const blob2 = await res2.blob();
+              effectiveFile = new File([blob2], videoClip.name || 'video.mp4', { type: blob2.type || 'video/mp4' });
+            }
+          } catch { /* handled below */ }
+        }
+      }
+    }
+    // 클립 URL 실패 시 videoFile 폴백
+    if (!effectiveFile && videoFile) {
+      effectiveFile = videoFile;
+      console.log('[통합 생성] videoFile에서 영상 로드 (폴백)');
+    }
+    if (!effectiveFile) {
+      alert('비디오 파일이 필요합니다. 파일을 다시 불러와주세요.'); return;
+    }
 
     setIsIntegratedGenerating(true);
     setIntegratedProgress(0);
     setIntegratedStatus('통합 분석 시작...');
+
+    // 파일을 즉시 메모리로 복사 (File 참조 만료 NotReadableError 방지)
+    let safeFile: File;
+    try {
+      const buf = await effectiveFile.arrayBuffer();
+      safeFile = new File([buf], effectiveFile.name, { type: effectiveFile.type, lastModified: effectiveFile.lastModified });
+    } catch {
+      alert('파일을 읽을 수 없습니다. 파일을 다시 불러온 뒤 시도해주세요.');
+      setIsIntegratedGenerating(false);
+      return;
+    }
 
     // Clear existing
     onTranscriptsUpdate?.([]);
     onSubtitlesUpdate?.([]);
 
     try {
-      // Step 1: Execute STT (Dialogue)
+      // ═══════════════════════════════════════════════════════
+      // Step 1: 대본(말자막) 먼저 생성 → 화면에 즉시 표시
+      // ★ 타임라인 클립의 미디어 범위만 분석 (불필요한 구간 제외)
+      // ═══════════════════════════════════════════════════════
+      const sttMediaRanges = getMediaRangesFromClips();
+      console.log(`[통합 생성] STT mediaRanges:`, sttMediaRanges);
       setIntegratedStatus('음성 분석 중...');
-      const sttResult = await transcribeVideo(videoFile, 'backend-proxy', (status) => {
+      const sttResult = await transcribeVideo(safeFile, 'backend-proxy', (status) => {
         setIntegratedStatus(`대본 생성 중: ${status}`);
-        // Approximate STT to be 0-50% of the total progress
         if (status.includes('음성 인식')) {
           const m = status.match(/(\d+)\/(\d+)/);
-          if (m) setIntegratedProgress(10 + (parseInt(m[1]) / parseInt(m[2])) * 30);
+          if (m) setIntegratedProgress(5 + (parseInt(m[1]) / parseInt(m[2])) * 35);
         }
+      }, sttMediaRanges, sttProvider);
+
+      // subtitleSplitter를 사용하여 문장 단위로 분할
+      console.log(`[통합 대본] STT 결과: words=${sttResult.words.length}, sentences=${sttResult.sentences?.length ?? 0}`);
+      const segments = splitSubtitles(sttResult);
+      console.log(`[통합 대본] splitSubtitles: ${segments.length}개 세그먼트`);
+      // 교정 사전 로드 → STT 결과에 자동 적용
+      const dict2 = await loadSttDictionary();
+      const sttT: TranscriptItem[] = segments.map((seg, i) => {
+        const corrected = dict2.length > 0 ? applySttCorrections(seg.text, dict2) : seg.text;
+        return {
+          id: `stt_${Date.now()}_${i}`,
+          startTime: seg.startTime,
+          endTime: seg.endTime,
+          originalText: seg.text,
+          editedText: corrected,
+          isEdited: corrected !== seg.text,
+          words: seg.words.map(w => ({ word: w.word, startTime: w.startTime, endTime: w.endTime })),
+        };
       });
 
-      const sttT: TranscriptItem[] = [];
-      let seg: { words: typeof sttResult.words; startTime: number } | null = null;
-      for (const word of sttResult.words) {
-        if (!seg || word.startTime - seg.startTime >= 3) {
-          if (seg) {
-            sttT.push({ id: `stt_${Date.now()}_${sttT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
-          }
-          seg = { words: [word], startTime: word.startTime };
-        } else seg.words.push(word);
+      // ★ 미디어 시간 → 타임라인 시간 변환 (장면 분할/트림 반영)
+      const filteredSttT_pre = filterResultsToClipRanges(sttT);
+      console.log(`[통합 대본] ${sttT.length}개 → 매핑 후 ${filteredSttT_pre.length}개 대본`);
+
+      // ★ 대본을 먼저 화면에 표시 — 사용자가 바로 확인 가능
+      onTranscriptsUpdate?.(filteredSttT_pre);
+      if (onAddSubtitleClips) {
+        onAddSubtitleClips(filteredSttT_pre, 0, true);
       }
-      if (seg) sttT.push({ id: `stt_${Date.now()}_${sttT.length}`, startTime: seg.startTime, endTime: seg.words[seg.words.length - 1].endTime, originalText: seg.words.map(w => w.word).join(' '), editedText: seg.words.map(w => w.word).join(' '), isEdited: false });
 
-      // 트림된 클립 범위에 맞게 STT 결과 필터링
-      const mappedSttT = filterResultsToClipRanges(sttT);
-      const filteredSttT_pre = mappedSttT.length > 0 ? mappedSttT : sttT;
+      setIntegratedProgress(45);
+      setIntegratedStatus('대본 완성! AI 연출 자막 준비 중...');
 
+      // 잠시 대기 — 대본 렌더링이 반영되도록
+      await new Promise(r => setTimeout(r, 500));
+
+      // ═══════════════════════════════════════════════════════
+      // Step 2: 확정된 대본을 기반으로 Gemini AI 연출 자막 생성
+      //   오디오 기반 + 실패 시 텍스트 기반 fallback
+      // ═══════════════════════════════════════════════════════
+      setIntegratedStatus('AI 연출 자막 생성 중 (Gemini)...');
       setIntegratedProgress(50);
-      setIntegratedStatus('AI 연출 자막 생성 중...');
 
-      // Step 2: Execute Gemini in "creative" mode — pass transcript so it won't duplicate
+      // 교정된 대본 텍스트를 AI에 전달 (STT 원본이 아닌 교정본 사용)
       const transcriptForAI: TranscriptDataForAI[] = filteredSttT_pre.map(t => ({
         startTime: t.startTime,
         endTime: t.endTime,
         text: t.editedText || t.originalText,
       }));
 
-      const rawGeminiResults = await generateSubtitlesFromAudio(videoFile, 'backend-proxy', (pct, msg) => {
-        setIntegratedStatus(`AI 연출 중: ${msg}`);
-        setIntegratedProgress(50 + (pct * 0.5));
-      }, undefined, { mode: 'creative', transcriptData: transcriptForAI, duration: videoDuration });
+      let geminiResults: { start_time: number; end_time: number; text: string; style_type: string }[];
 
-      // 트림된 클립 범위에 맞게 Gemini 결과 필터링
-      const mappedGemini = filterResultsToClipRanges(
-        rawGeminiResults.map(r => ({ ...r, startTime: r.start_time, endTime: r.end_time }))
-      );
-      const geminiResults = mappedGemini.length > 0
-        ? mappedGemini.map(r => ({ ...r, start_time: r.startTime, end_time: r.endTime }))
-        : rawGeminiResults;
+      // 텍스트 기반 Gemini fallback
+      const generateTextBased = async (): Promise<typeof geminiResults> => {
+        setIntegratedStatus('AI 연출 중 (Gemini): 대본 분석 중...');
+        const response = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transcripts: transcriptForAI,
+            customPrompt: customAIPrompt || undefined,
+          }),
+        });
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({ error: response.statusText }));
+          throw new Error(err?.error || `Gemini AI 자막 생성 실패 (${response.status})`);
+        }
+        const data = await response.json();
+        return (data.subtitles || []).map((r: any) => ({
+          start_time: r.startTime ?? r.start_time ?? r.start ?? 0,
+          end_time: r.endTime ?? r.end_time ?? r.end ?? 0,
+          text: r.text || '',
+          style_type: r.type || r.style_type || '상황',
+        }));
+      };
 
-      // Separate by style_type and assign colors + tracks (supports both old and new formats)
+      // Gemini: 오디오 기반 분석 + 실패 시 텍스트 기반 fallback
+      try {
+        const mediaRangesForAI = getMediaRangesFromClips();
+        const rawGeminiResults = await generateSubtitlesFromAudio(safeFile, 'backend-proxy', (pct, msg) => {
+          setIntegratedStatus(`AI 연출 중 (Gemini 오디오): ${msg}`);
+          setIntegratedProgress(50 + (pct * 0.5));
+        }, undefined, { mode: 'creative', transcriptData: transcriptForAI, duration: videoDuration, mediaRanges: mediaRangesForAI, customPrompt: customAIPrompt });
+
+        const mappedGemini = filterResultsToClipRanges(
+          rawGeminiResults.map(r => ({ ...r, startTime: r.start_time, endTime: r.end_time }))
+        );
+        geminiResults = mappedGemini.length > 0
+          ? mappedGemini.map(r => ({ ...r, start_time: r.startTime, end_time: r.endTime, text: r.text ?? (r as any).originalText ?? '', style_type: (r as any).style_type ?? '상황' }))
+          : rawGeminiResults;
+
+        // 결과가 비어있으면 텍스트 기반으로 재시도
+        if (geminiResults.length === 0 && transcriptForAI.length > 0) {
+          console.warn('[통합 생성] Gemini 오디오 결과 0개 → 텍스트 기반 fallback');
+          setIntegratedStatus('오디오 분석 결과 없음... 텍스트 기반으로 재시도');
+          geminiResults = await generateTextBased();
+        }
+      } catch (audioErr: any) {
+        console.warn('[통합 생성] Gemini 오디오 실패, 텍스트 기반 fallback:', audioErr.message);
+        if (audioErr.message === 'PAYMENT_REQUIRED') throw audioErr;
+        setIntegratedStatus('오디오 분석 실패... 텍스트 기반으로 전환');
+        geminiResults = await generateTextBased();
+      }
+      setIntegratedProgress(90);
+
+      // 예능/상황/설명 3종 분류 + 색상 지정
       const entertainmentItems: TranscriptItem[] = [];
       const situationItems: TranscriptItem[] = [];
       const explanationItems: TranscriptItem[] = [];
-      const contextItems: TranscriptItem[] = [];
 
       geminiResults.forEach((r, i) => {
         const base: TranscriptItem = {
@@ -578,51 +931,49 @@ const RightSidebar = React.memo(({
         if (st === '예능자막' || st === '예능') {
           entertainmentItems.push({ ...base, color: '#FFE066', strokeColor: '#FF6B6B' });
         } else if (st === '상황자막' || st === '상황') {
-          situationItems.push({ ...base, color: '#A8E6CF' });
+          situationItems.push({ ...base, color: '#A8E6CF', strokeColor: '#2D8B5E' });
         } else if (st === '설명자막' || st === '설명') {
           explanationItems.push({ ...base, color: '#88D8FF', strokeColor: '#0066CC' });
-        } else if (st === '맥락') {
-          contextItems.push({ ...base, color: '#C9A0FF', strokeColor: '#6B21A8' });
         } else {
-          situationItems.push({ ...base, color: '#A8E6CF' });
+          situationItems.push({ ...base, color: '#A8E6CF', strokeColor: '#2D8B5E' });
         }
       });
 
-      const allGeminiT = [...entertainmentItems, ...situationItems, ...explanationItems, ...contextItems];
+      const allRawGemini = [...entertainmentItems, ...situationItems, ...explanationItems];
 
-      // Remove transcript segments that overlap with AI subtitles
-      const filteredSttT = removeOverlappingTranscripts(filteredSttT_pre, allGeminiT);
+      // AI 자막 골고루 분배 + AI 자막 구간의 대본 제거
+      const orchestrateEnd = getTimelineEnd();
+      const { dialogueItems: finalStt, aiItems: finalGemini } = orchestrate(
+        filteredSttT_pre,
+        allRawGemini,
+        orchestrateEnd,
+        clips,
+      );
 
-      const geminiSubs: SubtitleItem[] = geminiResults.map((r, i) => {
-        const st = r.style_type;
-        const type = (st === '예능자막' || st === '예능') ? 'ENTERTAINMENT' as const
-          : (st === '설명자막' || st === '설명') ? 'EXPLANATION' as const
-          : st === '맥락' ? 'CONTEXT' as const
-          : 'SITUATION' as const;
+      const geminiSubs: SubtitleItem[] = finalGemini.map((r, i) => {
         return {
           id: `intsub_${Date.now()}_${i}`,
-          startTime: r.start_time,
-          endTime: r.end_time,
-          text: r.text,
-          type,
+          startTime: r.startTime,
+          endTime: r.endTime,
+          text: r.editedText || r.originalText,
+          type: 'SITUATION' as const,
           confidence: 0.9,
         };
       });
 
-      // Combine and update
-      onTranscriptsUpdate?.([...filteredSttT, ...allGeminiT]);
+      // 최종 결합: AI 구간 제거된 대본 + AI 자막
+      onTranscriptsUpdate?.([...finalStt, ...finalGemini]);
       onSubtitlesUpdate?.(geminiSubs);
 
-      // Add to timeline — all AI subtitles on single track 5 (replace existing)
+      // 타임라인 갱신 — 대본(Track 0) AI구간 제거 + AI(Track 5) 배치
       if (onAddSubtitleClips) {
-        onAddSubtitleClips(filteredSttT, 0, true);                                     // Track 0: 대본 (replace)
-        const allAiItems = [...entertainmentItems, ...situationItems, ...explanationItems, ...contextItems]
-          .sort((a, b) => a.startTime - b.startTime);
-        if (allAiItems.length > 0) onAddSubtitleClips(allAiItems, 5, true);
+        onAddSubtitleClips(finalStt, 0, true);
+        if (finalGemini.length > 0) onAddSubtitleClips(finalGemini, 5, true);
       }
 
       setIntegratedStatus('모든 자막 생성 완료!');
       setIntegratedProgress(100);
+      onResetViewerZoom?.();
       setTimeout(() => {
         setIsIntegratedGenerating(false);
         setIntegratedProgress(0);
@@ -636,9 +987,9 @@ const RightSidebar = React.memo(({
       setIntegratedProgress(0);
       setIntegratedStatus('');
     }
-  }, [videoFile, videoDuration, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges]);
+  }, [videoFile, videoDuration, clips, customAIPrompt, sttProvider, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges, getTimelineEnd, getMediaRangesFromClips]);
 
-  // Auto Pipeline feature removed so STT does not run automatically on video load
+  const hasTimelineVideo = clips.some(c => c.trackIndex === 1 && !!c.url);
 
   // Preset click handler — applies style to clips
   const handlePresetClick = (preset: SubtitlePreset) => {
@@ -692,7 +1043,7 @@ const RightSidebar = React.memo(({
   };
 
   return (
-    <aside className="w-full h-full bg-panel-bg border-l border-border-color flex flex-col overflow-hidden">
+    <aside className="editor-sidebar w-full h-full bg-panel-bg border-l border-border-color flex flex-col overflow-hidden">
 
 
       {/* Tabs */}
@@ -700,7 +1051,6 @@ const RightSidebar = React.memo(({
         {[
           { id: 'details' as const, icon: 'movie', tip: 'Video' },
           { id: 'caption' as const, icon: 'subtitles', tip: 'Caption' },
-          { id: 'export' as const, icon: 'file_download', tip: 'Export' },
         ].map(tab => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id)} title={tab.tip}
             className={`flex-1 py-2 flex items-center justify-center transition-all relative group ${activeTab === tab.id ? 'text-white border-b-2 border-primary bg-white/5' : 'text-text-secondary hover:text-white hover:bg-white/5'
@@ -773,7 +1123,7 @@ const RightSidebar = React.memo(({
                   <input ref={subtitleFileRef} type="file" accept=".srt,.ass,.ssa" className="hidden" onChange={handleSubtitleFileImport} />
                 </div>
                 <div className="flex-1 flex flex-col min-h-0 relative">
-                {!videoFile ? (
+                {!videoFile && !clips.some(c => c.trackIndex === 1 && c.url) ? (
                   <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-4 pt-12">
                     <div className="w-16 h-16 rounded-full bg-gray-800/50 flex items-center justify-center">
                       <span className="material-icons text-3xl text-gray-600">movie_filter</span>
@@ -797,6 +1147,7 @@ const RightSidebar = React.memo(({
                           onDragStart={handleTranscriptDragStart}
                           onMergeWithPrevious={handleMergeWithPrevious}
                           onSplitAtCursor={handleSplitAtCursor}
+                          onContextMenu={handleTranscriptContextMenu}
                         />
                       ))}
                       {filteredTranscripts.length === 0 && <div className="text-center py-12 text-text-secondary text-xs opacity-50">{searchQuery ? '검색 결과 없음' : '대본을 생성하거나 불러와주세요'}</div>}
@@ -807,17 +1158,27 @@ const RightSidebar = React.memo(({
                           <h3 className="text-xs font-semibold">대본 Settings</h3>
                         </div>
 
-                        {/* Master Integrated AI Button */}
-                        <button onClick={handleIntegratedGenerate} disabled={isIntegratedGenerating || isTranscribing || isGeminiGenerating || !videoFile}
-                          className={`w-full flex flex-col items-center justify-center p-3 rounded-xl text-xs font-bold transition-all active:scale-95 shadow-lg relative overflow-hidden group ${isIntegratedGenerating || !videoFile
+                        {/* AI 자막 스타일 프롬프트 입력 */}
+                        <textarea
+                          value={customAIPrompt}
+                          onChange={(e) => setCustomAIPrompt(e.target.value)}
+                          placeholder="원하는 자막 스타일을 입력하세요 (예: 예능 느낌으로 웃기게, 다큐 느낌으로 차분하게, 밈 많이 넣어서 등)"
+                          className="w-full px-2 py-1.5 rounded-lg text-[11px] bg-white/5 border border-white/10 text-gray-300 placeholder-gray-500 resize-none focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/30"
+                          rows={2}
+                        />
+
+                        {/* Master Integrated AI Button — 타임라인에 영상 클립이 있으면 활성화 */}
+                        <button onClick={handleIntegratedGenerate} disabled={isAIBusy || !hasVideoForAI}
+                          className={`w-full flex flex-col items-center justify-center p-3 rounded-xl text-xs font-bold transition-all active:scale-95 shadow-lg relative overflow-hidden group ${isAIBusy || !hasVideoForAI
                             ? 'bg-gray-800 text-gray-600 cursor-not-allowed'
                             : 'bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 text-white hover:shadow-purple-500/40 hover:brightness-110'
                             }`}>
+
                           <div className="flex items-center gap-2 mb-1">
                             <span className={`material-icons text-base ${isIntegratedGenerating ? 'animate-spin' : 'animate-pulse'}`}>auto_awesome</span>
                             <span>통합 AI 자막 마스터</span>
                           </div>
-                          <span className="text-[9px] font-normal opacity-80">대본 + AI 연출 자막을 한번에 생성</span>
+                          <span className="text-[9px] font-normal opacity-80">① 대본 생성 → ② AI 연출 자막 (순차 진행)</span>
                         </button>
 
                         {isIntegratedGenerating && (
@@ -847,8 +1208,8 @@ const RightSidebar = React.memo(({
                               <button onClick={handleCancelTranscription} className="ml-1 px-1.5 py-0.5 bg-red-500/20 border border-red-500/40 text-red-400 rounded text-[9px] font-semibold hover:bg-red-500/30 active:scale-95">취소</button>
                             </div>
                           ) : (
-                            <button onClick={handleAutoTranscribe} disabled={isIntegratedGenerating || !videoFile}
-                              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-[11px] font-semibold transition-all active:scale-95 shadow-md ${isIntegratedGenerating || !videoFile
+                            <button onClick={handleAutoTranscribe} disabled={isIntegratedGenerating || !hasVideoForAI}
+                              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-[11px] font-semibold transition-all active:scale-95 shadow-md ${isIntegratedGenerating || !hasVideoForAI
                                 ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none'
                                 : 'bg-white/5 border border-white/10 text-white hover:bg-white/10 hover:border-blue-500/50'
                                 }`}>
@@ -864,8 +1225,9 @@ const RightSidebar = React.memo(({
                               <button onClick={handleCancelGemini} className="ml-1 px-1.5 py-0.5 bg-red-500/20 border border-red-500/40 text-red-400 rounded text-[9px] font-semibold hover:bg-red-500/30 active:scale-95">취소</button>
                             </div>
                           ) : (
-                            <button onClick={handleGeminiAudioGenerate} disabled={isIntegratedGenerating || !videoFile}
-                              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-[11px] font-semibold transition-all active:scale-95 shadow-md ${isIntegratedGenerating || !videoFile
+                            <button onClick={handleGeminiAudioGenerate} disabled={isIntegratedGenerating || transcripts.length === 0}
+                              title={transcripts.length === 0 ? '대본을 먼저 생성하세요' : 'AI 연출 자막 생성'}
+                              className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-[11px] font-semibold transition-all active:scale-95 shadow-md ${isIntegratedGenerating || transcripts.length === 0
                                 ? 'bg-gray-700 text-gray-500 cursor-not-allowed shadow-none'
                                 : 'bg-white/5 border border-white/10 text-white hover:bg-white/10 hover:border-cyan-500/50'
                                 }`}>
@@ -1084,8 +1446,8 @@ const RightSidebar = React.memo(({
 
                   {/* 크기 */}
                   <div className="space-y-1">
-                    <label className="text-[10px] text-gray-400">크기 ({selectedClip?.fontSize || 48}px)</label>
-                    <input type="range" min="12" max="120" step="1" value={selectedClip?.fontSize || 48}
+                    <label className="text-[10px] text-gray-400">크기 ({selectedClip?.fontSize || 35}px)</label>
+                    <input type="range" min="12" max="120" step="1" value={selectedClip?.fontSize || 35}
                       onChange={(e) => {
                         const val = Number(e.target.value);
                         if (selectedClipIds.length > 0 && onClipsBatchUpdate) {
@@ -1662,6 +2024,78 @@ const RightSidebar = React.memo(({
                 </div>
               </div>
             </div>
+            {/* Color Correction */}
+            <div className={`w-full h-px bg-border-color ${!selectedClip ? 'opacity-40' : ''}`} />
+            <div className={`space-y-3 ${!selectedClip ? 'opacity-40 pointer-events-none' : ''}`}>
+              <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1">
+                <span className="material-icons text-sm text-amber-400">palette</span>
+                <span>Color</span>
+                <span className="text-[9px] font-normal text-gray-500 ml-1">(C키로 자동보정)</span>
+              </h3>
+              {/* Auto Color Correction Toggle */}
+              <button
+                onClick={() => {
+                  const isOn = selectedClip?.autoColorCorrection;
+                  if (isOn) {
+                    setBrightness(100); setContrast(100); setSaturate(100); setTemperature(0);
+                    updateProp('autoColorCorrection', false);
+                    updateProp('brightness', 100); updateProp('contrast', 100);
+                    updateProp('saturate', 100); updateProp('temperature', 0); updateProp('sharpen', 0);
+                  } else {
+                    setBrightness(115); setContrast(120); setSaturate(130); setTemperature(5);
+                    updateProp('autoColorCorrection', true);
+                    updateProp('brightness', 115); updateProp('contrast', 120);
+                    updateProp('saturate', 130); updateProp('temperature', 5); updateProp('sharpen', 35);
+                  }
+                }}
+                disabled={!selectedClip}
+                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+                  selectedClip?.autoColorCorrection
+                    ? 'bg-amber-500/20 border border-amber-500/50 text-amber-300'
+                    : 'bg-white/5 border border-border-color text-gray-400 hover:bg-white/10'
+                }`}
+              >
+                <span className="material-icons text-sm">auto_fix_high</span>
+                {selectedClip?.autoColorCorrection ? '자동 보정 ON' : '자동 색상 보정'}
+              </button>
+              {/* Manual sliders */}
+              {[
+                { label: '밝기', icon: 'brightness_6', value: brightness, set: setBrightness, prop: 'brightness' as const, min: 50, max: 150 },
+                { label: '대비', icon: 'contrast', value: contrast, set: setContrast, prop: 'contrast' as const, min: 50, max: 150 },
+                { label: '채도', icon: 'color_lens', value: saturate, set: setSaturate, prop: 'saturate' as const, min: 0, max: 200 },
+                { label: '색온도', icon: 'thermostat', value: temperature, set: setTemperature, prop: 'temperature' as const, min: -30, max: 30 },
+              ].map(s => (
+                <div key={s.prop} className="flex items-center justify-between">
+                  <label className="text-xs text-gray-400 flex items-center gap-1 min-w-[52px]">
+                    <span className="material-icons text-sm">{s.icon}</span><span>{s.label}</span>
+                  </label>
+                  <div className="flex items-center gap-2 w-2/3">
+                    <input className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-amber-400 disabled:opacity-50"
+                      type="range" min={s.min} max={s.max} value={s.value}
+                      onChange={(e) => { const v = Number(e.target.value); s.set(v); updateProp(s.prop, v); }}
+                      disabled={!selectedClip} />
+                    <input className="w-10 bg-black border border-border-color rounded text-xs px-1 py-0.5 text-right focus:outline-none focus:border-primary disabled:opacity-50"
+                      type="number" min={s.min} max={s.max} value={s.value}
+                      onChange={(e) => { const v = Math.min(s.max, Math.max(s.min, Number(e.target.value))); s.set(v); updateProp(s.prop, v); }}
+                      disabled={!selectedClip} />
+                    <span className="text-[10px] text-gray-500 w-3">{s.prop === 'temperature' ? '°' : '%'}</span>
+                  </div>
+                </div>
+              ))}
+              {/* Reset */}
+              <button
+                onClick={() => {
+                  setBrightness(100); setContrast(100); setSaturate(100); setTemperature(0);
+                  updateProp('brightness', 100); updateProp('contrast', 100);
+                  updateProp('saturate', 100); updateProp('temperature', 0); updateProp('sharpen', 0);
+                  updateProp('autoColorCorrection', false);
+                }}
+                disabled={!selectedClip}
+                className="text-[10px] text-gray-500 hover:text-white transition-colors disabled:opacity-30"
+              >
+                초기화
+              </button>
+            </div>
             <div className="mt-auto pt-6">
               <div className="bg-black/30 p-3 rounded border border-border-color space-y-2">
                 <div className="flex justify-between items-center text-[10px] text-gray-500">
@@ -1677,108 +2111,343 @@ const RightSidebar = React.memo(({
           </div>
         )}
 
-        {/* ===== EXPORT TAB ===== */}
-        {activeTab === 'export' && (
-          <div className="p-4 space-y-4">
-            <h3 className="text-xs font-bold text-white uppercase tracking-wider">Export Settings</h3>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400">Format</span>
-                <select className="bg-black border border-border-color rounded text-xs px-2 py-1 text-white focus:outline-none focus:border-primary">
-                  <option>MP4 (H.264)</option>
-                  <option>MOV (ProRes)</option>
-                  <option>WebM (VP9)</option>
-                </select>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400">Resolution</span>
-                <select className="bg-black border border-border-color rounded text-xs px-2 py-1 text-white focus:outline-none focus:border-primary">
-                  <option>1080p</option>
-                  <option>720p</option>
-                  <option>4K</option>
-                </select>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400">Quality</span>
-                <select className="bg-black border border-border-color rounded text-xs px-2 py-1 text-white focus:outline-none focus:border-primary">
-                  <option>High</option>
-                  <option>Medium</option>
-                  <option>Low</option>
-                </select>
-              </div>
-              <button onClick={onExport} className="w-full bg-primary hover:bg-blue-500 text-white py-2 rounded text-xs font-semibold transition-all active:scale-95">
-                <span className="flex items-center justify-center gap-1">
-                  <span className="material-icons text-sm">file_download</span>
-                  Export Video
-                </span>
-              </button>
-            </div>
-          </div>
-        )}
+        {/* Export tab removed — now in Header dropdown */}
       </div>
 
       <UpgradeModal
         isOpen={showPaymentModal}
         onClose={() => setShowPaymentModal(false)}
       />
+
+      {transcriptContextMenu && (() => {
+        const idx = transcripts.findIndex(t => t.id === transcriptContextMenu.id);
+        const t = transcripts[idx];
+        if (!t) return null;
+        const text = t.editedText || t.originalText;
+        return (
+          <ContextMenu
+            x={transcriptContextMenu.x}
+            y={transcriptContextMenu.y}
+            onClose={() => setTranscriptContextMenu(null)}
+            items={[
+              { label: '텍스트 복사', icon: 'content_copy', action: () => { navigator.clipboard.writeText(text); } },
+              { label: '이전 항목과 병합', icon: 'merge', disabled: idx <= 0, divider: true, action: () => handleMergeWithPrevious(transcriptContextMenu.id) },
+              { label: '삭제', icon: 'delete', shortcut: 'Del', danger: true, divider: true, action: () => handleTranscriptDelete(transcriptContextMenu.id) },
+            ]}
+          />
+        );
+      })()}
     </aside>
   );
 });
 
 export default RightSidebar;
 
-/**
- * AI 자막과 시간이 겹치는 대본 구간을 제거/트리밍
- * - 완전히 겹치면 제거
- * - 부분적으로 겹치면 겹치지 않는 부분만 남김
- */
-function removeOverlappingTranscripts(
-  transcripts: TranscriptItem[],
-  aiSubtitles: TranscriptItem[],
-): TranscriptItem[] {
-  if (aiSubtitles.length === 0) return transcripts;
+// ============================================
+// Export Tab Component
+// ============================================
 
-  const result: TranscriptItem[] = [];
+const RESOLUTIONS = [
+  { label: '4K (3840x2160)', w: 3840, h: 2160 },
+  { label: '1080p (1920x1080)', w: 1920, h: 1080 },
+  { label: '720p (1280x720)', w: 1280, h: 720 },
+  { label: '480p (854x480)', w: 854, h: 480 },
+  { label: '인스타 릴스 (1080x1920)', w: 1080, h: 1920 },
+  { label: '유튜브 쇼츠 (1080x1920)', w: 1080, h: 1920 },
+  { label: '정사각 (1080x1080)', w: 1080, h: 1080 },
+];
 
-  for (const t of transcripts) {
-    let segments: { start: number; end: number }[] = [{ start: t.startTime, end: t.endTime }];
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
 
-    for (const ai of aiSubtitles) {
-      const next: { start: number; end: number }[] = [];
-      for (const seg of segments) {
-        // No overlap
-        if (ai.endTime <= seg.start || ai.startTime >= seg.end) {
-          next.push(seg);
-          continue;
+function ExportTab({
+  videoFile,
+  videoDuration,
+  clips,
+  transcripts,
+}: {
+  videoFile: File | null;
+  videoDuration?: number;
+  clips: VideoClip[];
+  transcripts: TranscriptItem[];
+}) {
+  const [selectedResolution, setSelectedResolution] = useState(1); // 1080p default
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+
+  const duration = videoDuration ?? 0;
+  const baseName = videoFile?.name?.replace(/\.[^.]+$/, '') ?? 'export';
+
+  // 대본 텍스트 수집 (transcript + subtitle clips)
+  const allTexts = React.useMemo(() => {
+    const fromTranscripts = transcripts.map(t => ({
+      startTime: t.startTime,
+      endTime: t.endTime,
+      text: t.editedText || t.originalText,
+    }));
+    const fromClips = clips
+      .filter(c => c.trackIndex !== 1 && c.name)
+      .map(c => ({ startTime: c.startTime, endTime: c.startTime + c.duration, text: c.name || '' }));
+    return [...fromTranscripts, ...fromClips].sort((a, b) => a.startTime - b.startTime);
+  }, [transcripts, clips]);
+
+  // 예상 파일 크기 계산
+  const res = RESOLUTIONS[selectedResolution];
+  const estimatedMp4 = React.useMemo(() => {
+    if (!duration) return 0;
+    // 비트레이트 추정: 1080p ~8Mbps, 4K ~25Mbps, 720p ~5Mbps
+    const pixelCount = res.w * res.h;
+    const bitsPerPixel = 0.07; // H.264 typical
+    const bitrate = pixelCount * bitsPerPixel * 30; // 30fps
+    return (bitrate * duration) / 8;
+  }, [duration, res]);
+
+  const srtContent = React.useMemo(() => {
+    const formatTime = (s: number) => {
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = Math.floor(s % 60);
+      const ms = Math.round((s % 1) * 1000);
+      return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+    };
+    return allTexts.map((t, i) =>
+      `${i + 1}\n${formatTime(t.startTime)} --> ${formatTime(t.endTime)}\n${t.text}\n`
+    ).join('\n');
+  }, [allTexts]);
+
+  const txtContent = React.useMemo(() => allTexts.map(t => t.text).join('\n'), [allTexts]);
+
+  const srtSize = new Blob([srtContent]).size;
+  const txtSize = new Blob([txtContent]).size;
+  const mp3Size = React.useMemo(() => {
+    if (!duration) return 0;
+    return Math.round(duration * 16000); // ~128kbps MP3
+  }, [duration]);
+
+  const handleDownloadSrt = () => {
+    const blob = new Blob(['\uFEFF' + srtContent], { type: 'text/plain;charset=utf-8' });
+    downloadFile(blob, `${baseName}.srt`);
+  };
+
+  const handleDownloadTxt = () => {
+    const blob = new Blob([txtContent], { type: 'text/plain;charset=utf-8' });
+    downloadFile(blob, `${baseName}.txt`);
+  };
+
+  const handleDownloadMp3 = async () => {
+    const video = await getVideoBlob();
+    if (!video) { alert('영상 파일이 필요합니다.'); return; }
+    setIsExporting(true);
+    setExportProgress(10);
+    try {
+      // 오디오 추출 (Web Audio API)
+      const arrayBuffer = await video.blob.arrayBuffer();
+      setExportProgress(30);
+      const audioCtx = new AudioContext();
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+      setExportProgress(50);
+
+      // WAV로 변환 후 다운로드 (브라우저에서 MP3 인코딩은 제한적이므로 WAV 제공)
+      const numChannels = audioBuffer.numberOfChannels;
+      const sampleRate = audioBuffer.sampleRate;
+      const length = audioBuffer.length;
+      const wavBuffer = new ArrayBuffer(44 + length * numChannels * 2);
+      const view = new DataView(wavBuffer);
+
+      // WAV header
+      const writeStr = (offset: number, str: string) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+      writeStr(0, 'RIFF');
+      view.setUint32(4, 36 + length * numChannels * 2, true);
+      writeStr(8, 'WAVE');
+      writeStr(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * numChannels * 2, true);
+      view.setUint16(32, numChannels * 2, true);
+      view.setUint16(34, 16, true);
+      writeStr(36, 'data');
+      view.setUint32(40, length * numChannels * 2, true);
+
+      setExportProgress(70);
+      let offset = 44;
+      for (let i = 0; i < length; i++) {
+        for (let ch = 0; ch < numChannels; ch++) {
+          const sample = Math.max(-1, Math.min(1, audioBuffer.getChannelData(ch)[i]));
+          view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+          offset += 2;
         }
-        // Left remainder
-        if (ai.startTime > seg.start) {
-          next.push({ start: seg.start, end: ai.startTime });
-        }
-        // Right remainder
-        if (ai.endTime < seg.end) {
-          next.push({ start: ai.endTime, end: seg.end });
-        }
-        // Fully covered → nothing added
       }
-      segments = next;
-    }
 
-    // Only keep segments with meaningful duration (> 0.3s)
-    for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
-      if (seg.end - seg.start > 0.3) {
-        result.push({
-          ...t,
-          id: i === 0 ? t.id : `${t.id}_${i}`,
-          startTime: seg.start,
-          endTime: seg.end,
-        });
-      }
+      setExportProgress(90);
+      const blob = new Blob([wavBuffer], { type: 'audio/wav' });
+      downloadFile(blob, `${baseName}.wav`);
+      audioCtx.close();
+      setExportProgress(100);
+    } catch (err: any) {
+      alert(`오디오 추출 실패: ${err.message}`);
+    } finally {
+      setTimeout(() => { setIsExporting(false); setExportProgress(0); }, 1000);
     }
-  }
+  };
 
-  return result;
+  /** 비디오 파일 또는 타임라인 비디오 URL에서 Blob 가져오기 */
+  const getVideoBlob = async (): Promise<{ blob: Blob; name: string } | null> => {
+    if (videoFile) return { blob: videoFile, name: videoFile.name };
+    // videoFile이 없으면 타임라인 비디오 클립의 URL에서 복원
+    const videoClip = clips.find(c => c.trackIndex === 1 && c.url);
+    if (videoClip?.url) {
+      try {
+        const res = await fetch(videoClip.url);
+        if (res.ok) {
+          const blob = await res.blob();
+          return { blob, name: videoClip.name || 'video.mp4' };
+        }
+      } catch { /* fallback below */ }
+    }
+    // video 엘리먼트 src에서 시도
+    const videoEl = document.querySelector('video[src]') as HTMLVideoElement | null;
+    if (videoEl?.src) {
+      try {
+        const res = await fetch(videoEl.src);
+        if (res.ok) {
+          const blob = await res.blob();
+          return { blob, name: 'video.mp4' };
+        }
+      } catch { /* ignore */ }
+    }
+    return null;
+  };
+
+  const handleDownloadMp4 = async () => {
+    const video = await getVideoBlob();
+    if (!video) { alert('영상 파일이 필요합니다.'); return; }
+    downloadFile(video.blob, `${baseName}_${res.w}x${res.h}.mp4`);
+  };
+
+  const downloadFile = (blob: Blob | File, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const exportItems = [
+    {
+      icon: 'movie',
+      label: 'MP4 영상',
+      desc: `${res.w}x${res.h}`,
+      size: estimatedMp4,
+      action: handleDownloadMp4,
+      disabled: !videoFile && !clips.some(c => c.trackIndex === 1 && c.url),
+    },
+    {
+      icon: 'music_note',
+      label: 'MP3 오디오',
+      desc: 'WAV 추출',
+      size: mp3Size,
+      action: handleDownloadMp3,
+      disabled: !videoFile && !clips.some(c => c.trackIndex === 1 && c.url),
+    },
+    {
+      icon: 'subtitles',
+      label: 'SRT 자막',
+      desc: `${allTexts.length}개 항목`,
+      size: srtSize,
+      action: handleDownloadSrt,
+      disabled: allTexts.length === 0,
+    },
+    {
+      icon: 'description',
+      label: 'TXT 대본',
+      desc: `${allTexts.length}개 항목`,
+      size: txtSize,
+      action: handleDownloadTxt,
+      disabled: allTexts.length === 0,
+    },
+  ];
+
+  return (
+    <div className="p-4 space-y-4">
+      <h3 className="text-xs font-bold text-white uppercase tracking-wider">내보내기</h3>
+
+      {/* MP4 화면 사이즈 선택 */}
+      <div className="space-y-2">
+        <span className="text-[10px] text-gray-400 uppercase tracking-wider">영상 사이즈</span>
+        <div className="grid grid-cols-1 gap-1">
+          {RESOLUTIONS.map((r, i) => (
+            <button
+              key={i}
+              onClick={() => setSelectedResolution(i)}
+              className={`text-left px-3 py-1.5 rounded-lg text-[11px] transition-all ${
+                selectedResolution === i
+                  ? 'bg-primary/20 border border-primary/50 text-white'
+                  : 'bg-white/5 border border-transparent text-gray-400 hover:bg-white/10 hover:text-gray-300'
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 다운로드 항목 리스트 */}
+      <div className="space-y-2">
+        <span className="text-[10px] text-gray-400 uppercase tracking-wider">다운로드</span>
+        {exportItems.map((item, i) => (
+          <button
+            key={i}
+            onClick={item.action}
+            disabled={item.disabled || isExporting}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all group ${
+              item.disabled
+                ? 'border-border-color bg-white/[0.02] text-gray-600 cursor-not-allowed'
+                : 'border-border-color bg-white/5 text-white hover:bg-white/10 hover:border-primary/50 active:scale-[0.98]'
+            }`}
+          >
+            <span className={`material-icons text-lg ${item.disabled ? 'text-gray-600' : 'text-primary'}`}>
+              {item.icon}
+            </span>
+            <div className="flex-1 text-left">
+              <div className="text-xs font-medium">{item.label}</div>
+              <div className="text-[10px] text-gray-500">{item.desc}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-[10px] text-gray-500">{item.size > 0 ? formatFileSize(item.size) : '-'}</div>
+              <span className={`material-icons text-sm ${item.disabled ? 'text-gray-700' : 'text-gray-400 group-hover:text-primary'}`}>
+                file_download
+              </span>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {/* 진행 바 */}
+      {isExporting && (
+        <div className="space-y-1">
+          <div className="flex justify-between text-[10px] text-gray-400">
+            <span>추출 중...</span>
+            <span>{exportProgress}%</span>
+          </div>
+          <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-primary rounded-full transition-all duration-300"
+              style={{ width: `${exportProgress}%` }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function fmtTimestamp(seconds: number): string {

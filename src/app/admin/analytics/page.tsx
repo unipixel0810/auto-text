@@ -28,6 +28,10 @@ export default function AnalyticsOverview() {
         fetch(`/api/analytics/query?action=stats&days=${activeFilter.days}`),
         fetch(`/api/analytics/query?action=charts&days=${activeFilter.days}`),
       ]);
+      if (!statsRes.ok || !chartsRes.ok) {
+        console.error('Failed to fetch overview:', statsRes.status, chartsRes.status);
+        return;
+      }
       const [statsData, chartsData] = await Promise.all([statsRes.json(), chartsRes.json()]);
       if (statsData && typeof statsData === 'object') setStats(statsData);
       if (chartsData && typeof chartsData === 'object') setCharts(chartsData);

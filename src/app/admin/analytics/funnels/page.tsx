@@ -15,10 +15,12 @@ export default function FunnelsPage() {
     const load = async () => {
       setLoading(true);
       try {
-        const res = await fetch(`/api/analytics/query?type=funnels&days=${days}`);
+        const res = await fetch(`/api/analytics/query?action=funnels&days=${days}`);
+        if (!res.ok) { console.error('Failed to fetch funnels:', res.status); setFunnels([]); return; }
         const json = await res.json();
-        setFunnels(json.funnels || []);
-      } catch {
+        setFunnels(json.funnels ?? []);
+      } catch (err) {
+        console.error('Failed to fetch funnels:', err);
         setFunnels([]);
       } finally {
         setLoading(false);

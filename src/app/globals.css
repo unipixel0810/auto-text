@@ -234,6 +234,71 @@
 /* Editor page uses fixed inset-0 which handles its own overflow.
    Do NOT set overflow:hidden on body — it blocks scrolling on admin/other pages. */
 
+/* ─── Responsive UI Scale ───
+   디스플레이 크기에 따라 에디터 UI 비율을 자동 조정합니다.
+   13" 노트북(~1440px 이하)에서 아이콘/버튼/패널이 비례 축소됩니다. */
+:root {
+  --ui-scale: 1;
+  --icon-size: 18px;
+  --icon-size-sm: 14px;
+  --toolbar-height: 36px;
+  --track-label-width: 80px;
+}
+
+@media (max-width: 1536px) {
+  :root {
+    --ui-scale: 0.92;
+    --icon-size: 16px;
+    --icon-size-sm: 13px;
+    --toolbar-height: 32px;
+    --track-label-width: 70px;
+  }
+}
+
+@media (max-width: 1366px) {
+  :root {
+    --ui-scale: 0.85;
+    --icon-size: 15px;
+    --icon-size-sm: 12px;
+    --toolbar-height: 30px;
+    --track-label-width: 64px;
+  }
+}
+
+@media (max-width: 1280px) {
+  :root {
+    --ui-scale: 0.8;
+    --icon-size: 14px;
+    --icon-size-sm: 11px;
+    --toolbar-height: 28px;
+    --track-label-width: 60px;
+  }
+}
+
+/* 에디터 내 툴바 아이콘 반응형 크기 조정 */
+.editor-toolbar .material-icons,
+.editor-toolbar .material-symbols-outlined {
+  font-size: var(--icon-size) !important;
+}
+
+.editor-toolbar svg {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.editor-toolbar button {
+  padding: calc(4px * var(--ui-scale));
+}
+
+.editor-toolbar .divider {
+  height: calc(16px * var(--ui-scale));
+}
+
+/* 사이드바 반응형 */
+.editor-sidebar {
+  font-size: calc(1rem * var(--ui-scale));
+}
+
 ::selection {
   background: hsl(185 100% 50% / 0.3);
   color: #fff;
@@ -285,6 +350,14 @@ button:active {
 
 button:hover:not(:disabled) {
   transform: scale(1.05);
+}
+
+/* 에디터 내부 버튼은 전역 scale 무시 (Tailwind class로 개별 관리) */
+.editor-toolbar button:hover,
+.editor-toolbar button:active,
+.editor-sidebar button:hover,
+.editor-sidebar button:active {
+  transform: none;
 }
 
 /* Toast animation */

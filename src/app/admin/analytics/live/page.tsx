@@ -40,13 +40,15 @@ export default function LiveEventsPage() {
     const since = new Date(Date.now() - Math.max(dateFilter.days, 1) * 86_400_000).toISOString();
     try {
       const res = await fetch(`/api/analytics/query?action=live&since=${since}&limit=50`);
+      if (!res.ok) { console.error('Failed to fetch live events:', res.status); return; }
       const data = await res.json();
-      if (data.events) {
-        setEvents(data.events);
+      const evts = data?.events ?? [];
+      setEvents(evts);
+      if (evts.length > 0) {
         eventTimestamps.current.push(Date.now());
         eventTimestamps.current = eventTimestamps.current.filter((t) => Date.now() - t < 60_000);
       }
-    } catch { /* silently retry on next tick */ }
+    } catch (err) { console.error('Failed to fetch live events:', err); }
     setLoading(false);
   }, [dateFilter]);
 

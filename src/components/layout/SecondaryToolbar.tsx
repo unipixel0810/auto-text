@@ -8,7 +8,6 @@ interface SecondaryToolbarProps {
   onTabChange?: (tab: TabType) => void;
   onSoundEffect?: () => void;
   onSticker?: () => void;
-  onAutoColorCorrection?: () => void;
   onAnimationEffect?: () => void;
 }
 
@@ -16,7 +15,6 @@ export default function SecondaryToolbar({
   onTabChange,
   onSoundEffect,
   onSticker,
-  onAutoColorCorrection,
   onAnimationEffect,
 }: SecondaryToolbarProps) {
   const [activeTab, setActiveTab] = useState<TabType>('media');
@@ -42,9 +40,8 @@ export default function SecondaryToolbar({
     },
     {
       id: 'effects',
-      label: '색상 자동 보정',
-      icon: 'auto_fix_high',
-      action: onAutoColorCorrection,
+      label: '효과',
+      icon: 'tune',
     },
     {
       id: 'transitions',

@@ -47,10 +47,11 @@ export default function HealthPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/analytics/query?action=health&days=${dateFilter.days || 1}`);
+      const res = await fetch(`/api/analytics/query?action=health&days=${dateFilter.days}`);
+      if (!res.ok) { console.error('Failed to fetch health data:', res.status); return; }
       const json = await res.json();
       setData(json);
-    } catch { /* ignore */ }
+    } catch (err) { console.error('Failed to fetch health data:', err); }
     setLoading(false);
   }, [dateFilter]);
 
