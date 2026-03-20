@@ -243,9 +243,9 @@ export function buildSubtitlePlacements(
   options: { gap?: number; continuous?: boolean; timelineEnd?: number } = {},
 ): PlacedSubtitle[] {
   const { gap = SUBTITLE_GAP_SECONDS, continuous = false, timelineEnd } = options;
-  // 대본(continuous) 모드: STT가 이미 자연 발화 단위로 분할했으므로 추가 분할 불필요
-  // 추가 분할 시 3초 미만 조각이 생겨 읽기 어려움
-  const expanded = continuous ? items : splitLongSubtitles(items);
+  // 대본·AI 모두 긴 텍스트 분할 적용 (화면 밖 overflow 방지)
+  // 3초 미만 조각은 placeWithoutOverlap에서 SUBTITLE_MIN_DURATION으로 보장
+  const expanded = splitLongSubtitles(items);
   const placed = placeWithoutOverlap(expanded, gap, continuous);
 
   // timelineEnd가 있으면 초과 구간 제거/클램핑

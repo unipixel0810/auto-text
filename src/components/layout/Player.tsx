@@ -560,8 +560,10 @@ const SubtitleOverlay = React.memo(({
                   fontSize: `${Math.round((clip.fontSize || 35) * aspectScale)}px`,
                   lineHeight: clip.lineHeight ?? 1.4,
                   letterSpacing: clip.letterSpacing !== undefined ? `${clip.letterSpacing}em` : undefined,
-                  whiteSpace: (clip.trackIndex === 0 || (clip.trackIndex >= 5 && clip.trackIndex <= 8)) ? 'nowrap' : 'pre-wrap',
-                  overflow: 'visible',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'keep-all',
+                  overflowWrap: 'break-word',
+                  overflow: 'hidden',
                   textShadow: clip.glowColor
                     ? `0 0 ${clip.shadowBlur || 0}px ${clip.glowColor}, 0 0 ${(clip.shadowBlur || 0) * 2}px ${clip.glowColor}`
                     : (clip.shadowBlur || 0) > 0
