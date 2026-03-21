@@ -210,7 +210,8 @@ export async function POST(req: Request) {
         if (mode === 'creative' && transcriptData) {
             // Creative subtitle mode: 장르별 연출 자막 생성
             const transcriptJson = JSON.stringify(transcriptData, null, 2);
-            const targetCount = Math.max(8, Math.round(duration / 6));
+            const transcriptCount = transcriptData ? transcriptData.length : 0;
+            const targetCount = Math.max(transcriptCount, 8, Math.round(duration / 5));
             const segmentSize = Math.round(duration / 5);
             const segments = Array.from({ length: 5 }, (_, i) => `  구간${i + 1}: ${i * segmentSize}초 ~ ${(i + 1) * segmentSize}초`).join('\n');
 

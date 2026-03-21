@@ -54,6 +54,12 @@ const AI_MAX_DURATION = 5.0;
 /** AI 자막 최소 표시 시간 (초) */
 const AI_MIN_DURATION = 1.0;
 
+/** 강제 배치 시 최소 슬롯 시간 (초) — 자연 gap이 부족할 때 */
+const FORCED_MIN_SLOT = 0.8;
+
+/** AI 자막 최소 비율 — 전체 자막 중 AI가 이 비율 이상 */
+const AI_MIN_RATIO = 0.5;
+
 // ============================================
 // 타입
 // ============================================
@@ -199,6 +205,84 @@ function placeAiInGaps(
 }
 
 // ============================================
+// 강제 인터리빙 — AI 비율 50% 미달 시 대본 사이에 강제 배치
+// ============================================
+
+function forceInterleaveAi(
+  dialogue: TranscriptItem[],
+  aiPool: TranscriptItem[],
+  alreadyPlaced: TranscriptItem[],
+  timelineEnd: number,
+): TranscriptItem[] {
+  const totalTarget = dialogue.length; // AI 최소 = 대본 수 (50:50)
+  const needed = totalTarget - alreadyPlaced.length;
+  if (needed <= 0) return alreadyPlaced;
+
+  const sorted = [...dialogue].sort((a, b) => a.startTime - b.startTime);
+  // 아직 배치 안 된 AI 자막 풀
+  const usedTexts = new Set(alreadyPlaced.map(a => a.editedText || a.originalText));
+  const available = aiPool.filter(ai => !usedTexts.has(ai.editedText || ai.originalText));
+
+  const forced = [...alreadyPlaced];
+  let aiIdx = 0;
+
+  // 대본 사이마다 AI 슬롯을 강제로 끼워넣기
+  // step = 대본을 몇 개 건너뛸지 (needed가 적으면 띄엄띄엄)
+  const step = Math.max(1, Math.floor(sorted.length / Math.max(1, needed)));
+
+  for (let i = 0; i < sorted.length && aiIdx < available.length && forced.length - alreadyPlaced.length < needed; i += step) {
+    const d = sorted[i];
+    const speechEnd = getSpeechEndTime(d);
+    const nextStart = i + 1 < sorted.length ? sorted[i + 1].startTime : timelineEnd;
+
+    // 이미 이 구간에 AI가 있으면 스킵
+    const hasAi = forced.some(a => a.startTime >= speechEnd - 0.3 && a.startTime < nextStart);
+    if (hasAi) continue;
+
+    const slotStart = speechEnd;
+    const slotEnd = Math.min(slotStart + 2.5, nextStart);
+    const slotDur = slotEnd - slotStart;
+
+    if (slotDur >= FORCED_MIN_SLOT) {
+      forced.push({
+        ...available[aiIdx],
+        startTime: slotStart,
+        endTime: slotEnd,
+      });
+      aiIdx++;
+    }
+  }
+
+  // step이 너무 커서 덜 채웠으면, 빈 구간을 순회하며 나머지도 채움
+  if (aiIdx < available.length && forced.length - alreadyPlaced.length < needed) {
+    for (let i = 0; i < sorted.length && aiIdx < available.length; i++) {
+      const d = sorted[i];
+      const speechEnd = getSpeechEndTime(d);
+      const nextStart = i + 1 < sorted.length ? sorted[i + 1].startTime : timelineEnd;
+
+      const hasAi = forced.some(a => a.startTime >= speechEnd - 0.3 && a.startTime < nextStart);
+      if (hasAi) continue;
+
+      const slotStart = speechEnd;
+      const slotEnd = Math.min(slotStart + 2.0, nextStart);
+      const slotDur = slotEnd - slotStart;
+
+      if (slotDur >= FORCED_MIN_SLOT) {
+        forced.push({
+          ...available[aiIdx],
+          startTime: slotStart,
+          endTime: slotEnd,
+        });
+        aiIdx++;
+      }
+    }
+  }
+
+  console.log(`[forceInterleave] needed=${needed}, placed=${forced.length - alreadyPlaced.length}, total AI=${forced.length}`);
+  return forced.sort((a, b) => a.startTime - b.startTime);
+}
+
+// ============================================
 // 3종 스타일 DNA 자동 할당
 // ============================================
 
@@ -246,12 +330,22 @@ export function orchestrate(
   const gaps = findDialogueGaps(dialogue, timelineEnd);
   console.log(`[orchestrate] gaps=${gaps.length}`, gaps.slice(0, 5).map(g => `${g.start.toFixed(1)}-${g.end.toFixed(1)}(${(g.end-g.start).toFixed(1)}s)`));
 
-  // 3. AI 자막을 빈 구간에만 배치 + 골고루 분배
+  // 3. AI 자막을 빈 구간에 배치 + 골고루 분배
   const placedAi = placeAiInGaps(deoverlapped, gaps, timelineEnd);
   console.log(`[orchestrate] placedAi=${placedAi.length}`);
 
+  // 3.5. AI 비율 50% 미달 시 강제 인터리빙
+  const aiRatio = placedAi.length / Math.max(1, placedAi.length + dialogue.length);
+  let finalPlacedAi = placedAi;
+  if (aiRatio < AI_MIN_RATIO && deoverlapped.length > placedAi.length) {
+    console.log(`[orchestrate] AI 비율 ${(aiRatio * 100).toFixed(0)}% < ${AI_MIN_RATIO * 100}% → 강제 인터리빙 시작`);
+    finalPlacedAi = forceInterleaveAi(dialogue, deoverlapped, placedAi, timelineEnd);
+  }
+  const newRatio = finalPlacedAi.length / Math.max(1, finalPlacedAi.length + dialogue.length);
+  console.log(`[orchestrate] 최종 AI: ${finalPlacedAi.length}개 (비율 ${(newRatio * 100).toFixed(0)}%)`);
+
   // 4. 3종 스타일 DNA 할당
-  const styledAi = assignStyleDna(placedAi);
+  const styledAi = assignStyleDna(finalPlacedAi);
 
   // 5. 배타적 노출: AI 자막 구간의 대본 제거
   const trimmedDialogue = cutDialogueAroundAi(dialogue, styledAi);
