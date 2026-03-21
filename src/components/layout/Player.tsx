@@ -342,7 +342,7 @@ const SubtitleOverlay = React.memo(({
   onInteractionStart?: () => void,
   onInteractionEnd?: () => void,
 }) => {
-  const aspectScaleMap: Record<string, number> = { '16:9': 1, '9:16': 0.56, '1:1': 0.75, '3:4': 0.65 };
+  const aspectScaleMap: Record<string, number> = { '16:9': 1, '9:16': 0.42, '1:1': 0.7, '3:4': 0.55 };
   const aspectScale = aspectScaleMap[canvasAspectRatio] || 1;
   const isPortrait = canvasAspectRatio === '9:16' || canvasAspectRatio === '3:4';
   const DRAG_THRESHOLD = 5;

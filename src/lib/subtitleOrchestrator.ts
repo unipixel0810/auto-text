@@ -72,9 +72,27 @@ interface Gap { start: number; end: number }
 /** 대본의 실제 표시 시간 최소값 (subtitlePlacer의 SUBTITLE_MIN_DURATION과 동일) */
 const DIALOGUE_MIN_DISPLAY = 3.0;
 
+/**
+ * 대본의 실제 발화 종료 시간 추출
+ * - words가 있으면 마지막 단어의 endTime (실제 음성 끝)
+ * - words가 없으면 endTime 사용하되, Whisper가 늘려놓은 것일 수 있으므로
+ *   startTime + 텍스트 길이 기반 추정(글자당 0.12초)으로 보수적 cap
+ */
+function getSpeechEndTime(item: TranscriptItem): number {
+  if (item.words && item.words.length > 0) {
+    return item.words[item.words.length - 1].endTime;
+  }
+  // words가 없으면 텍스트 길이로 발화 시간 추정
+  const text = item.editedText || item.originalText || '';
+  const estimatedDur = Math.max(0.5, text.length * 0.12); // 한국어 ~8자/초
+  const estimated = item.startTime + estimatedDur;
+  // 원본 endTime보다 길면 원본 사용
+  return Math.min(estimated, item.endTime);
+}
+
 /** 대본 사이의 빈 구간 추출 (최소 AI_MIN_GAP 이상)
- *  ★ 대본의 원본 endTime(STT 타이밍) 기준으로 gap 계산
- *    3초 연장은 AI 배치 후 step 5.5에서 처리 (AI 경계를 넘지 않는 범위 내)
+ *  ★ 대본의 실제 발화 종료 시점 기준으로 gap 계산
+ *    대본 화면 표시 3초 연장은 step 5.5에서 AI 경계를 넘지 않는 범위 내로 처리
  *    → 대본이 빽빽해도 음성이 끝난 순간부터 AI 자막 배치 가능
  */
 function findDialogueGaps(
@@ -90,18 +108,19 @@ function findDialogueGaps(
   if (sorted[0].startTime > AI_MIN_GAP) {
     gaps.push({ start: 0, end: sorted[0].startTime });
   }
-  // 대본 사이 — 원본 endTime 기준으로 gap 계산
+  // 대본 사이 — 실제 발화 종료 시점 기준으로 gap 계산
   for (let i = 0; i < sorted.length - 1; i++) {
-    const gapStart = sorted[i].endTime;
+    const speechEnd = getSpeechEndTime(sorted[i]);
+    const gapStart = speechEnd;
     const gapEnd = sorted[i + 1].startTime;
     if (gapEnd - gapStart >= AI_MIN_GAP) {
       gaps.push({ start: gapStart, end: gapEnd });
     }
   }
   // 마지막 대본 ~ 타임라인 끝
-  const lastEnd = sorted[sorted.length - 1].endTime;
-  if (timelineEnd - lastEnd >= AI_MIN_GAP) {
-    gaps.push({ start: lastEnd, end: timelineEnd });
+  const lastSpeechEnd = getSpeechEndTime(sorted[sorted.length - 1]);
+  if (timelineEnd - lastSpeechEnd >= AI_MIN_GAP) {
+    gaps.push({ start: lastSpeechEnd, end: timelineEnd });
   }
   return gaps;
 }
@@ -146,6 +165,7 @@ function placeAiInGaps(
     }
   }
 
+  console.log(`[placeAiInGaps] gaps=${gaps.length} → slots=${slots.length}, aiItems=${aiItems.length}`);
   if (slots.length === 0) return [];
 
   // 2단계: AI 자막을 가장 가까운 슬롯에 1:1 매칭

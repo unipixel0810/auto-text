@@ -959,15 +959,19 @@ const RightSidebar = React.memo(({
       });
 
       const allRawGemini = [...entertainmentItems, ...situationItems, ...explanationItems];
+      console.log(`[통합 생성] Gemini API 반환: ${geminiResults.length}개 → 분류 후: 예능=${entertainmentItems.length}, 상황=${situationItems.length}, 설명=${explanationItems.length}, 합계=${allRawGemini.length}`);
 
       // AI 자막 골고루 분배 + AI 자막 구간의 대본 제거
       const orchestrateEnd = getTimelineEnd();
+      console.log(`[통합 생성] orchestrate 호출: 대본=${filteredSttT_pre.length}개, AI=${allRawGemini.length}개, timelineEnd=${orchestrateEnd}`);
       const { dialogueItems: finalStt, aiItems: finalGemini } = orchestrate(
         filteredSttT_pre,
         allRawGemini,
         orchestrateEnd,
         clips,
       );
+
+      console.log(`[통합 생성] orchestrate 결과: 대본=${finalStt.length}개, AI=${finalGemini.length}개 (입력 ${allRawGemini.length}개 중 ${((finalGemini.length / Math.max(1, allRawGemini.length)) * 100).toFixed(0)}% 배치)`);
 
       const geminiSubs: SubtitleItem[] = finalGemini.map((r, i) => {
         return {
