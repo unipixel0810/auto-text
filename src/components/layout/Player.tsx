@@ -1589,13 +1589,12 @@ const Player = React.memo(({
             <SafeZoneOverlay activePlatforms={activeSafeZones} />
           )}
 
-          {/* 가이드 라인 — 드래그로 위치 조정 */}
+          {/* 가이드 라인 — 항상 드래그 가능 */}
           {guideLineY != null && (
             <div
-              className="absolute left-0 right-0 z-[116] group/guide"
-              style={{ top: `${guideLineY}%`, cursor: guideLineMode ? 'ns-resize' : 'default' }}
+              className="absolute left-0 right-0 z-[130]"
+              style={{ top: `${guideLineY}%`, cursor: 'ns-resize', pointerEvents: 'auto' }}
               onPointerDown={(e) => {
-                if (!guideLineMode) return;
                 e.preventDefault();
                 e.stopPropagation();
                 setIsDraggingGuide(true);
@@ -1615,21 +1614,21 @@ const Player = React.memo(({
                 window.addEventListener('pointerup', onUp);
               }}
             >
-              <div className="relative h-0">
+              {/* 넓은 히트 영역 */}
+              <div className="relative" style={{ height: 0 }}>
+                <div className="absolute left-0 right-0" style={{ top: -8, height: 16 }} />
                 {/* 점선 가이드 */}
-                <div className="absolute left-0 right-0" style={{ top: -1, height: 2, borderTop: '2px dashed #FF6B6B', opacity: 0.8 }} />
+                <div className="absolute left-0 right-0" style={{ top: -1, height: 2, borderTop: '2px dashed #FF6B6B', opacity: 0.9 }} />
                 {/* 라벨 */}
-                <div className="absolute left-1 px-1 py-0.5 rounded text-[8px] font-bold"
-                  style={{ top: -14, background: 'rgba(255,107,107,0.85)', color: '#fff' }}>
+                <div className="absolute left-1 px-1.5 py-0.5 rounded text-[8px] font-bold"
+                  style={{ top: -16, background: 'rgba(255,107,107,0.9)', color: '#fff' }}>
                   {Math.round(guideLineY)}%
                 </div>
-                {/* 드래그 핸들 (편집 모드에서만 표시) */}
-                {guideLineMode && (
-                  <div className="absolute right-1 w-4 h-4 rounded-full bg-[#FF6B6B] border-2 border-white flex items-center justify-center"
-                    style={{ top: -8, cursor: 'ns-resize', boxShadow: '0 0 6px rgba(255,107,107,0.5)' }}>
-                    <span className="text-[7px] text-white font-bold">↕</span>
-                  </div>
-                )}
+                {/* 드래그 핸들 */}
+                <div className="absolute right-2 w-5 h-5 rounded-full bg-[#FF6B6B] border-2 border-white flex items-center justify-center"
+                  style={{ top: -10, boxShadow: '0 0 8px rgba(255,107,107,0.6)' }}>
+                  <span className="text-[8px] text-white font-bold">↕</span>
+                </div>
               </div>
             </div>
           )}
@@ -1637,17 +1636,24 @@ const Player = React.memo(({
           {/* 가이드라인 생성 클릭 영역 (편집 모드에서 빈 곳 클릭 시 라인 생성) */}
           {guideLineMode && guideLineY == null && (
             <div
-              className="absolute inset-0 z-[116] cursor-crosshair"
-              onClick={(e) => {
+              className="absolute inset-0 z-[130] cursor-crosshair"
+              style={{ pointerEvents: 'auto' }}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
                 const container = containerRef.current;
                 if (!container) return;
                 const rect = container.getBoundingClientRect();
                 const pct = Math.max(5, Math.min(95, ((e.clientY - rect.top) / rect.height) * 100));
                 setGuideLineY(pct);
+                setGuideLineMode(false);
               }}
             >
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <span className="text-white/60 text-xs bg-black/50 px-3 py-1.5 rounded">클릭하여 가이드 라인 배치</span>
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/20">
+                <div className="flex flex-col items-center gap-1">
+                  <span className="material-icons text-[#FF6B6B] text-2xl">straighten</span>
+                  <span className="text-white text-xs bg-black/60 px-3 py-1.5 rounded">클릭하여 가이드 라인 배치</span>
+                </div>
               </div>
             </div>
           )}
@@ -1814,32 +1820,22 @@ const Player = React.memo(({
           <div className="relative">
             <button
               onClick={() => {
-                if (guideLineMode) {
-                  // 편집 모드 종료
+                if (guideLineY != null) {
+                  // 라인이 있으면 삭제
+                  setGuideLineY(null);
                   setGuideLineMode(false);
-                } else if (guideLineY != null) {
-                  // 이미 라인이 있으면 편집 모드 진입
-                  setGuideLineMode(true);
                 } else {
-                  // 라인 없으면 생성 모드
-                  setGuideLineMode(true);
+                  // 라인 없으면 즉시 75% 위치에 생성 (드래그로 조정 가능)
+                  setGuideLineY(75);
+                  setGuideLineMode(false);
                 }
               }}
-              className={`flex items-center gap-0.5 transition-all ${guideLineY != null ? 'text-[#FF6B6B]' : guideLineMode ? 'text-[#FF6B6B] animate-pulse' : 'text-gray-400 hover:text-white'}`}
-              title="자막 가이드 라인"
+              className={`flex items-center gap-0.5 transition-all ${guideLineY != null ? 'text-[#FF6B6B]' : 'text-gray-400 hover:text-white'}`}
+              title={guideLineY != null ? '가이드 라인 삭제' : '자막 가이드 라인 추가'}
             >
               <span className="material-icons text-sm">straighten</span>
               <span className="text-[9px] font-medium">Line</span>
             </button>
-            {guideLineY != null && (
-              <button
-                onClick={(e) => { e.stopPropagation(); setGuideLineY(null); setGuideLineMode(false); }}
-                className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full flex items-center justify-center hover:bg-red-400"
-                title="가이드 라인 삭제"
-              >
-                <span className="text-[7px] text-white font-bold">×</span>
-              </button>
-            )}
           </div>
           <div className="w-px h-3 bg-gray-700" />
           {/* Safe Zone Toggle — SNS 미리보기 */}
