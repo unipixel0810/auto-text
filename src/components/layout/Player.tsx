@@ -662,12 +662,131 @@ const SAFE_ZONE_CONFIG: Record<SafeZonePlatform, {
   },
 };
 
+// SNS UI 모킹 요소
+const TikTokMockUI = () => (
+  <>
+    {/* 우측 액션 버튼 */}
+    <div className="absolute right-[3%] bottom-[25%] flex flex-col items-center gap-3">
+      {/* 프로필 */}
+      <div className="flex flex-col items-center gap-0.5">
+        <div className="w-8 h-8 rounded-full bg-gray-400/50 border-2 border-white/60" />
+        <div className="w-4 h-4 -mt-2 rounded-full bg-[#FE2C55] flex items-center justify-center text-white text-[8px] font-bold">+</div>
+      </div>
+      {/* 좋아요 */}
+      <div className="flex flex-col items-center">
+        <span className="text-white text-xl drop-shadow">♥</span>
+        <span className="text-white text-[8px] font-semibold drop-shadow">128K</span>
+      </div>
+      {/* 댓글 */}
+      <div className="flex flex-col items-center">
+        <span className="text-white text-lg drop-shadow">💬</span>
+        <span className="text-white text-[8px] font-semibold drop-shadow">1,024</span>
+      </div>
+      {/* 공유 */}
+      <div className="flex flex-col items-center">
+        <span className="text-white text-lg drop-shadow">↗</span>
+        <span className="text-white text-[8px] font-semibold drop-shadow">공유</span>
+      </div>
+      {/* 음원 */}
+      <div className="w-6 h-6 rounded-full bg-gray-800/80 border border-gray-500/50 animate-spin" style={{ animationDuration: '3s' }} />
+    </div>
+    {/* 하단 유저 정보 */}
+    <div className="absolute left-[4%] bottom-[5%] right-[20%]">
+      <div className="text-white text-[10px] font-bold drop-shadow mb-0.5">@channel_name</div>
+      <div className="text-white/80 text-[8px] drop-shadow leading-tight">영상 설명이 여기에 표시됩니다... #해시태그 #틱톡</div>
+      <div className="flex items-center gap-1 mt-1 opacity-70">
+        <span className="text-white text-[8px]">♪</span>
+        <div className="text-white text-[7px] truncate">원본 사운드 - channel_name</div>
+      </div>
+    </div>
+  </>
+);
+
+const YouTubeMockUI = () => (
+  <>
+    {/* 우측 액션 버튼 */}
+    <div className="absolute right-[3%] bottom-[28%] flex flex-col items-center gap-3">
+      <div className="flex flex-col items-center">
+        <span className="text-white text-xl drop-shadow">👍</span>
+        <span className="text-white text-[8px] font-semibold drop-shadow">5.2K</span>
+      </div>
+      <div className="flex flex-col items-center">
+        <span className="text-white text-xl drop-shadow">👎</span>
+        <span className="text-white text-[8px] font-semibold drop-shadow">싫어요</span>
+      </div>
+      <div className="flex flex-col items-center">
+        <span className="text-white text-lg drop-shadow">💬</span>
+        <span className="text-white text-[8px] font-semibold drop-shadow">312</span>
+      </div>
+      <div className="flex flex-col items-center">
+        <span className="text-white text-lg drop-shadow">↗</span>
+        <span className="text-white text-[8px] font-semibold drop-shadow">공유</span>
+      </div>
+    </div>
+    {/* 하단 채널 정보 */}
+    <div className="absolute left-[4%] bottom-[5%] right-[15%]">
+      <div className="flex items-center gap-1.5 mb-1">
+        <div className="w-6 h-6 rounded-full bg-red-500/60" />
+        <div className="text-white text-[10px] font-bold drop-shadow">채널명</div>
+      </div>
+      <div className="text-white/80 text-[8px] drop-shadow leading-tight">Shorts 영상 제목이 여기에 표시됩니다</div>
+      <div className="flex items-center gap-2 mt-1">
+        <div className="px-2 py-0.5 bg-white/20 rounded-full text-white text-[7px] font-semibold">구독</div>
+      </div>
+    </div>
+  </>
+);
+
+const InstagramMockUI = () => (
+  <>
+    {/* 우측 액션 버튼 */}
+    <div className="absolute right-[3%] bottom-[22%] flex flex-col items-center gap-3">
+      <div className="flex flex-col items-center">
+        <span className="text-white text-xl drop-shadow">♥</span>
+        <span className="text-white text-[8px] font-semibold drop-shadow">9,432</span>
+      </div>
+      <div className="flex flex-col items-center">
+        <span className="text-white text-lg drop-shadow">💬</span>
+        <span className="text-white text-[8px] font-semibold drop-shadow">84</span>
+      </div>
+      <div className="flex flex-col items-center">
+        <span className="text-white text-lg drop-shadow">↗</span>
+      </div>
+      <div className="flex flex-col items-center">
+        <span className="text-white text-lg drop-shadow">⋯</span>
+      </div>
+    </div>
+    {/* 하단 유저 정보 */}
+    <div className="absolute left-[4%] bottom-[5%] right-[15%]">
+      <div className="flex items-center gap-1.5 mb-1">
+        <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-yellow-500 via-pink-500 to-purple-500 p-[1.5px]">
+          <div className="w-full h-full rounded-full bg-gray-800" />
+        </div>
+        <div className="text-white text-[10px] font-bold drop-shadow">username</div>
+        <div className="px-1.5 py-0.5 border border-white/50 rounded text-white text-[7px] font-semibold">팔로우</div>
+      </div>
+      <div className="text-white/80 text-[8px] drop-shadow leading-tight">릴스 설명... #인스타그램 #릴스</div>
+      <div className="flex items-center gap-1 mt-1 opacity-70">
+        <span className="text-white text-[8px]">♪</span>
+        <div className="text-white text-[7px] truncate">원본 오디오</div>
+      </div>
+    </div>
+  </>
+);
+
+const PLATFORM_MOCK_UI: Record<SafeZonePlatform, React.FC> = {
+  tiktok: TikTokMockUI,
+  youtube: YouTubeMockUI,
+  instagram: InstagramMockUI,
+};
+
 const SafeZoneOverlay = React.memo(({ activePlatforms }: { activePlatforms: Set<SafeZonePlatform> }) => {
   if (activePlatforms.size === 0) return null;
   return (
     <div className="absolute inset-0 pointer-events-none z-[115]">
       {Array.from(activePlatforms).map((platform) => {
         const cfg = SAFE_ZONE_CONFIG[platform];
+        const MockUI = PLATFORM_MOCK_UI[platform];
         return (
           <React.Fragment key={platform}>
             {/* Safe zone border */}
@@ -735,6 +854,8 @@ const SafeZoneOverlay = React.memo(({ activePlatforms }: { activePlatforms: Set<
                 }}
               />
             )}
+            {/* SNS UI 모킹 — 실제 앱처럼 채널명, 좋아요, 공유 등 표시 */}
+            <MockUI />
           </React.Fragment>
         );
       })}
@@ -1431,7 +1552,7 @@ const Player = React.memo(({
           </div>
 
           {/* Safe Zone Overlay */}
-          {canvasAspectRatio === '9:16' && activeSafeZones.size > 0 && (
+          {(canvasAspectRatio === '9:16' || canvasAspectRatio === '3:4') && activeSafeZones.size > 0 && (
             <SafeZoneOverlay activePlatforms={activeSafeZones} />
           )}
 
@@ -1593,8 +1714,8 @@ const Player = React.memo(({
             )}
           </div>
           <div className="w-px h-3 bg-gray-700" />
-          {/* Safe Zone Toggle — 9:16 세로 비율일 때만 표시 */}
-          {canvasAspectRatio === '9:16' && (
+          {/* Safe Zone Toggle — SNS 미리보기 */}
+          {(canvasAspectRatio === '9:16' || canvasAspectRatio === '3:4') && (
             <div className="relative">
               <button
                 onClick={() => setShowSafeZoneMenu(prev => !prev)}
