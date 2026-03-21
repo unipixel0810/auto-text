@@ -8,6 +8,8 @@ import { ANIMATION_CSS_CLASS } from '@/components/editor/SubtitleAnimationPanel'
 
 // Global flag: when a guide line is being dragged, subtitle drag must be suppressed
 let _guideDragActive = false;
+let _guideIdCounter = 0;
+interface GuideLine { id: number; pct: number; }
 
 // --- Sub-components for Performance Optimization ---
 
@@ -349,8 +351,8 @@ const SubtitleOverlay = React.memo(({
   onInteractionStart?: () => void,
   onInteractionEnd?: () => void,
   activeSafeZones?: Set<SafeZonePlatform>,
-  guideLinesH?: number[],
-  guideLinesV?: number[],
+  guideLinesH?: GuideLine[],
+  guideLinesV?: GuideLine[],
   containerRef?: React.RefObject<HTMLDivElement | null>,
 }) => {
   const aspectScaleMap: Record<string, number> = { '16:9': 1, '9:16': 0.42, '1:1': 0.7, '3:4': 0.55 };
@@ -376,6 +378,7 @@ const SubtitleOverlay = React.memo(({
     origScale: number; origRotation: number;
     centerX: number; centerY: number;
     dragging: boolean;
+    boxTop: number; boxBottom: number; boxLeft: number; boxRight: number;
   } | null>(null);
 
   const onClipUpdateRef = useRef(onClipUpdate);
@@ -394,7 +397,7 @@ const SubtitleOverlay = React.memo(({
 
   // Use window-level listeners for reliable drag
   useEffect(() => {
-    const SNAP_THRESHOLD_PX = 12; // 스냅 거리 (px)
+    const SNAP_THRESHOLD_PX = 14; // 스냅 거리 (px)
     const onMove = (e: PointerEvent) => {
       const d = dragRef.current;
       if (!d || !onClipUpdateRef.current) return;
@@ -409,40 +412,48 @@ const SubtitleOverlay = React.memo(({
         let newX = d.origX + (e.clientX - d.startX);
         let newY = d.origY + (e.clientY - d.startY);
 
-        // 가이드 라인 자석 스냅 — 자막 위치가 라인 근처일 때만 흡착
+        // 가이드 라인 자석 스냅 — 자막 박스의 상/하/좌/우 가장자리 기준
         const container = containerRefLocal?.current;
         if (container) {
           const rect = container.getBoundingClientRect();
-          // 자막의 현재 화면 좌표 (커서 기준)
-          const subtitleScreenY = e.clientY;
-          const subtitleScreenX = e.clientX;
+          const dx = e.clientX - d.startX;
+          const dy = e.clientY - d.startY;
+          // 자막 박스의 현재 스크린 좌표 (초기 박스 + 이동량)
+          const boxTop = d.boxTop + dy;
+          const boxBottom = d.boxBottom + dy;
+          const boxLeft = d.boxLeft + dx;
+          const boxRight = d.boxRight + dx;
 
-          // 가로 가이드 스냅 (Y축) — 가장 가까운 라인에만 흡착
+          // 가로 가이드 스냅 (Y축) — 박스 상단/하단 가장자리가 라인에 닿으면 흡착
           const hLines = guideLinesHRef.current;
           if (hLines && hLines.length > 0) {
             let closestDist = Infinity;
-            let closestLineY = 0;
-            for (const pct of hLines) {
-              const lineY = rect.top + (pct / 100) * rect.height;
-              const dist = Math.abs(subtitleScreenY - lineY);
-              if (dist < closestDist) { closestDist = dist; closestLineY = lineY; }
+            let snapDelta = 0;
+            for (const gl of hLines) {
+              const lineY = rect.top + (gl.pct / 100) * rect.height;
+              const distTop = Math.abs(boxTop - lineY);
+              const distBottom = Math.abs(boxBottom - lineY);
+              if (distTop < closestDist) { closestDist = distTop; snapDelta = lineY - boxTop; }
+              if (distBottom < closestDist) { closestDist = distBottom; snapDelta = lineY - boxBottom; }
             }
             if (closestDist < SNAP_THRESHOLD_PX) {
-              newY = d.origY + (closestLineY - d.startY);
+              newY += snapDelta;
             }
           }
-          // 세로 가이드 스냅 (X축) — 가장 가까운 라인에만 흡착
+          // 세로 가이드 스냅 (X축) — 박스 좌측/우측 가장자리가 라인에 닿으면 흡착
           const vLines = guideLinesVRef.current;
           if (vLines && vLines.length > 0) {
             let closestDist = Infinity;
-            let closestLineX = 0;
-            for (const pct of vLines) {
-              const lineX = rect.left + (pct / 100) * rect.width;
-              const dist = Math.abs(subtitleScreenX - lineX);
-              if (dist < closestDist) { closestDist = dist; closestLineX = lineX; }
+            let snapDelta = 0;
+            for (const gl of vLines) {
+              const lineX = rect.left + (gl.pct / 100) * rect.width;
+              const distLeft = Math.abs(boxLeft - lineX);
+              const distRight = Math.abs(boxRight - lineX);
+              if (distLeft < closestDist) { closestDist = distLeft; snapDelta = lineX - boxLeft; }
+              if (distRight < closestDist) { closestDist = distRight; snapDelta = lineX - boxRight; }
             }
             if (closestDist < SNAP_THRESHOLD_PX) {
-              newX = d.origX + (closestLineX - d.startX);
+              newX += snapDelta;
             }
           }
         }
@@ -500,6 +511,10 @@ const SubtitleOverlay = React.memo(({
       centerX: rect ? rect.left + rect.width / 2 : e.clientX,
       centerY: rect ? rect.top + rect.height / 2 : e.clientY,
       dragging: false,
+      boxTop: rect ? rect.top : e.clientY,
+      boxBottom: rect ? rect.bottom : e.clientY,
+      boxLeft: rect ? rect.left : e.clientX,
+      boxRight: rect ? rect.right : e.clientX,
     };
   }, [onClipSelect]);
 
@@ -974,8 +989,8 @@ const Player = React.memo(({
   const [activeSafeZones, setActiveSafeZones] = useState<Set<SafeZonePlatform>>(new Set());
   const [showSafeZoneMenu, setShowSafeZoneMenu] = useState(false);
   // 가이드 라인 기능
-  const [guideLinesH, setGuideLinesH] = useState<number[]>([]); // 가로 라인들 (% from top)
-  const [guideLinesV, setGuideLinesV] = useState<number[]>([]); // 세로 라인들 (% from left)
+  const [guideLinesH, setGuideLinesH] = useState<GuideLine[]>([]); // 가로 라인들 (% from top)
+  const [guideLinesV, setGuideLinesV] = useState<GuideLine[]>([]); // 세로 라인들 (% from left)
   const [guideLineMode, setGuideLineMode] = useState<'h' | 'v' | null>(null); // 라인 추가 모드
   const [isDraggingGuide, setIsDraggingGuide] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1643,11 +1658,11 @@ const Player = React.memo(({
           )}
 
           {/* 가로 가이드 라인들 — 무한대 개수, 화면 밖으로 드래그하면 삭제 */}
-          {guideLinesH.map((pct, idx) => (
+          {guideLinesH.map((gl) => (
             <div
-              key={`gh-${idx}`}
+              key={`gh-${gl.id}`}
               className="absolute left-0 right-0 z-[140]"
-              style={{ top: `calc(${pct}% - 10px)`, height: 20, cursor: 'ns-resize', pointerEvents: 'auto' }}
+              style={{ top: `calc(${gl.pct}% - 10px)`, height: 20, cursor: 'ns-resize', pointerEvents: 'auto' }}
               onPointerDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -1655,40 +1670,20 @@ const Player = React.memo(({
                 setIsDraggingGuide(true);
                 const container = containerRef.current;
                 if (!container) return;
-                const i = idx;
-                let deleted = false;
+                const lineId = gl.id;
                 const onMove = (ev: PointerEvent) => {
                   const rect = container.getBoundingClientRect();
                   const y = ev.clientY;
-                  // 화면 밖으로 나가면 삭제
                   if (y < rect.top - 30 || y > rect.bottom + 30) {
-                    if (!deleted) {
-                      deleted = true;
-                      setGuideLinesH(prev => prev.filter((_, j) => j !== i));
-                    }
+                    setGuideLinesH(prev => prev.filter(g => g.id !== lineId));
                   } else {
-                    if (deleted) {
-                      // 다시 돌아오면 복원
-                      deleted = false;
-                      const p = Math.max(2, Math.min(98, ((y - rect.top) / rect.height) * 100));
-                      setGuideLinesH(prev => { const next = [...prev]; next.splice(i, 0, p); return next; });
-                    } else {
-                      const p = Math.max(2, Math.min(98, ((y - rect.top) / rect.height) * 100));
-                      setGuideLinesH(prev => prev.map((v, j) => j === i ? p : v));
-                    }
+                    const p = Math.max(2, Math.min(98, ((y - rect.top) / rect.height) * 100));
+                    setGuideLinesH(prev => prev.map(g => g.id === lineId ? { ...g, pct: p } : g));
                   }
                 };
                 const onUp = () => {
                   _guideDragActive = false;
                   setIsDraggingGuide(false);
-                  // If still outside bounds at release, ensure deletion sticks
-                  if (deleted) {
-                    setGuideLinesH(prev => {
-                      // Guard: only keep items that aren't at the deleted index
-                      // (already removed during onMove, this is a no-op safety)
-                      return prev;
-                    });
-                  }
                   window.removeEventListener('pointermove', onMove);
                   window.removeEventListener('pointerup', onUp);
                   window.removeEventListener('pointercancel', onUp);
@@ -1701,17 +1696,17 @@ const Player = React.memo(({
               <div className="absolute left-0 right-0" style={{ top: 9, height: 2, borderTop: '2px dashed #FF6B6B', opacity: 0.9 }} />
               <div className="absolute left-1 px-1.5 py-0.5 rounded text-[8px] font-bold pointer-events-none"
                 style={{ top: -6, background: 'rgba(255,107,107,0.9)', color: '#fff' }}>
-                {Math.round(pct)}%
+                {Math.round(gl.pct)}%
               </div>
             </div>
           ))}
 
           {/* 세로 가이드 라인들 — 무한대 개수, 화면 밖으로 드래그하면 삭제 */}
-          {guideLinesV.map((pct, idx) => (
+          {guideLinesV.map((gl) => (
             <div
-              key={`gv-${idx}`}
+              key={`gv-${gl.id}`}
               className="absolute top-0 bottom-0 z-[140]"
-              style={{ left: `calc(${pct}% - 10px)`, width: 20, cursor: 'ew-resize', pointerEvents: 'auto' }}
+              style={{ left: `calc(${gl.pct}% - 10px)`, width: 20, cursor: 'ew-resize', pointerEvents: 'auto' }}
               onPointerDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -1719,34 +1714,20 @@ const Player = React.memo(({
                 setIsDraggingGuide(true);
                 const container = containerRef.current;
                 if (!container) return;
-                const i = idx;
-                let deleted = false;
+                const lineId = gl.id;
                 const onMove = (ev: PointerEvent) => {
                   const rect = container.getBoundingClientRect();
                   const x = ev.clientX;
-                  // 화면 밖으로 나가면 삭제
                   if (x < rect.left - 30 || x > rect.right + 30) {
-                    if (!deleted) {
-                      deleted = true;
-                      setGuideLinesV(prev => prev.filter((_, j) => j !== i));
-                    }
+                    setGuideLinesV(prev => prev.filter(g => g.id !== lineId));
                   } else {
-                    if (deleted) {
-                      deleted = false;
-                      const p = Math.max(2, Math.min(98, ((x - rect.left) / rect.width) * 100));
-                      setGuideLinesV(prev => { const next = [...prev]; next.splice(i, 0, p); return next; });
-                    } else {
-                      const p = Math.max(2, Math.min(98, ((x - rect.left) / rect.width) * 100));
-                      setGuideLinesV(prev => prev.map((v, j) => j === i ? p : v));
-                    }
+                    const p = Math.max(2, Math.min(98, ((x - rect.left) / rect.width) * 100));
+                    setGuideLinesV(prev => prev.map(g => g.id === lineId ? { ...g, pct: p } : g));
                   }
                 };
                 const onUp = () => {
                   _guideDragActive = false;
                   setIsDraggingGuide(false);
-                  if (deleted) {
-                    setGuideLinesV(prev => prev);
-                  }
                   window.removeEventListener('pointermove', onMove);
                   window.removeEventListener('pointerup', onUp);
                   window.removeEventListener('pointercancel', onUp);
@@ -1759,7 +1740,7 @@ const Player = React.memo(({
               <div className="absolute top-0 bottom-0" style={{ left: 9, width: 2, borderLeft: '2px dashed #4DA6FF', opacity: 0.9 }} />
               <div className="absolute top-1 px-1.5 py-0.5 rounded text-[8px] font-bold pointer-events-none"
                 style={{ left: 18, background: 'rgba(77,166,255,0.9)', color: '#fff', whiteSpace: 'nowrap' }}>
-                {Math.round(pct)}%
+                {Math.round(gl.pct)}%
               </div>
             </div>
           ))}
@@ -1777,10 +1758,10 @@ const Player = React.memo(({
                 const rect = container.getBoundingClientRect();
                 if (guideLineMode === 'h') {
                   const p = Math.max(2, Math.min(98, ((e.clientY - rect.top) / rect.height) * 100));
-                  setGuideLinesH(prev => [...prev, p]);
+                  setGuideLinesH(prev => [...prev, { id: ++_guideIdCounter, pct: p }]);
                 } else {
                   const p = Math.max(2, Math.min(98, ((e.clientX - rect.left) / rect.width) * 100));
-                  setGuideLinesV(prev => [...prev, p]);
+                  setGuideLinesV(prev => [...prev, { id: ++_guideIdCounter, pct: p }]);
                 }
                 // 모드 유지 — ESC 또는 버튼 재클릭으로 종료
               }}
