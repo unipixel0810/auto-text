@@ -515,31 +515,39 @@ export default function Home() {
       );
       const blobStillValid = firstMediaClip ? await testBlobUrl(firstMediaClip.url) : false;
 
+      const fileMap = new Map<string, File>(); // clipId → File (라이브러리 복원용)
+
       if (blobStillValid) {
         // SPA 네비게이션 복귀 — blob URL이 아직 유효하므로 그대로 사용
         setClips(restoredClips);
       } else if (mediaKeys.length > 0) {
         // 전체 리로드 또는 blob 만료 — IndexedDB에서 복원
         const urlMap = new Map<string, string>(); // oldUrl → newUrl
-        const fileMap = new Map<string, File>(); // clipId → File
 
+        // clipId 기반으로 IndexedDB에서 blob 복원 (lightenProject가 url을 ''로 저장하므로)
+        const clipIdToNewUrl = new Map<string, string>();
         for (const clip of restoredClips) {
-          if (!clip.url || urlMap.has(clip.url)) continue;
+          // 텍스트/자막 트랙은 미디어 파일 불필요
           if (clip.trackIndex === 0 || (clip.trackIndex >= 5 && clip.trackIndex <= 8)) continue;
+          // 이미 유효한 URL이 있으면 건너뛰기
+          if (clip.url && urlMap.has(clip.url)) continue;
 
           const dbKey = keyByClipId.get(clip.id);
           if (!dbKey) continue;
 
           const media = await loadMediaBlob(dbKey);
           if (media) {
-            urlMap.set(clip.url, media.url);
+            if (clip.url) urlMap.set(clip.url, media.url);
+            clipIdToNewUrl.set(clip.id, media.url);
             fileMap.set(clip.id, media.file);
           }
         }
 
-        // 클립의 URL을 새 blob URL로 교체
+        // 클립의 URL을 새 blob URL로 교체 (url 매핑 또는 clipId 매핑)
         const fixedClips = restoredClips.map(c => {
-          const newUrl = urlMap.get(c.url);
+          const byUrl = c.url ? urlMap.get(c.url) : undefined;
+          const byId = clipIdToNewUrl.get(c.id);
+          const newUrl = byUrl || byId;
           return newUrl ? { ...c, url: newUrl } : c;
         });
         setClips(fixedClips);
@@ -566,13 +574,14 @@ export default function Home() {
           seen.add(clip.url);
           const isAudio = clip.trackIndex >= 20 && clip.trackIndex <= 22;
           const isImage = /\.(jpg|jpeg|png|gif|webp|svg)/i.test(clip.url || clip.name || '');
+          const restoredFile = fileMap.get(clip.id);
           lib.push({
             id: clip.id + '_lib',
             name: clip.name || 'Untitled',
             url: clip.url,
             type: isImage ? 'image' : isAudio ? 'audio' : 'video',
             duration: clip.originalDuration || clip.duration || 0,
-            file: new File([], clip.name || 'restored', { type: isImage ? 'image/png' : isAudio ? 'audio/mp3' : 'video/mp4' }),
+            file: restoredFile || new File([], clip.name || 'restored', { type: isImage ? 'image/png' : isAudio ? 'audio/mp3' : 'video/mp4' }),
           });
         }
         if (lib.length > 0) {
@@ -756,6 +765,11 @@ export default function Home() {
       name = item.name;
       duration = item.duration || 10;
       type = item.type;
+      // 라이브러리 경유 클립도 IndexedDB에 clipId로 저장 (새로고침 복원용)
+      if (item.file && item.file.size > 0) {
+        const pid = projectIdRef.current || 'default';
+        saveMediaBlob(`${pid}:${clipId}`, item.file, name, item.file.type);
+      }
     } else if (file) {
       url = URL.createObjectURL(file);
       name = file.name;
