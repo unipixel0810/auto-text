@@ -332,6 +332,7 @@ const SubtitleOverlay = React.memo(({
   canvasAspectRatio = '16:9',
   onInteractionStart,
   onInteractionEnd,
+  activeSafeZones,
 }: {
   activeSubtitleClips: VideoClip[],
   selectedClipIds: string[],
@@ -341,6 +342,7 @@ const SubtitleOverlay = React.memo(({
   canvasAspectRatio?: '16:9' | '9:16' | '1:1' | '3:4',
   onInteractionStart?: () => void,
   onInteractionEnd?: () => void,
+  activeSafeZones?: Set<SafeZonePlatform>,
 }) => {
   const aspectScaleMap: Record<string, number> = { '16:9': 1, '9:16': 0.42, '1:1': 0.7, '3:4': 0.55 };
   const aspectScale = aspectScaleMap[canvasAspectRatio] || 1;
@@ -454,16 +456,33 @@ const SubtitleOverlay = React.memo(({
           : '';
         const animDuration = clip.subtitleAnimationDuration ?? 0.3;
 
-        // 대본·AI 자막 동일 위치 (하단 3%)
-        const bottomPos = '3%';
+        // 세로 영상 + safe zone 활성 시 safe zone 안에 자막 배치
+        let bottomPos = '3%';
+        let safeMaxWidth = '80%';
+        if (isPortrait && activeSafeZones && activeSafeZones.size > 0) {
+          let maxBottom = 0;
+          let maxLeft = 0;
+          let maxRight = 0;
+          activeSafeZones.forEach(p => {
+            const cfg = SAFE_ZONE_CONFIG[p];
+            if (cfg) {
+              if (cfg.bottom > maxBottom) maxBottom = cfg.bottom;
+              if (cfg.left > maxLeft) maxLeft = cfg.left;
+              if (cfg.right > maxRight) maxRight = cfg.right;
+            }
+          });
+          bottomPos = `${maxBottom + 1}%`;
+          safeMaxWidth = `${100 - maxLeft - maxRight - 2}%`;
+        }
 
         return (
           <div
             key={clip.id}
             data-subtitle-box
-            className={`absolute left-1/2 -translate-x-1/2 z-[110] max-w-[80%] text-center transition-none select-none overflow-hidden${animClass ? ` ${animClass}` : ''}`}
+            className={`absolute left-1/2 -translate-x-1/2 z-[110] text-center transition-none select-none overflow-hidden${animClass ? ` ${animClass}` : ''}`}
             style={{
               bottom: bottomPos,
+              maxWidth: safeMaxWidth,
               transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
               left: '50%',
               cursor: selected ? 'grab' : 'pointer',
@@ -1548,6 +1567,7 @@ const Player = React.memo(({
             canvasAspectRatio={canvasAspectRatio}
             onInteractionStart={onInteractionStart}
             onInteractionEnd={onInteractionEnd}
+            activeSafeZones={activeSafeZones}
           />
 
           {/* Safe Zone Overlay */}
