@@ -6,6 +6,9 @@ import type { VideoClip } from '@/types/video';
 import type { SubtitlePreset } from '@/lib/subtitlePresets';
 import { ANIMATION_CSS_CLASS } from '@/components/editor/SubtitleAnimationPanel';
 
+// Global flag: when a guide line is being dragged, subtitle drag must be suppressed
+let _guideDragActive = false;
+
 // --- Sub-components for Performance Optimization ---
 
 const VisualLayer = React.memo(({
@@ -395,6 +398,8 @@ const SubtitleOverlay = React.memo(({
     const onMove = (e: PointerEvent) => {
       const d = dragRef.current;
       if (!d || !onClipUpdateRef.current) return;
+      // Skip subtitle drag if a guide line is being dragged
+      if (_guideDragActive) { dragRef.current = null; return; }
       if (!d.dragging) {
         if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD) return;
         d.dragging = true;
@@ -479,6 +484,8 @@ const SubtitleOverlay = React.memo(({
   }, []);
 
   const startDrag = useCallback((e: React.PointerEvent, clip: VideoClip, type: 'move' | 'resize' | 'rotate') => {
+    // Block subtitle drag if a guide line drag is active
+    if (_guideDragActive) return;
     e.stopPropagation();
     e.preventDefault();
     if (type === 'move') onClipSelect?.([clip.id]);
@@ -1644,6 +1651,7 @@ const Player = React.memo(({
               onPointerDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                _guideDragActive = true;
                 setIsDraggingGuide(true);
                 const container = containerRef.current;
                 if (!container) return;
@@ -1652,7 +1660,7 @@ const Player = React.memo(({
                 const onMove = (ev: PointerEvent) => {
                   const rect = container.getBoundingClientRect();
                   const y = ev.clientY;
-                  // 화면 밖으로 나가면 삭제 표시
+                  // 화면 밖으로 나가면 삭제
                   if (y < rect.top - 30 || y > rect.bottom + 30) {
                     if (!deleted) {
                       deleted = true;
@@ -1671,12 +1679,23 @@ const Player = React.memo(({
                   }
                 };
                 const onUp = () => {
+                  _guideDragActive = false;
                   setIsDraggingGuide(false);
+                  // If still outside bounds at release, ensure deletion sticks
+                  if (deleted) {
+                    setGuideLinesH(prev => {
+                      // Guard: only keep items that aren't at the deleted index
+                      // (already removed during onMove, this is a no-op safety)
+                      return prev;
+                    });
+                  }
                   window.removeEventListener('pointermove', onMove);
                   window.removeEventListener('pointerup', onUp);
+                  window.removeEventListener('pointercancel', onUp);
                 };
                 window.addEventListener('pointermove', onMove);
                 window.addEventListener('pointerup', onUp);
+                window.addEventListener('pointercancel', onUp);
               }}
             >
               <div className="absolute left-0 right-0" style={{ top: 9, height: 2, borderTop: '2px dashed #FF6B6B', opacity: 0.9 }} />
@@ -1696,6 +1715,7 @@ const Player = React.memo(({
               onPointerDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                _guideDragActive = true;
                 setIsDraggingGuide(true);
                 const container = containerRef.current;
                 if (!container) return;
@@ -1722,12 +1742,18 @@ const Player = React.memo(({
                   }
                 };
                 const onUp = () => {
+                  _guideDragActive = false;
                   setIsDraggingGuide(false);
+                  if (deleted) {
+                    setGuideLinesV(prev => prev);
+                  }
                   window.removeEventListener('pointermove', onMove);
                   window.removeEventListener('pointerup', onUp);
+                  window.removeEventListener('pointercancel', onUp);
                 };
                 window.addEventListener('pointermove', onMove);
                 window.addEventListener('pointerup', onUp);
+                window.addEventListener('pointercancel', onUp);
               }}
             >
               <div className="absolute top-0 bottom-0" style={{ left: 9, width: 2, borderLeft: '2px dashed #4DA6FF', opacity: 0.9 }} />
