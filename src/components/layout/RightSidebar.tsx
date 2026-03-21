@@ -1119,29 +1119,46 @@ const RightSidebar = React.memo(({
                       <span className="material-icons text-xs">find_replace</span>
                     </button>
                   </div>
-                  {showReplace && searchQuery && (
-                    <div className="flex items-center gap-1">
-                      <input type="text" placeholder="변환할 텍스트" value={replaceQuery} onChange={(e) => setReplaceQuery(e.target.value)}
-                        className="flex-1 px-2 py-1.5 bg-black/30 border border-border-color rounded text-xs text-white placeholder-text-secondary focus:outline-none focus:border-primary" />
-                      <button onClick={() => {
-                        if (!searchQuery || !replaceQuery) return;
-                        const updated = transcripts.map(t => {
-                          const text = t.editedText || t.originalText;
-                          if (!text.includes(searchQuery)) return t;
-                          return { ...t, editedText: text.replaceAll(searchQuery, replaceQuery), originalText: t.originalText };
-                        });
-                        onTranscriptsUpdate?.(updated);
-                        // Also update matching clips
-                        if (clips && onClipUpdate) {
-                          clips.forEach(c => {
-                            if (c.name.includes(searchQuery)) {
-                              onClipUpdate(c.id, { name: c.name.replaceAll(searchQuery, replaceQuery) });
-                            }
+                  {showReplace && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-1">
+                        <input type="text" placeholder="찾을 단어" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                          className="flex-1 px-2 py-1.5 bg-black/30 border border-border-color rounded text-xs text-white placeholder-text-secondary focus:outline-none focus:border-primary" />
+                        {searchQuery && (
+                          <span className="text-[9px] text-primary font-mono whitespace-nowrap">
+                            {transcripts.reduce((cnt, t) => cnt + ((t.editedText || t.originalText).split(searchQuery).length - 1), 0)}건
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <input type="text" placeholder="바꿀 단어" value={replaceQuery} onChange={(e) => setReplaceQuery(e.target.value)}
+                          className="flex-1 px-2 py-1.5 bg-black/30 border border-border-color rounded text-xs text-white placeholder-text-secondary focus:outline-none focus:border-primary" />
+                        <button onClick={() => {
+                          if (!searchQuery || !replaceQuery) return;
+                          const updated = transcripts.map(t => {
+                            const text = t.editedText || t.originalText;
+                            if (!text.includes(searchQuery)) return t;
+                            return { ...t, editedText: text.replaceAll(searchQuery, replaceQuery), originalText: t.originalText };
                           });
-                        }
-                      }} className="px-2 py-1.5 bg-primary hover:bg-primary/80 text-white rounded text-xs whitespace-nowrap">
-                        전체 변환
-                      </button>
+                          onTranscriptsUpdate?.(updated);
+                          if (clips && onClipUpdate) {
+                            clips.forEach(c => {
+                              if (c.name.includes(searchQuery)) {
+                                onClipUpdate(c.id, { name: c.name.replaceAll(searchQuery, replaceQuery) });
+                              }
+                            });
+                          }
+                          setSearchQuery('');
+                          setReplaceQuery('');
+                        }} disabled={!searchQuery || !replaceQuery}
+                          className={`px-2.5 py-1.5 rounded text-xs font-semibold whitespace-nowrap transition-all ${
+                            searchQuery && replaceQuery
+                              ? 'bg-primary hover:bg-primary/80 text-white active:scale-95'
+                              : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                          }`}>
+                          전체 변환
+                        </button>
+                      </div>
                     </div>
                   )}
                   {/* SRT/ASS Import (hidden, triggered from LeftSidebar import button) */}
