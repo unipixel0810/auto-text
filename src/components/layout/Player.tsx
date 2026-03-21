@@ -991,7 +991,7 @@ const Player = React.memo(({
   // 가이드 라인 기능
   const [guideLinesH, setGuideLinesH] = useState<GuideLine[]>([]); // 가로 라인들 (% from top)
   const [guideLinesV, setGuideLinesV] = useState<GuideLine[]>([]); // 세로 라인들 (% from left)
-  const [guideLineMode, setGuideLineMode] = useState<'h' | 'v' | null>(null); // 라인 추가 모드
+  // guideLineMode 제거됨 — 버튼 클릭으로 바로 라인 생성
   const [isDraggingGuide, setIsDraggingGuide] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1745,42 +1745,7 @@ const Player = React.memo(({
             </div>
           ))}
 
-          {/* 가이드라인 생성 클릭 영역 */}
-          {guideLineMode && (
-            <div
-              className="absolute inset-0 z-[150]"
-              style={{ pointerEvents: 'auto', cursor: guideLineMode === 'h' ? 'row-resize' : 'col-resize' }}
-              onPointerDown={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const container = containerRef.current;
-                if (!container) return;
-                const rect = container.getBoundingClientRect();
-                if (guideLineMode === 'h') {
-                  const p = Math.max(2, Math.min(98, ((e.clientY - rect.top) / rect.height) * 100));
-                  setGuideLinesH(prev => [...prev, { id: ++_guideIdCounter, pct: p }]);
-                } else {
-                  const p = Math.max(2, Math.min(98, ((e.clientX - rect.left) / rect.width) * 100));
-                  setGuideLinesV(prev => [...prev, { id: ++_guideIdCounter, pct: p }]);
-                }
-                // 모드 유지 — ESC 또는 버튼 재클릭으로 종료
-              }}
-              onContextMenu={(e) => { e.preventDefault(); setGuideLineMode(null); }}
-              onKeyDown={(e) => { if (e.key === 'Escape') setGuideLineMode(null); }}
-              tabIndex={0}
-            >
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/20">
-                <div className="flex flex-col items-center gap-1">
-                  <span className="material-icons text-2xl" style={{ color: guideLineMode === 'h' ? '#FF6B6B' : '#4DA6FF' }}>
-                    {guideLineMode === 'h' ? 'horizontal_rule' : 'vertical_shades'}
-                  </span>
-                  <span className="text-white text-xs bg-black/60 px-3 py-1.5 rounded">
-                    클릭하여 {guideLineMode === 'h' ? '가로' : '세로'} 가이드 라인 배치 (우클릭 또는 ESC로 종료)
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
+          {/* guideLineMode overlay 제거 — 버튼 클릭으로 바로 라인 생성 */}
 
           {isPresetDragOver && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none z-30">
@@ -1940,22 +1905,22 @@ const Player = React.memo(({
             )}
           </div>
           <div className="w-px h-3 bg-gray-700" />
-          {/* 가이드 라인 추가/삭제 */}
+          {/* 가이드 라인 추가 — 클릭하면 바로 라인 생성, 드래그로 이동, 화면 밖으로 드래그하면 삭제 */}
           <div className="flex items-center gap-0.5">
             <button
-              onClick={() => setGuideLineMode(prev => prev === 'h' ? null : 'h')}
-              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLineMode === 'h' ? 'text-[#FF6B6B] bg-[#FF6B6B]/20 ring-1 ring-[#FF6B6B]' : guideLinesH.length > 0 ? 'text-[#FF6B6B] bg-[#FF6B6B]/10' : 'text-gray-400 hover:text-white'}`}
-              title="클릭하여 가로 가이드 추가 모드"
+              onClick={() => setGuideLinesH(prev => [...prev, { id: ++_guideIdCounter, pct: 50 }])}
+              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLinesH.length > 0 ? 'text-[#FF6B6B] bg-[#FF6B6B]/10' : 'text-gray-400 hover:text-white'}`}
+              title="가로 가이드 추가 (드래그로 이동, 화면 밖으로 삭제)"
             >
-              <span className="material-icons text-xs" style={{ transform: 'rotate(0deg)' }}>remove</span>
+              <span className="material-icons text-xs">add</span>
               <span className="text-[8px] font-bold">H{guideLinesH.length > 0 ? `(${guideLinesH.length})` : ''}</span>
             </button>
             <button
-              onClick={() => setGuideLineMode(prev => prev === 'v' ? null : 'v')}
-              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLineMode === 'v' ? 'text-[#4DA6FF] bg-[#4DA6FF]/20 ring-1 ring-[#4DA6FF]' : guideLinesV.length > 0 ? 'text-[#4DA6FF] bg-[#4DA6FF]/10' : 'text-gray-400 hover:text-white'}`}
-              title="클릭하여 세로 가이드 추가 모드"
+              onClick={() => setGuideLinesV(prev => [...prev, { id: ++_guideIdCounter, pct: 50 }])}
+              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLinesV.length > 0 ? 'text-[#4DA6FF] bg-[#4DA6FF]/10' : 'text-gray-400 hover:text-white'}`}
+              title="세로 가이드 추가 (드래그로 이동, 화면 밖으로 삭제)"
             >
-              <span className="material-icons text-xs" style={{ transform: 'rotate(90deg)', fontSize: 14 }}>remove</span>
+              <span className="material-icons text-xs">add</span>
               <span className="text-[8px] font-bold">V{guideLinesV.length > 0 ? `(${guideLinesV.length})` : ''}</span>
             </button>
             {(guideLinesH.length > 0 || guideLinesV.length > 0) && (
