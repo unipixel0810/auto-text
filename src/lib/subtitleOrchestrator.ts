@@ -57,8 +57,8 @@ const AI_MIN_DURATION = 1.0;
 /** 강제 배치 시 최소 슬롯 시간 (초) — 자연 gap이 부족할 때 */
 const FORCED_MIN_SLOT = 0.8;
 
-/** AI 자막 최소 비율 — 전체 자막 중 AI가 이 비율 이상 */
-const AI_MIN_RATIO = 0.7;
+/** AI 자막 최소 비율 — 전체 자막 중 AI가 이 비율 이상 (대본:AI = 7:3) */
+const AI_MIN_RATIO = 0.3;
 
 // ============================================
 // 타입

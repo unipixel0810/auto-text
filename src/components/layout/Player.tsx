@@ -460,10 +460,10 @@ const SubtitleOverlay = React.memo(({
 
         // 가이드 라인이 설정되어 있으면 해당 위치에 자막 배치
         // 세로 영상 + safe zone 활성 시 safe zone 안에 자막 배치
-        let bottomPos = '3%';
+        let bottomPos = isPortrait ? '18%' : '3%';
         let useTopPos = false;
         let topPos = '0%';
-        let safeMaxWidth = '80%';
+        let safeMaxWidth = isPortrait ? '90%' : '80%';
 
         if (guideLineY != null) {
           // 가이드 라인: top 기준 배치
@@ -587,9 +587,9 @@ const SubtitleOverlay = React.memo(({
                   color: clip.color || '#FFFFFF',
                   fontFamily: clip.fontFamily || 'PaperlogyExtraBold, sans-serif',
                   fontWeight: clip.fontWeight || 800,
-                  fontSize: `${Math.round((clip.fontSize || 35) * aspectScale)}px`,
-                  lineHeight: clip.lineHeight ?? 1.4,
-                  letterSpacing: clip.letterSpacing !== undefined ? `${clip.letterSpacing}em` : undefined,
+                  fontSize: `${Math.round((clip.fontSize || 40) * aspectScale)}px`,
+                  lineHeight: clip.lineHeight ?? 1.35,
+                  letterSpacing: clip.letterSpacing !== undefined ? `${clip.letterSpacing}em` : '0.02em',
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-all',
                   overflowWrap: 'break-word',
@@ -599,11 +599,10 @@ const SubtitleOverlay = React.memo(({
                   WebkitLineClamp: 2,
                   WebkitBoxOrient: 'vertical' as const,
                   textShadow: clip.glowColor
-                    ? `0 0 ${clip.shadowBlur || 0}px ${clip.glowColor}, 0 0 ${(clip.shadowBlur || 0) * 2}px ${clip.glowColor}`
-                    : (clip.shadowBlur || 0) > 0
-                      ? `${clip.shadowOffsetX || 0}px ${clip.shadowOffsetY || 0}px ${clip.shadowBlur || 0}px ${clip.shadowColor || 'transparent'}`
-                      : 'none',
-                  WebkitTextStroke: (clip.strokeWidth || 0) > 0 ? `${clip.strokeWidth}px ${clip.strokeColor || '#000000'}` : 'none',
+                    ? `0 0 ${clip.shadowBlur || 6}px ${clip.glowColor}, 0 0 ${(clip.shadowBlur || 6) * 2}px ${clip.glowColor}`
+                    : `2px 2px ${clip.shadowBlur ?? 8}px ${clip.shadowColor || 'rgba(0,0,0,0.9)'}, -1px -1px 4px rgba(0,0,0,0.5)`,
+                  WebkitTextStroke: `${clip.strokeWidth ?? 3}px ${clip.strokeColor || '#000000'}`,
+                  paintOrder: 'stroke fill',
                   pointerEvents: editingClipId === clip.id ? 'auto' : 'none',
                   outline: 'none',
                   cursor: editingClipId === clip.id ? 'text' : 'inherit',

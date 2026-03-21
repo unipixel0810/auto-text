@@ -1593,8 +1593,8 @@ export default function Home() {
       trackIndex,
       scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1,
       linked: true, linkGroupId: groupId,
-      fontFamily: 'PaperlogyExtraBold, sans-serif', fontSize: 36,
-      color: item.color || '#FFFFFF', strokeColor: item.strokeColor || '#000000', strokeWidth: 3, fontWeight: 800, shadowColor: 'rgba(0,0,0,0.9)', shadowBlur: 6, shadowOffsetX: 2, shadowOffsetY: 2,
+      fontFamily: 'PaperlogyExtraBold, sans-serif', fontSize: 40,
+      color: item.color || '#FFFFFF', strokeColor: item.strokeColor || '#000000', strokeWidth: 3, fontWeight: 800, shadowColor: 'rgba(0,0,0,0.9)', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2,
     }));
 
     setClips(prev => {
