@@ -214,7 +214,8 @@ function forceInterleaveAi(
   alreadyPlaced: TranscriptItem[],
   timelineEnd: number,
 ): TranscriptItem[] {
-  const totalTarget = dialogue.length; // AI 최소 = 대본 수 (50:50)
+  // AI 70% 목표: AI / (AI + dialogue) >= 0.7 → AI >= dialogue * (0.7/0.3) ≈ 2.33
+  const totalTarget = Math.ceil(dialogue.length * (AI_MIN_RATIO / (1 - AI_MIN_RATIO)));
   const needed = totalTarget - alreadyPlaced.length;
   if (needed <= 0) return alreadyPlaced;
 
@@ -226,55 +227,36 @@ function forceInterleaveAi(
   const forced = [...alreadyPlaced];
   let aiIdx = 0;
 
-  // 대본 사이마다 AI 슬롯을 강제로 끼워넣기
-  // step = 대본을 몇 개 건너뛸지 (needed가 적으면 띄엄띄엄)
-  const step = Math.max(1, Math.floor(sorted.length / Math.max(1, needed)));
-
-  for (let i = 0; i < sorted.length && aiIdx < available.length && forced.length - alreadyPlaced.length < needed; i += step) {
+  // 대본 사이마다 AI 슬롯을 강제로 끼워넣기 (여러 개 가능)
+  for (let i = 0; i < sorted.length && aiIdx < available.length && forced.length - alreadyPlaced.length < needed; i++) {
     const d = sorted[i];
     const speechEnd = getSpeechEndTime(d);
     const nextStart = i + 1 < sorted.length ? sorted[i + 1].startTime : timelineEnd;
+    const gapDur = nextStart - speechEnd;
 
-    // 이미 이 구간에 AI가 있으면 스킵
-    const hasAi = forced.some(a => a.startTime >= speechEnd - 0.3 && a.startTime < nextStart);
-    if (hasAi) continue;
+    if (gapDur < FORCED_MIN_SLOT) continue;
 
-    const slotStart = speechEnd;
-    const slotEnd = Math.min(slotStart + 2.5, nextStart);
-    const slotDur = slotEnd - slotStart;
+    // 이 gap에 넣을 수 있는 슬롯 수 계산 (슬롯당 2초 + 간격 0.3초)
+    const slotSize = 2.0;
+    const slotGap = 0.3;
+    const maxSlots = Math.max(1, Math.floor((gapDur + slotGap) / (slotSize + slotGap)));
+    const slotsNeeded = Math.min(maxSlots, needed - (forced.length - alreadyPlaced.length));
 
-    if (slotDur >= FORCED_MIN_SLOT) {
+    for (let s = 0; s < slotsNeeded && aiIdx < available.length; s++) {
+      const slotStart = speechEnd + s * (slotSize + slotGap);
+      const slotEnd = Math.min(slotStart + slotSize, nextStart - (s < slotsNeeded - 1 ? slotGap : 0));
+      if (slotEnd - slotStart < FORCED_MIN_SLOT) break;
+
+      // 이미 이 시간에 AI가 있으면 스킵
+      const hasAi = forced.some(a => a.startTime < slotEnd && a.endTime > slotStart);
+      if (hasAi) continue;
+
       forced.push({
         ...available[aiIdx],
         startTime: slotStart,
         endTime: slotEnd,
       });
       aiIdx++;
-    }
-  }
-
-  // step이 너무 커서 덜 채웠으면, 빈 구간을 순회하며 나머지도 채움
-  if (aiIdx < available.length && forced.length - alreadyPlaced.length < needed) {
-    for (let i = 0; i < sorted.length && aiIdx < available.length; i++) {
-      const d = sorted[i];
-      const speechEnd = getSpeechEndTime(d);
-      const nextStart = i + 1 < sorted.length ? sorted[i + 1].startTime : timelineEnd;
-
-      const hasAi = forced.some(a => a.startTime >= speechEnd - 0.3 && a.startTime < nextStart);
-      if (hasAi) continue;
-
-      const slotStart = speechEnd;
-      const slotEnd = Math.min(slotStart + 2.0, nextStart);
-      const slotDur = slotEnd - slotStart;
-
-      if (slotDur >= FORCED_MIN_SLOT) {
-        forced.push({
-          ...available[aiIdx],
-          startTime: slotStart,
-          endTime: slotEnd,
-        });
-        aiIdx++;
-      }
     }
   }
 
