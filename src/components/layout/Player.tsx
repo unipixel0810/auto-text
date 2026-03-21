@@ -333,7 +333,9 @@ const SubtitleOverlay = React.memo(({
   onInteractionStart,
   onInteractionEnd,
   activeSafeZones,
-  guideLineY,
+  guideLinesH,
+  guideLinesV,
+  containerRef,
 }: {
   activeSubtitleClips: VideoClip[],
   selectedClipIds: string[],
@@ -344,7 +346,9 @@ const SubtitleOverlay = React.memo(({
   onInteractionStart?: () => void,
   onInteractionEnd?: () => void,
   activeSafeZones?: Set<SafeZonePlatform>,
-  guideLineY?: number | null,
+  guideLinesH?: number[],
+  guideLinesV?: number[],
+  containerRef?: React.RefObject<HTMLDivElement | null>,
 }) => {
   const aspectScaleMap: Record<string, number> = { '16:9': 1, '9:16': 0.42, '1:1': 0.7, '3:4': 0.55 };
   const aspectScale = aspectScaleMap[canvasAspectRatio] || 1;
@@ -378,8 +382,16 @@ const SubtitleOverlay = React.memo(({
   const onInteractionEndRef = useRef(onInteractionEnd);
   onInteractionEndRef.current = onInteractionEnd;
 
+  // 가이드 라인 스냅 refs
+  const guideLinesHRef = useRef(guideLinesH);
+  guideLinesHRef.current = guideLinesH;
+  const guideLinesVRef = useRef(guideLinesV);
+  guideLinesVRef.current = guideLinesV;
+  const containerRefLocal = containerRef;
+
   // Use window-level listeners for reliable drag
   useEffect(() => {
+    const SNAP_THRESHOLD_PX = 12; // 스냅 거리 (px)
     const onMove = (e: PointerEvent) => {
       const d = dragRef.current;
       if (!d || !onClipUpdateRef.current) return;
@@ -389,10 +401,48 @@ const SubtitleOverlay = React.memo(({
         onInteractionStartRef.current?.();
       }
       if (d.type === 'move') {
-        onClipUpdateRef.current(d.clipId, {
-          positionX: d.origX + (e.clientX - d.startX),
-          positionY: d.origY + (e.clientY - d.startY),
-        });
+        let newX = d.origX + (e.clientX - d.startX);
+        let newY = d.origY + (e.clientY - d.startY);
+
+        // 가이드 라인 자석 스냅 — 자막 위치가 라인 근처일 때만 흡착
+        const container = containerRefLocal?.current;
+        if (container) {
+          const rect = container.getBoundingClientRect();
+          // 자막의 현재 화면 좌표 (커서 기준)
+          const subtitleScreenY = e.clientY;
+          const subtitleScreenX = e.clientX;
+
+          // 가로 가이드 스냅 (Y축) — 가장 가까운 라인에만 흡착
+          const hLines = guideLinesHRef.current;
+          if (hLines && hLines.length > 0) {
+            let closestDist = Infinity;
+            let closestLineY = 0;
+            for (const pct of hLines) {
+              const lineY = rect.top + (pct / 100) * rect.height;
+              const dist = Math.abs(subtitleScreenY - lineY);
+              if (dist < closestDist) { closestDist = dist; closestLineY = lineY; }
+            }
+            if (closestDist < SNAP_THRESHOLD_PX) {
+              newY = d.origY + (closestLineY - d.startY);
+            }
+          }
+          // 세로 가이드 스냅 (X축) — 가장 가까운 라인에만 흡착
+          const vLines = guideLinesVRef.current;
+          if (vLines && vLines.length > 0) {
+            let closestDist = Infinity;
+            let closestLineX = 0;
+            for (const pct of vLines) {
+              const lineX = rect.left + (pct / 100) * rect.width;
+              const dist = Math.abs(subtitleScreenX - lineX);
+              if (dist < closestDist) { closestDist = dist; closestLineX = lineX; }
+            }
+            if (closestDist < SNAP_THRESHOLD_PX) {
+              newX = d.origX + (closestLineX - d.startX);
+            }
+          }
+        }
+
+        onClipUpdateRef.current(d.clipId, { positionX: newX, positionY: newY });
       } else if (d.type === 'resize') {
         const startDist = Math.hypot(d.startX - d.centerX, d.startY - d.centerY);
         const curDist = Math.hypot(e.clientX - d.centerX, e.clientY - d.centerY);
@@ -458,18 +508,11 @@ const SubtitleOverlay = React.memo(({
           : '';
         const animDuration = clip.subtitleAnimationDuration ?? 0.3;
 
-        // 가이드 라인이 설정되어 있으면 해당 위치에 자막 배치
         // 세로 영상 + safe zone 활성 시 safe zone 안에 자막 배치
         let bottomPos = isPortrait ? '18%' : '3%';
-        let useTopPos = false;
-        let topPos = '0%';
         let safeMaxWidth = isPortrait ? '90%' : '80%';
 
-        if (guideLineY != null) {
-          // 가이드 라인: top 기준 배치
-          useTopPos = true;
-          topPos = `${guideLineY}%`;
-        } else if (isPortrait && activeSafeZones && activeSafeZones.size > 0) {
+        if (isPortrait && activeSafeZones && activeSafeZones.size > 0) {
           let maxBottom = 0;
           let maxLeft = 0;
           let maxRight = 0;
@@ -491,9 +534,9 @@ const SubtitleOverlay = React.memo(({
             data-subtitle-box
             className={`absolute left-1/2 -translate-x-1/2 z-[110] text-center transition-none select-none overflow-hidden${animClass ? ` ${animClass}` : ''}`}
             style={{
-              ...(useTopPos ? { top: topPos } : { bottom: bottomPos }),
+              bottom: bottomPos,
               maxWidth: safeMaxWidth,
-              transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%)${useTopPos ? ' translateY(-50%)' : ''} rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
+              transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
               left: '50%',
               cursor: selected ? 'grab' : 'pointer',
               '--anim-duration': `${animDuration}s`,
@@ -924,9 +967,9 @@ const Player = React.memo(({
   const [activeSafeZones, setActiveSafeZones] = useState<Set<SafeZonePlatform>>(new Set());
   const [showSafeZoneMenu, setShowSafeZoneMenu] = useState(false);
   // 가이드 라인 기능
-  const [guideLineY, setGuideLineY] = useState<number | null>(null); // 0~100 (% from top)
-  const [guideLineX, setGuideLineX] = useState<number | null>(null); // 0~100 (% from left)
-  const [guideLineMode, setGuideLineMode] = useState(false); // 가이드라인 편집 모드
+  const [guideLinesH, setGuideLinesH] = useState<number[]>([]); // 가로 라인들 (% from top)
+  const [guideLinesV, setGuideLinesV] = useState<number[]>([]); // 세로 라인들 (% from left)
+  const [guideLineMode, setGuideLineMode] = useState<'h' | 'v' | null>(null); // 라인 추가 모드
   const [isDraggingGuide, setIsDraggingGuide] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1582,7 +1625,9 @@ const Player = React.memo(({
             onInteractionStart={onInteractionStart}
             onInteractionEnd={onInteractionEnd}
             activeSafeZones={activeSafeZones}
-            guideLineY={guideLineY}
+            guideLinesH={guideLinesH}
+            guideLinesV={guideLinesV}
+            containerRef={containerRef}
           />
 
           {/* Safe Zone Overlay */}
@@ -1590,21 +1635,40 @@ const Player = React.memo(({
             <SafeZoneOverlay activePlatforms={activeSafeZones} />
           )}
 
-          {/* 가이드 라인 — 항상 드래그 가능 */}
-          {guideLineY != null && (
+          {/* 가로 가이드 라인들 — 무한대 개수, 화면 밖으로 드래그하면 삭제 */}
+          {guideLinesH.map((pct, idx) => (
             <div
-              className="absolute left-0 right-0 z-[130]"
-              style={{ top: `${guideLineY}%`, cursor: 'ns-resize', pointerEvents: 'auto' }}
+              key={`gh-${idx}`}
+              className="absolute left-0 right-0 z-[140]"
+              style={{ top: `calc(${pct}% - 10px)`, height: 20, cursor: 'ns-resize', pointerEvents: 'auto' }}
               onPointerDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 setIsDraggingGuide(true);
                 const container = containerRef.current;
                 if (!container) return;
+                const i = idx;
+                let deleted = false;
                 const onMove = (ev: PointerEvent) => {
                   const rect = container.getBoundingClientRect();
-                  const pct = Math.max(5, Math.min(95, ((ev.clientY - rect.top) / rect.height) * 100));
-                  setGuideLineY(pct);
+                  const y = ev.clientY;
+                  // 화면 밖으로 나가면 삭제 표시
+                  if (y < rect.top - 30 || y > rect.bottom + 30) {
+                    if (!deleted) {
+                      deleted = true;
+                      setGuideLinesH(prev => prev.filter((_, j) => j !== i));
+                    }
+                  } else {
+                    if (deleted) {
+                      // 다시 돌아오면 복원
+                      deleted = false;
+                      const p = Math.max(2, Math.min(98, ((y - rect.top) / rect.height) * 100));
+                      setGuideLinesH(prev => { const next = [...prev]; next.splice(i, 0, p); return next; });
+                    } else {
+                      const p = Math.max(2, Math.min(98, ((y - rect.top) / rect.height) * 100));
+                      setGuideLinesH(prev => prev.map((v, j) => j === i ? p : v));
+                    }
+                  }
                 };
                 const onUp = () => {
                   setIsDraggingGuide(false);
@@ -1615,40 +1679,47 @@ const Player = React.memo(({
                 window.addEventListener('pointerup', onUp);
               }}
             >
-              {/* 넓은 히트 영역 */}
-              <div className="relative" style={{ height: 0 }}>
-                <div className="absolute left-0 right-0" style={{ top: -8, height: 16 }} />
-                {/* 점선 가이드 */}
-                <div className="absolute left-0 right-0" style={{ top: -1, height: 2, borderTop: '2px dashed #FF6B6B', opacity: 0.9 }} />
-                {/* 라벨 */}
-                <div className="absolute left-1 px-1.5 py-0.5 rounded text-[8px] font-bold"
-                  style={{ top: -16, background: 'rgba(255,107,107,0.9)', color: '#fff' }}>
-                  {Math.round(guideLineY)}%
-                </div>
-                {/* 드래그 핸들 */}
-                <div className="absolute right-2 w-5 h-5 rounded-full bg-[#FF6B6B] border-2 border-white flex items-center justify-center"
-                  style={{ top: -10, boxShadow: '0 0 8px rgba(255,107,107,0.6)' }}>
-                  <span className="text-[8px] text-white font-bold">↕</span>
-                </div>
+              <div className="absolute left-0 right-0" style={{ top: 9, height: 2, borderTop: '2px dashed #FF6B6B', opacity: 0.9 }} />
+              <div className="absolute left-1 px-1.5 py-0.5 rounded text-[8px] font-bold pointer-events-none"
+                style={{ top: -6, background: 'rgba(255,107,107,0.9)', color: '#fff' }}>
+                {Math.round(pct)}%
               </div>
             </div>
-          )}
+          ))}
 
-          {/* 세로 가이드 라인 — 항상 드래그 가능 */}
-          {guideLineX != null && (
+          {/* 세로 가이드 라인들 — 무한대 개수, 화면 밖으로 드래그하면 삭제 */}
+          {guideLinesV.map((pct, idx) => (
             <div
-              className="absolute top-0 bottom-0 z-[130]"
-              style={{ left: `${guideLineX}%`, cursor: 'ew-resize', pointerEvents: 'auto' }}
+              key={`gv-${idx}`}
+              className="absolute top-0 bottom-0 z-[140]"
+              style={{ left: `calc(${pct}% - 10px)`, width: 20, cursor: 'ew-resize', pointerEvents: 'auto' }}
               onPointerDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 setIsDraggingGuide(true);
                 const container = containerRef.current;
                 if (!container) return;
+                const i = idx;
+                let deleted = false;
                 const onMove = (ev: PointerEvent) => {
                   const rect = container.getBoundingClientRect();
-                  const pct = Math.max(5, Math.min(95, ((ev.clientX - rect.left) / rect.width) * 100));
-                  setGuideLineX(pct);
+                  const x = ev.clientX;
+                  // 화면 밖으로 나가면 삭제
+                  if (x < rect.left - 30 || x > rect.right + 30) {
+                    if (!deleted) {
+                      deleted = true;
+                      setGuideLinesV(prev => prev.filter((_, j) => j !== i));
+                    }
+                  } else {
+                    if (deleted) {
+                      deleted = false;
+                      const p = Math.max(2, Math.min(98, ((x - rect.left) / rect.width) * 100));
+                      setGuideLinesV(prev => { const next = [...prev]; next.splice(i, 0, p); return next; });
+                    } else {
+                      const p = Math.max(2, Math.min(98, ((x - rect.left) / rect.width) * 100));
+                      setGuideLinesV(prev => prev.map((v, j) => j === i ? p : v));
+                    }
+                  }
                 };
                 const onUp = () => {
                   setIsDraggingGuide(false);
@@ -1659,44 +1730,46 @@ const Player = React.memo(({
                 window.addEventListener('pointerup', onUp);
               }}
             >
-              <div className="relative" style={{ width: 0, height: '100%' }}>
-                <div className="absolute top-0 bottom-0" style={{ left: -8, width: 16 }} />
-                {/* 점선 가이드 */}
-                <div className="absolute top-0 bottom-0" style={{ left: -1, width: 2, borderLeft: '2px dashed #4DA6FF', opacity: 0.9 }} />
-                {/* 라벨 */}
-                <div className="absolute top-1 px-1.5 py-0.5 rounded text-[8px] font-bold"
-                  style={{ left: 6, background: 'rgba(77,166,255,0.9)', color: '#fff', whiteSpace: 'nowrap' }}>
-                  {Math.round(guideLineX)}%
-                </div>
-                {/* 드래그 핸들 */}
-                <div className="absolute bottom-2 w-5 h-5 rounded-full bg-[#4DA6FF] border-2 border-white flex items-center justify-center"
-                  style={{ left: -10, boxShadow: '0 0 8px rgba(77,166,255,0.6)' }}>
-                  <span className="text-[8px] text-white font-bold">↔</span>
-                </div>
+              <div className="absolute top-0 bottom-0" style={{ left: 9, width: 2, borderLeft: '2px dashed #4DA6FF', opacity: 0.9 }} />
+              <div className="absolute top-1 px-1.5 py-0.5 rounded text-[8px] font-bold pointer-events-none"
+                style={{ left: 18, background: 'rgba(77,166,255,0.9)', color: '#fff', whiteSpace: 'nowrap' }}>
+                {Math.round(pct)}%
               </div>
             </div>
-          )}
+          ))}
 
-          {/* 가이드라인 생성 클릭 영역 (편집 모드에서 빈 곳 클릭 시 라인 생성) */}
-          {guideLineMode && guideLineY == null && (
+          {/* 가이드라인 생성 클릭 영역 */}
+          {guideLineMode && (
             <div
-              className="absolute inset-0 z-[130] cursor-crosshair"
-              style={{ pointerEvents: 'auto' }}
+              className="absolute inset-0 z-[150]"
+              style={{ pointerEvents: 'auto', cursor: guideLineMode === 'h' ? 'row-resize' : 'col-resize' }}
               onPointerDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 const container = containerRef.current;
                 if (!container) return;
                 const rect = container.getBoundingClientRect();
-                const pct = Math.max(5, Math.min(95, ((e.clientY - rect.top) / rect.height) * 100));
-                setGuideLineY(pct);
-                setGuideLineMode(false);
+                if (guideLineMode === 'h') {
+                  const p = Math.max(2, Math.min(98, ((e.clientY - rect.top) / rect.height) * 100));
+                  setGuideLinesH(prev => [...prev, p]);
+                } else {
+                  const p = Math.max(2, Math.min(98, ((e.clientX - rect.left) / rect.width) * 100));
+                  setGuideLinesV(prev => [...prev, p]);
+                }
+                // 모드 유지 — ESC 또는 버튼 재클릭으로 종료
               }}
+              onContextMenu={(e) => { e.preventDefault(); setGuideLineMode(null); }}
+              onKeyDown={(e) => { if (e.key === 'Escape') setGuideLineMode(null); }}
+              tabIndex={0}
             >
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none bg-black/20">
                 <div className="flex flex-col items-center gap-1">
-                  <span className="material-icons text-[#FF6B6B] text-2xl">straighten</span>
-                  <span className="text-white text-xs bg-black/60 px-3 py-1.5 rounded">클릭하여 가이드 라인 배치</span>
+                  <span className="material-icons text-2xl" style={{ color: guideLineMode === 'h' ? '#FF6B6B' : '#4DA6FF' }}>
+                    {guideLineMode === 'h' ? 'horizontal_rule' : 'vertical_shades'}
+                  </span>
+                  <span className="text-white text-xs bg-black/60 px-3 py-1.5 rounded">
+                    클릭하여 {guideLineMode === 'h' ? '가로' : '세로'} 가이드 라인 배치 (우클릭 또는 ESC로 종료)
+                  </span>
                 </div>
               </div>
             </div>
@@ -1860,28 +1933,33 @@ const Player = React.memo(({
             )}
           </div>
           <div className="w-px h-3 bg-gray-700" />
-          {/* 가이드 라인 토글 */}
+          {/* 가이드 라인 추가/삭제 */}
           <div className="flex items-center gap-0.5">
             <button
-              onClick={() => {
-                if (guideLineY != null) { setGuideLineY(null); } else { setGuideLineY(75); }
-              }}
-              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLineY != null ? 'text-[#FF6B6B] bg-[#FF6B6B]/10' : 'text-gray-400 hover:text-white'}`}
-              title={guideLineY != null ? '가로 가이드 삭제' : '가로 가이드 추가'}
+              onClick={() => setGuideLineMode(prev => prev === 'h' ? null : 'h')}
+              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLineMode === 'h' ? 'text-[#FF6B6B] bg-[#FF6B6B]/20 ring-1 ring-[#FF6B6B]' : guideLinesH.length > 0 ? 'text-[#FF6B6B] bg-[#FF6B6B]/10' : 'text-gray-400 hover:text-white'}`}
+              title="클릭하여 가로 가이드 추가 모드"
             >
               <span className="material-icons text-xs" style={{ transform: 'rotate(0deg)' }}>remove</span>
-              <span className="text-[8px] font-bold">H</span>
+              <span className="text-[8px] font-bold">H{guideLinesH.length > 0 ? `(${guideLinesH.length})` : ''}</span>
             </button>
             <button
-              onClick={() => {
-                if (guideLineX != null) { setGuideLineX(null); } else { setGuideLineX(50); }
-              }}
-              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLineX != null ? 'text-[#4DA6FF] bg-[#4DA6FF]/10' : 'text-gray-400 hover:text-white'}`}
-              title={guideLineX != null ? '세로 가이드 삭제' : '세로 가이드 추가'}
+              onClick={() => setGuideLineMode(prev => prev === 'v' ? null : 'v')}
+              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLineMode === 'v' ? 'text-[#4DA6FF] bg-[#4DA6FF]/20 ring-1 ring-[#4DA6FF]' : guideLinesV.length > 0 ? 'text-[#4DA6FF] bg-[#4DA6FF]/10' : 'text-gray-400 hover:text-white'}`}
+              title="클릭하여 세로 가이드 추가 모드"
             >
               <span className="material-icons text-xs" style={{ transform: 'rotate(90deg)', fontSize: 14 }}>remove</span>
-              <span className="text-[8px] font-bold">V</span>
+              <span className="text-[8px] font-bold">V{guideLinesV.length > 0 ? `(${guideLinesV.length})` : ''}</span>
             </button>
+            {(guideLinesH.length > 0 || guideLinesV.length > 0) && (
+              <button
+                onClick={() => { setGuideLinesH([]); setGuideLinesV([]); }}
+                className="flex items-center gap-0.5 transition-all px-1 py-0.5 rounded text-gray-400 hover:text-red-400"
+                title="모든 가이드 라인 삭제"
+              >
+                <span className="material-icons text-xs">delete_outline</span>
+              </button>
+            )}
           </div>
           <div className="w-px h-3 bg-gray-700" />
           {/* Safe Zone Toggle — SNS 미리보기 */}
