@@ -123,9 +123,9 @@ export const TYPE_STYLE_PRESETS: Record<SubtitleType, Partial<SubtitleStyle>> = 
   },
   TRANSCRIPT: {
     color: '#FFFFFF',
-    fontSize: 48,
+    fontSize: 72,
     fontWeight: 800,
-    strokeWidth: 4,
+    strokeWidth: 5,
   },
 };
 
