@@ -1167,10 +1167,10 @@ const RightSidebar = React.memo(({
                           <h3 className="text-xs font-semibold">대본 Settings</h3>
                         </div>
 
-                        {/* 스토리/컨텍스트 입력 — AI 자막 생성 시 반영 */}
+                        {/* 연출 프롬프트 — AI 자막 생성 시 반영 */}
                         <div className="space-y-1">
                           <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-semibold text-gray-400">영상 스토리 (AI 반영)</span>
+                            <span className="text-[10px] font-semibold text-gray-400">연출 프롬프트</span>
                             {customAIPrompt && (
                               <button onClick={() => setCustomAIPrompt('')}
                                 className="text-[9px] text-gray-500 hover:text-red-400">초기화</button>
@@ -1179,7 +1179,7 @@ const RightSidebar = React.memo(({
                           <textarea
                             value={customAIPrompt}
                             onChange={(e) => setCustomAIPrompt(e.target.value)}
-                            placeholder="영상의 스토리나 맥락을 적어주세요. AI가 자막을 만들 때 반영합니다.&#10;예) 친구들과 캠핑 가서 고기 굽는 영상, 분위기는 유쾌하고 웃긴 느낌"
+                            placeholder="어떤 느낌으로 연출할지 적어주세요&#10;예) 예능 느낌으로 웃기게, 먹방 리액션 강조"
                             className={`w-full px-2 py-1.5 rounded-lg text-[10px] bg-white/5 border text-gray-300 placeholder-gray-500 resize-none focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/30 transition-all ${
                               customAIPrompt ? 'border-primary/30 bg-primary/5' : 'border-white/10'
                             }`}
