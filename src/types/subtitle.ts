@@ -90,6 +90,12 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
 
 /** 타입별 기본 스타일 프리셋 */
 export const TYPE_STYLE_PRESETS: Record<SubtitleType, Partial<SubtitleStyle>> = {
+  TRANSCRIPT: {
+    color: '#FFFFFF',
+    fontSize: 82,
+    fontWeight: 800,
+    strokeWidth: 6,
+  },
   ENTERTAINMENT: {
     color: '#FFE066',
     fontSize: 52,
@@ -120,12 +126,6 @@ export const TYPE_STYLE_PRESETS: Record<SubtitleType, Partial<SubtitleStyle>> = 
     strokeColor: '#3D0066',
     strokeWidth: 4,
     backgroundColor: 'rgba(107,33,168,0.3)',
-  },
-  TRANSCRIPT: {
-    color: '#FFFFFF',
-    fontSize: 72,
-    fontWeight: 800,
-    strokeWidth: 5,
   },
 };
 
