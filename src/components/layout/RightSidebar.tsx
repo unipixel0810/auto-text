@@ -1167,54 +1167,23 @@ const RightSidebar = React.memo(({
                           <h3 className="text-xs font-semibold">대본 Settings</h3>
                         </div>
 
-                        {/* AI 연출 자막 디자인 프리셋 */}
-                        <div className="space-y-1.5">
+                        {/* 스토리/컨텍스트 입력 — AI 자막 생성 시 반영 */}
+                        <div className="space-y-1">
                           <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-semibold text-gray-400">연출 스타일</span>
-                            {selectedDesignPreset && (
-                              <button onClick={() => { setSelectedDesignPreset(null); setCustomAIPrompt(''); }}
+                            <span className="text-[10px] font-semibold text-gray-400">영상 스토리 (AI 반영)</span>
+                            {customAIPrompt && (
+                              <button onClick={() => setCustomAIPrompt('')}
                                 className="text-[9px] text-gray-500 hover:text-red-400">초기화</button>
                             )}
                           </div>
-                          <div className="grid grid-cols-3 gap-1">
-                            {([
-                              { id: 'runningman', label: '런닝맨', emoji: '🏃', gradient: 'from-yellow-500 to-orange-500',
-                                prompt: '런닝맨 스타일로 만들어줘. 큰 글씨로 강렬한 리액션, 멤버 이름표 느낌의 태그, "아!!!", "헐 대박", "ㅋㅋㅋㅋ" 같은 과장된 감탄사, 미션 상황 설명("남은 시간 30초!"), 웃긴 별명 자막, 슬로모션 장면에서 드라마틱한 자막 연출' },
-                              { id: 'infinity', label: '무한도전', emoji: '♾️', gradient: 'from-blue-500 to-cyan-500',
-                                prompt: '무한도전 스타일로 만들어줘. 따뜻하고 감성적인 나레이션 자막, "그때 그 시절...", "이것이 바로 도전의 의미", 멤버들의 엉뚱한 행동에 대한 제3자 시점 해설, 감동적인 순간에 시적인 자막, 웃음 포인트에서 "하하하" 효과, BGM 설명("[♪ 감동 OST ♪]")' },
-                              { id: '1night', label: '1박2일', emoji: '🌙', gradient: 'from-indigo-500 to-purple-500',
-                                prompt: '1박2일 스타일로 만들어줘. 복불복/미션 긴장감 극대화("제발...!!"), 음식 먹방 장면에서 감탄("침 꼴깍..."), 자연 풍경에 감성 자막, 멤버 표정 클로즈업에 속마음 자막, "이 남자의 운명은?!" 같은 서스펜스 연출' },
-                              { id: 'workman', label: '워크맨', emoji: '👷', gradient: 'from-green-500 to-emerald-500',
-                                prompt: '워크맨 스타일로 만들어줘. MZ세대 유머, 밈 활용("이게 맞아...?", "퇴사각"), 직장인 공감 자막, 장성규식 과장 리액션("미쳤다 진짜"), 일하다가 뜬금없는 상황에 "뭐지...?" 자막, 짧고 임팩트 있는 한 줄 자막' },
-                              { id: 'documentary', label: '다큐', emoji: '🎬', gradient: 'from-gray-500 to-slate-500',
-                                prompt: '다큐멘터리 스타일로 만들어줘. 차분하고 격조 있는 나레이션 톤, 정보 전달 위주의 설명 자막, "[2024년 겨울, 서울]" 같은 시공간 설정, 인물 소개 자막, 핵심 수치/통계 강조, 감정 절제된 객관적 해설' },
-                              { id: 'custom', label: '직접입력', emoji: '✏️', gradient: 'from-pink-500 to-rose-500',
-                                prompt: '' },
-                            ] as const).map(preset => (
-                              <button key={preset.id}
-                                onClick={() => {
-                                  setSelectedDesignPreset(preset.id);
-                                  if (preset.id !== 'custom') setCustomAIPrompt(preset.prompt);
-                                }}
-                                className={`flex flex-col items-center gap-0.5 py-1.5 px-1 rounded-lg text-[9px] font-semibold transition-all active:scale-95 border ${
-                                  selectedDesignPreset === preset.id
-                                    ? `bg-gradient-to-br ${preset.gradient} text-white border-white/30 shadow-lg`
-                                    : 'bg-white/5 text-gray-400 border-white/10 hover:bg-white/10 hover:text-white'
-                                }`}>
-                                <span className="text-sm">{preset.emoji}</span>
-                                <span>{preset.label}</span>
-                              </button>
-                            ))}
-                          </div>
-                          {/* 프롬프트 텍스트 (선택된 프리셋 표시 또는 직접 입력) */}
                           <textarea
                             value={customAIPrompt}
-                            onChange={(e) => { setCustomAIPrompt(e.target.value); if (selectedDesignPreset !== 'custom') setSelectedDesignPreset('custom'); }}
-                            placeholder="원하는 자막 스타일을 입력하세요 (예: 예능 느낌으로 웃기게, 다큐 느낌으로 차분하게)"
+                            onChange={(e) => setCustomAIPrompt(e.target.value)}
+                            placeholder="영상의 스토리나 맥락을 적어주세요. AI가 자막을 만들 때 반영합니다.&#10;예) 친구들과 캠핑 가서 고기 굽는 영상, 분위기는 유쾌하고 웃긴 느낌"
                             className={`w-full px-2 py-1.5 rounded-lg text-[10px] bg-white/5 border text-gray-300 placeholder-gray-500 resize-none focus:outline-none focus:border-primary/60 focus:ring-1 focus:ring-primary/30 transition-all ${
                               customAIPrompt ? 'border-primary/30 bg-primary/5' : 'border-white/10'
                             }`}
-                            rows={customAIPrompt ? 3 : 1}
+                            rows={customAIPrompt ? 3 : 2}
                           />
                         </div>
 
