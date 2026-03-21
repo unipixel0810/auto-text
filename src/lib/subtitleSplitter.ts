@@ -85,10 +85,10 @@ export interface SplitterOptions {
 // ============================================
 
 const DEFAULT_OPTIONS: Required<SplitterOptions> = {
-  minDuration: 3.0,
-  targetDuration: 4.0,
-  maxDuration: 10.0,
-  maxCharacters: 80,
+  minDuration: 1.5,
+  targetDuration: 3.0,
+  maxDuration: 6.0,
+  maxCharacters: 45,
   sentenceDelimiters: /[.?!。？！]/,
   naturalBreakPattern: /[,，、:;]|\s+(그리고|그래서|하지만|그러나|그런데|또한|근데|아니면|또는)\s+/,
 };

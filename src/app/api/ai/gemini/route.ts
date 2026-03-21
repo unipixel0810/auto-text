@@ -211,8 +211,8 @@ export async function POST(req: Request) {
             // Creative subtitle mode: 장르별 연출 자막 생성
             const transcriptJson = JSON.stringify(transcriptData, null, 2);
             const transcriptCount = transcriptData ? transcriptData.length : 0;
-            // 대본:AI = 7:3 비율 — AI는 대본의 약 43%(3/7)이면 충분, 여유분 포함
-            const targetCount = Math.max(Math.ceil(transcriptCount * 0.5), 6, Math.round(duration / 5));
+            // AI 80% 비율 — 대본의 4배(80/20), 최소 3초당 1개
+            const targetCount = Math.max(Math.ceil(transcriptCount * 4), 8, Math.round(duration / 3));
             const segmentSize = Math.round(duration / 5);
             const segments = Array.from({ length: 5 }, (_, i) => `  구간${i + 1}: ${i * segmentSize}초 ~ ${(i + 1) * segmentSize}초`).join('\n');
 
