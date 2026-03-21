@@ -1160,24 +1160,8 @@ const RightSidebar = React.memo(({
                   </div>
                 ) : (
                   <>
-                    <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3 custom-scrollbar">
-                      {filteredTranscripts.map((t, i) => (
-                        <TranscriptItem
-                          key={t.id}
-                          t={t}
-                          isActive={activeTranscriptIndex === i}
-                          isSelected={selectedTranscriptId === t.id}
-                          onSelect={handleTranscriptSelect}
-                          onEdit={handleTranscriptEdit}
-                          onDragStart={handleTranscriptDragStart}
-                          onMergeWithPrevious={handleMergeWithPrevious}
-                          onSplitAtCursor={handleSplitAtCursor}
-                          onContextMenu={handleTranscriptContextMenu}
-                        />
-                      ))}
-                      {filteredTranscripts.length === 0 && <div className="text-center py-12 text-text-secondary text-xs opacity-50">{searchQuery ? '검색 결과 없음' : '대본을 생성하거나 불러와주세요'}</div>}
-                    </div>
-                    <div className="border-t border-border-color flex flex-col overflow-y-auto" style={{ minHeight: '35%', maxHeight: '50%' }}>
+                    {/* 대본 Settings — 상단 배치 */}
+                    <div className="border-b border-border-color flex flex-col overflow-y-auto shrink-0" style={{ maxHeight: '55%' }}>
                       <div className="p-2 border-b border-border-color bg-panel-bg space-y-2 shrink-0">
                         <div className="flex items-center justify-between">
                           <h3 className="text-xs font-semibold">대본 Settings</h3>
@@ -1326,6 +1310,24 @@ const RightSidebar = React.memo(({
                           )}
                         </div>
                       </div>
+                    </div>
+                    {/* 대본 목록 — Settings 아래 */}
+                    <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3 custom-scrollbar">
+                      {filteredTranscripts.map((t, i) => (
+                        <TranscriptItem
+                          key={t.id}
+                          t={t}
+                          isActive={activeTranscriptIndex === i}
+                          isSelected={selectedTranscriptId === t.id}
+                          onSelect={handleTranscriptSelect}
+                          onEdit={handleTranscriptEdit}
+                          onDragStart={handleTranscriptDragStart}
+                          onMergeWithPrevious={handleMergeWithPrevious}
+                          onSplitAtCursor={handleSplitAtCursor}
+                          onContextMenu={handleTranscriptContextMenu}
+                        />
+                      ))}
+                      {filteredTranscripts.length === 0 && <div className="text-center py-12 text-text-secondary text-xs opacity-50">{searchQuery ? '검색 결과 없음' : '대본을 생성하거나 불러와주세요'}</div>}
                     </div>
                   </>
                 )}
