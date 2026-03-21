@@ -991,7 +991,7 @@ const Player = React.memo(({
   // 가이드 라인 기능
   const [guideLinesH, setGuideLinesH] = useState<GuideLine[]>([]); // 가로 라인들 (% from top)
   const [guideLinesV, setGuideLinesV] = useState<GuideLine[]>([]); // 세로 라인들 (% from left)
-  // guideLineMode 제거됨 — 버튼 클릭으로 바로 라인 생성
+  const [guideLineMode, setGuideLineMode] = useState<'h' | 'v' | null>(null);
   const [isDraggingGuide, setIsDraggingGuide] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1745,7 +1745,78 @@ const Player = React.memo(({
             </div>
           ))}
 
-          {/* guideLineMode overlay 제거 — 버튼 클릭으로 바로 라인 생성 */}
+          {/* 가이드라인 생성 영역 — 기존 라인(z-140) 아래에 배치하여 라인 드래그 우선 */}
+          {guideLineMode && (
+            <div
+              className="absolute inset-0 z-[135]"
+              style={{ pointerEvents: 'auto', cursor: guideLineMode === 'h' ? 'row-resize' : 'col-resize' }}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const container = containerRef.current;
+                if (!container) return;
+                const rect = container.getBoundingClientRect();
+                // 클릭 위치에 라인 생성
+                const newId = ++_guideIdCounter;
+                if (guideLineMode === 'h') {
+                  const p = Math.max(2, Math.min(98, ((e.clientY - rect.top) / rect.height) * 100));
+                  setGuideLinesH(prev => [...prev, { id: newId, pct: p }]);
+                  // 생성 직후 바로 드래그 시작
+                  _guideDragActive = true;
+                  setIsDraggingGuide(true);
+                  const onMove = (ev: PointerEvent) => {
+                    const r = container.getBoundingClientRect();
+                    const y = ev.clientY;
+                    if (y < r.top - 30 || y > r.bottom + 30) {
+                      setGuideLinesH(prev => prev.filter(g => g.id !== newId));
+                    } else {
+                      const np = Math.max(2, Math.min(98, ((y - r.top) / r.height) * 100));
+                      setGuideLinesH(prev => prev.map(g => g.id === newId ? { ...g, pct: np } : g));
+                    }
+                  };
+                  const onUp = () => {
+                    _guideDragActive = false;
+                    setIsDraggingGuide(false);
+                    window.removeEventListener('pointermove', onMove);
+                    window.removeEventListener('pointerup', onUp);
+                    window.removeEventListener('pointercancel', onUp);
+                  };
+                  window.addEventListener('pointermove', onMove);
+                  window.addEventListener('pointerup', onUp);
+                  window.addEventListener('pointercancel', onUp);
+                } else {
+                  const p = Math.max(2, Math.min(98, ((e.clientX - rect.left) / rect.width) * 100));
+                  setGuideLinesV(prev => [...prev, { id: newId, pct: p }]);
+                  _guideDragActive = true;
+                  setIsDraggingGuide(true);
+                  const onMove = (ev: PointerEvent) => {
+                    const r = container.getBoundingClientRect();
+                    const x = ev.clientX;
+                    if (x < r.left - 30 || x > r.right + 30) {
+                      setGuideLinesV(prev => prev.filter(g => g.id !== newId));
+                    } else {
+                      const np = Math.max(2, Math.min(98, ((x - r.left) / r.width) * 100));
+                      setGuideLinesV(prev => prev.map(g => g.id === newId ? { ...g, pct: np } : g));
+                    }
+                  };
+                  const onUp = () => {
+                    _guideDragActive = false;
+                    setIsDraggingGuide(false);
+                    window.removeEventListener('pointermove', onMove);
+                    window.removeEventListener('pointerup', onUp);
+                    window.removeEventListener('pointercancel', onUp);
+                  };
+                  window.addEventListener('pointermove', onMove);
+                  window.addEventListener('pointerup', onUp);
+                  window.addEventListener('pointercancel', onUp);
+                }
+              }}
+              onKeyDown={(e) => { if (e.key === 'Escape') setGuideLineMode(null); }}
+              tabIndex={0}
+            >
+              <div className="absolute inset-0 pointer-events-none bg-black/10" />
+            </div>
+          )}
 
           {isPresetDragOver && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none z-30">
@@ -1905,27 +1976,27 @@ const Player = React.memo(({
             )}
           </div>
           <div className="w-px h-3 bg-gray-700" />
-          {/* 가이드 라인 추가 — 클릭하면 바로 라인 생성, 드래그로 이동, 화면 밖으로 드래그하면 삭제 */}
+          {/* 가이드 라인 — H/V 누르면 그리기 모드, 화면 클릭→생성, 바로 드래그→이동, 화면 밖→삭제 */}
           <div className="flex items-center gap-0.5">
             <button
-              onClick={() => setGuideLinesH(prev => [...prev, { id: ++_guideIdCounter, pct: 50 }])}
-              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLinesH.length > 0 ? 'text-[#FF6B6B] bg-[#FF6B6B]/10' : 'text-gray-400 hover:text-white'}`}
-              title="가로 가이드 추가 (드래그로 이동, 화면 밖으로 삭제)"
+              onClick={() => setGuideLineMode('h')}
+              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLineMode === 'h' ? 'text-[#FF6B6B] bg-[#FF6B6B]/20 ring-1 ring-[#FF6B6B]' : guideLinesH.length > 0 ? 'text-[#FF6B6B] bg-[#FF6B6B]/10' : 'text-gray-400 hover:text-white'}`}
+              title="가로 가이드 그리기"
             >
-              <span className="material-icons text-xs">add</span>
+              <span className="material-icons text-xs">horizontal_rule</span>
               <span className="text-[8px] font-bold">H{guideLinesH.length > 0 ? `(${guideLinesH.length})` : ''}</span>
             </button>
             <button
-              onClick={() => setGuideLinesV(prev => [...prev, { id: ++_guideIdCounter, pct: 50 }])}
-              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLinesV.length > 0 ? 'text-[#4DA6FF] bg-[#4DA6FF]/10' : 'text-gray-400 hover:text-white'}`}
-              title="세로 가이드 추가 (드래그로 이동, 화면 밖으로 삭제)"
+              onClick={() => setGuideLineMode('v')}
+              className={`flex items-center gap-0.5 transition-all px-1 py-0.5 rounded ${guideLineMode === 'v' ? 'text-[#4DA6FF] bg-[#4DA6FF]/20 ring-1 ring-[#4DA6FF]' : guideLinesV.length > 0 ? 'text-[#4DA6FF] bg-[#4DA6FF]/10' : 'text-gray-400 hover:text-white'}`}
+              title="세로 가이드 그리기"
             >
-              <span className="material-icons text-xs">add</span>
+              <span className="material-icons text-xs" style={{ transform: 'rotate(90deg)' }}>horizontal_rule</span>
               <span className="text-[8px] font-bold">V{guideLinesV.length > 0 ? `(${guideLinesV.length})` : ''}</span>
             </button>
             {(guideLinesH.length > 0 || guideLinesV.length > 0) && (
               <button
-                onClick={() => { setGuideLinesH([]); setGuideLinesV([]); }}
+                onClick={() => { setGuideLinesH([]); setGuideLinesV([]); setGuideLineMode(null); }}
                 className="flex items-center gap-0.5 transition-all px-1 py-0.5 rounded text-gray-400 hover:text-red-400"
                 title="모든 가이드 라인 삭제"
               >
