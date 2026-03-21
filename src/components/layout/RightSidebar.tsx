@@ -1293,6 +1293,19 @@ const RightSidebar = React.memo(({
             {/* ===== TEXT TAB: Font Style Presets + Font Controls ===== */}
             {captionTab === 'text' && (
               <div className="p-3 space-y-3 overflow-y-auto">
+                {/* 새 자막 추가 버튼 — 최상단 배치 */}
+                <button
+                  onClick={() => {
+                    const allPresets = [...SUBTITLE_PRESETS, ...customPresets];
+                    const preset = allPresets.find(p => p.id === (selectedPresetId || 1)) || SUBTITLE_PRESETS[1];
+                    if (preset && onAddTextClip) onAddTextClip(preset);
+                  }}
+                  className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-bold bg-primary/20 border border-primary/40 text-primary hover:bg-primary/30 transition-all active:scale-95"
+                >
+                  <span className="material-icons text-sm">add</span>
+                  새 자막 추가
+                </button>
+
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-semibold text-white">자막 스타일</h3>
                   <label className="flex items-center gap-1 cursor-pointer">
@@ -1664,17 +1677,6 @@ const RightSidebar = React.memo(({
                   <p className="text-[10px] text-gray-600 text-center py-2">저장된 커스텀 프리셋이 없습니다</p>
                 )}
 
-                <button
-                  onClick={() => {
-                    const allPresets = [...SUBTITLE_PRESETS, ...customPresets];
-                    const preset = allPresets.find(p => p.id === (selectedPresetId || 1)) || SUBTITLE_PRESETS[1];
-                    if (preset && onAddTextClip) onAddTextClip(preset);
-                  }}
-                  className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold bg-primary/20 border border-primary/40 text-primary hover:bg-primary/30 transition-all active:scale-95"
-                >
-                  <span className="material-icons text-sm">add</span>
-                  새 자막 추가
-                </button>
               </div>
             )}
 
