@@ -333,6 +333,7 @@ const SubtitleOverlay = React.memo(({
   onInteractionStart,
   onInteractionEnd,
   activeSafeZones,
+  guideLineY,
 }: {
   activeSubtitleClips: VideoClip[],
   selectedClipIds: string[],
@@ -343,6 +344,7 @@ const SubtitleOverlay = React.memo(({
   onInteractionStart?: () => void,
   onInteractionEnd?: () => void,
   activeSafeZones?: Set<SafeZonePlatform>,
+  guideLineY?: number | null,
 }) => {
   const aspectScaleMap: Record<string, number> = { '16:9': 1, '9:16': 0.42, '1:1': 0.7, '3:4': 0.55 };
   const aspectScale = aspectScaleMap[canvasAspectRatio] || 1;
@@ -456,10 +458,18 @@ const SubtitleOverlay = React.memo(({
           : '';
         const animDuration = clip.subtitleAnimationDuration ?? 0.3;
 
+        // 가이드 라인이 설정되어 있으면 해당 위치에 자막 배치
         // 세로 영상 + safe zone 활성 시 safe zone 안에 자막 배치
         let bottomPos = '3%';
+        let useTopPos = false;
+        let topPos = '0%';
         let safeMaxWidth = '80%';
-        if (isPortrait && activeSafeZones && activeSafeZones.size > 0) {
+
+        if (guideLineY != null) {
+          // 가이드 라인: top 기준 배치
+          useTopPos = true;
+          topPos = `${guideLineY}%`;
+        } else if (isPortrait && activeSafeZones && activeSafeZones.size > 0) {
           let maxBottom = 0;
           let maxLeft = 0;
           let maxRight = 0;
@@ -481,13 +491,13 @@ const SubtitleOverlay = React.memo(({
             data-subtitle-box
             className={`absolute left-1/2 -translate-x-1/2 z-[110] text-center transition-none select-none overflow-hidden${animClass ? ` ${animClass}` : ''}`}
             style={{
-              bottom: bottomPos,
+              ...(useTopPos ? { top: topPos } : { bottom: bottomPos }),
               maxWidth: safeMaxWidth,
-              transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
+              transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%)${useTopPos ? ' translateY(-50%)' : ''} rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
               left: '50%',
               cursor: selected ? 'grab' : 'pointer',
               '--anim-duration': `${animDuration}s`,
-            } as React.CSSProperties}
+            } as unknown as React.CSSProperties}
             onClick={(e) => { e.stopPropagation(); if (editingClipId !== clip.id) onClipSelect?.([clip.id]); }}
             onPointerDown={(e) => { if (editingClipId !== clip.id) startDrag(e, clip, 'move'); }}
             onDoubleClick={(e) => {
@@ -914,6 +924,10 @@ const Player = React.memo(({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; clipIds: string[] } | null>(null);
   const [activeSafeZones, setActiveSafeZones] = useState<Set<SafeZonePlatform>>(new Set());
   const [showSafeZoneMenu, setShowSafeZoneMenu] = useState(false);
+  // 가이드 라인 기능
+  const [guideLineY, setGuideLineY] = useState<number | null>(null); // 0~100 (% from top)
+  const [guideLineMode, setGuideLineMode] = useState(false); // 가이드라인 편집 모드
+  const [isDraggingGuide, setIsDraggingGuide] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerAreaRef = useRef<HTMLDivElement>(null);
@@ -1568,11 +1582,75 @@ const Player = React.memo(({
             onInteractionStart={onInteractionStart}
             onInteractionEnd={onInteractionEnd}
             activeSafeZones={activeSafeZones}
+            guideLineY={guideLineY}
           />
 
           {/* Safe Zone Overlay */}
           {(canvasAspectRatio === '9:16' || canvasAspectRatio === '3:4') && activeSafeZones.size > 0 && (
             <SafeZoneOverlay activePlatforms={activeSafeZones} />
+          )}
+
+          {/* 가이드 라인 — 드래그로 위치 조정 */}
+          {guideLineY != null && (
+            <div
+              className="absolute left-0 right-0 z-[116] group/guide"
+              style={{ top: `${guideLineY}%`, cursor: guideLineMode ? 'ns-resize' : 'default' }}
+              onPointerDown={(e) => {
+                if (!guideLineMode) return;
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDraggingGuide(true);
+                const container = containerRef.current;
+                if (!container) return;
+                const onMove = (ev: PointerEvent) => {
+                  const rect = container.getBoundingClientRect();
+                  const pct = Math.max(5, Math.min(95, ((ev.clientY - rect.top) / rect.height) * 100));
+                  setGuideLineY(pct);
+                };
+                const onUp = () => {
+                  setIsDraggingGuide(false);
+                  window.removeEventListener('pointermove', onMove);
+                  window.removeEventListener('pointerup', onUp);
+                };
+                window.addEventListener('pointermove', onMove);
+                window.addEventListener('pointerup', onUp);
+              }}
+            >
+              <div className="relative h-0">
+                {/* 점선 가이드 */}
+                <div className="absolute left-0 right-0" style={{ top: -1, height: 2, borderTop: '2px dashed #FF6B6B', opacity: 0.8 }} />
+                {/* 라벨 */}
+                <div className="absolute left-1 px-1 py-0.5 rounded text-[8px] font-bold"
+                  style={{ top: -14, background: 'rgba(255,107,107,0.85)', color: '#fff' }}>
+                  {Math.round(guideLineY)}%
+                </div>
+                {/* 드래그 핸들 (편집 모드에서만 표시) */}
+                {guideLineMode && (
+                  <div className="absolute right-1 w-4 h-4 rounded-full bg-[#FF6B6B] border-2 border-white flex items-center justify-center"
+                    style={{ top: -8, cursor: 'ns-resize', boxShadow: '0 0 6px rgba(255,107,107,0.5)' }}>
+                    <span className="text-[7px] text-white font-bold">↕</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 가이드라인 생성 클릭 영역 (편집 모드에서 빈 곳 클릭 시 라인 생성) */}
+          {guideLineMode && guideLineY == null && (
+            <div
+              className="absolute inset-0 z-[116] cursor-crosshair"
+              onClick={(e) => {
+                const container = containerRef.current;
+                if (!container) return;
+                const rect = container.getBoundingClientRect();
+                const pct = Math.max(5, Math.min(95, ((e.clientY - rect.top) / rect.height) * 100));
+                setGuideLineY(pct);
+              }}
+            >
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span className="text-white/60 text-xs bg-black/50 px-3 py-1.5 rounded">클릭하여 가이드 라인 배치</span>
+              </div>
+            </div>
           )}
 
           {isPresetDragOver && (
@@ -1730,6 +1808,38 @@ const Player = React.memo(({
                   <span className="text-[9px] text-gray-500">낮은 화질 = 빠른 재생</span>
                 </div>
               </div>
+            )}
+          </div>
+          <div className="w-px h-3 bg-gray-700" />
+          {/* 가이드 라인 토글 */}
+          <div className="relative">
+            <button
+              onClick={() => {
+                if (guideLineMode) {
+                  // 편집 모드 종료
+                  setGuideLineMode(false);
+                } else if (guideLineY != null) {
+                  // 이미 라인이 있으면 편집 모드 진입
+                  setGuideLineMode(true);
+                } else {
+                  // 라인 없으면 생성 모드
+                  setGuideLineMode(true);
+                }
+              }}
+              className={`flex items-center gap-0.5 transition-all ${guideLineY != null ? 'text-[#FF6B6B]' : guideLineMode ? 'text-[#FF6B6B] animate-pulse' : 'text-gray-400 hover:text-white'}`}
+              title="자막 가이드 라인"
+            >
+              <span className="material-icons text-sm">straighten</span>
+              <span className="text-[9px] font-medium">Line</span>
+            </button>
+            {guideLineY != null && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setGuideLineY(null); setGuideLineMode(false); }}
+                className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full flex items-center justify-center hover:bg-red-400"
+                title="가이드 라인 삭제"
+              >
+                <span className="text-[7px] text-white font-bold">×</span>
+              </button>
             )}
           </div>
           <div className="w-px h-3 bg-gray-700" />
