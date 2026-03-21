@@ -75,7 +75,7 @@ export default function Home() {
 
   // Active section border overlay component
   const SectionBorder = ({ active }: { active: boolean }) => active ? (
-    <div className="absolute inset-0 pointer-events-none z-50" style={{ border: '2px solid #00D4D4', borderRadius: 2 }} />
+    <div className="absolute inset-0 pointer-events-none z-30" style={{ border: '2px solid #00D4D4', borderRadius: 2 }} />
   ) : null;
   const resizingRef = useRef<'left' | 'right' | 'timeline' | null>(null);
   const resizeStartRef = useRef({ x: 0, y: 0, size: 0 });
