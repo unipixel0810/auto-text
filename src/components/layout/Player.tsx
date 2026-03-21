@@ -1469,7 +1469,26 @@ const Player = React.memo(({
       onDragLeave={handleCanvasDragLeave}
       onDrop={handleCanvasDrop}
     >
-      <div className="flex-1 flex items-center justify-center p-2 bg-editor-bg overflow-hidden min-h-0 min-w-0" ref={viewerAreaRef} onClick={handleCanvasClick}>
+      <div className="flex-1 flex items-center justify-center p-2 bg-editor-bg overflow-hidden min-h-0 min-w-0 relative" ref={viewerAreaRef} onClick={handleCanvasClick}>
+        {/* 자막 타입 범례 (Legend) — 프리뷰 바깥 상단 */}
+        <div className="absolute top-2 right-3 z-10 flex items-center gap-2.5 bg-editor-bg/80 backdrop-blur-sm rounded px-2.5 py-1 border border-border-color/30">
+          <div className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: '#FFFFFF' }} />
+            <span className="text-[9px] text-gray-400">대본</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: '#FFE066' }} />
+            <span className="text-[9px] text-gray-400">예능</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: '#A8E6CF' }} />
+            <span className="text-[9px] text-gray-400">상황</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: '#88D8FF' }} />
+            <span className="text-[9px] text-gray-400">설명</span>
+          </div>
+        </div>
         <div
           ref={containerRef}
           className={`bg-black shadow-2xl relative group overflow-visible transition-all duration-200 ${isPresetDragOver ? 'border-2 border-[#00D4D4] border-dashed shadow-lg shadow-[#00D4D4]/30'
@@ -1530,26 +1549,6 @@ const Player = React.memo(({
             onInteractionStart={onInteractionStart}
             onInteractionEnd={onInteractionEnd}
           />
-
-          {/* 자막 타입 범례 (Legend) */}
-          <div className="absolute top-2 right-2 z-20 flex flex-col gap-1 bg-black/60 rounded px-2 py-1.5 pointer-events-none">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#FFFFFF' }} />
-              <span className="text-[9px] text-gray-300">대본</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#FFE066' }} />
-              <span className="text-[9px] text-gray-300">예능</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#A8E6CF' }} />
-              <span className="text-[9px] text-gray-300">상황</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#88D8FF' }} />
-              <span className="text-[9px] text-gray-300">설명</span>
-            </div>
-          </div>
 
           {/* Safe Zone Overlay */}
           {(canvasAspectRatio === '9:16' || canvasAspectRatio === '3:4') && activeSafeZones.size > 0 && (

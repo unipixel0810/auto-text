@@ -242,7 +242,7 @@ function ExportModal({ isOpen, onClose, subtitles, videoFileName }: ExportModalP
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 backdrop-blur-sm" style={{ background: 'hsl(220 20% 4% / 0.8)' }} onClick={onClose} />
       
       <div className="relative w-full max-w-lg glass-card p-6 animate-fade-in">

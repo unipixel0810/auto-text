@@ -58,7 +58,7 @@ const AI_MIN_DURATION = 1.0;
 const FORCED_MIN_SLOT = 0.8;
 
 /** AI 자막 최소 비율 — 전체 자막 중 AI가 이 비율 이상 */
-const AI_MIN_RATIO = 0.5;
+const AI_MIN_RATIO = 0.7;
 
 // ============================================
 // 타입
