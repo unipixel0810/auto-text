@@ -19,8 +19,10 @@ const nextConfig = {
         ],
       },
       // ── 일반 페이지: FFmpeg WASM 지원 + 보안 헤더 (iframe 차단) ──
+      // _analytics_preview=1 요청은 위 규칙이 처리하므로 여기서 제외
       {
         source: '/:path*',
+        missing: [{ type: 'query', key: '_analytics_preview' }],
         headers: [
           // FFmpeg SharedArrayBuffer 지원
           {

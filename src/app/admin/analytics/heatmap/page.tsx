@@ -43,7 +43,8 @@ export default function HeatmapPage() {
   const [vizMode, setVizMode] = useState<VisualizationMode>('heatmap');
   const [tooltip, setTooltip] = useState<{ x: number; y: number; tag: string; text: string; count: number } | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [bgReady, setBgReady] = useState(false);
+  const [bgSrc, setBgSrc] = useState('');
 
   // Fetch pages
   const fetchPages = useCallback(async () => {
@@ -95,6 +96,17 @@ export default function HeatmapPage() {
     if (selectedPage) fetchEvents();
   }, [selectedPage, fetchEvents]);
 
+  // 페이지 변경 시 정적 스크린샷 파일 로드
+  useEffect(() => {
+    setBgReady(false);
+    setBgSrc('');
+    if (!selectedPage) return;
+    // pageUrl → 파일명 변환: /landing → landing.png, / → home.png
+    const clean = selectedPage.replace(/^\//, '') || 'home';
+    const filename = clean.replace(/[/\\?#:*"<>|]/g, '_') + '.png';
+    setBgSrc(`/screenshots/${filename}`);
+  }, [selectedPage]);
+
   // Sub-tab data loading
   useEffect(() => {
     if (subTab === 'click') return;
@@ -139,7 +151,7 @@ export default function HeatmapPage() {
         return vw >= 1024 && vw < 3840; // desktop
       });
 
-  const hasBackground = !!selectedPage;
+  const hasBackground = !!selectedPage && bgReady;
 
   // Canvas rendering
   useEffect(() => {
@@ -361,9 +373,11 @@ export default function HeatmapPage() {
                             <span className="material-symbols-outlined text-[12px]">open_in_new</span>
                           </a>
                         </div>
-                        <span className="text-[11px] text-emerald-400 flex items-center gap-1">
-                          <span className="material-symbols-outlined text-[13px]">check_circle</span>
-                          실제 페이지 배경
+                        <span className={`text-[11px] flex items-center gap-1 ${bgReady ? 'text-emerald-400' : 'text-yellow-400'}`}>
+                          <span className="material-symbols-outlined text-[13px]">
+                            {bgReady ? 'check_circle' : 'autorenew'}
+                          </span>
+                          {bgReady ? '실제 페이지 배경' : '로딩 중...'}
                         </span>
                       </div>
                     )}
@@ -374,15 +388,23 @@ export default function HeatmapPage() {
                         background: 'linear-gradient(135deg, #0d0d1a 0%, #111122 40%, #0a0a14 100%)',
                       }}
                     >
-                      {selectedPage && (
-                        <iframe
-                          ref={iframeRef}
-                          src={`${typeof window !== 'undefined' ? window.location.origin : ''}${selectedPage}`}
-                          title="페이지 배경"
-                          className="absolute inset-0 w-full h-full border-0"
-                          style={{ opacity: 0.7, pointerEvents: 'none' }}
-                          loading="lazy"
+                      {selectedPage && bgSrc && (
+                        <img
+                          src={bgSrc}
+                          alt="페이지 배경"
+                          className="absolute inset-0 w-full h-full object-cover border-0"
+                          style={{ opacity: bgReady ? 0.7 : 0, pointerEvents: 'none', transition: 'opacity 0.3s' }}
+                          onLoad={() => setBgReady(true)}
+                          onError={() => setBgReady(false)}
                         />
+                      )}
+                      {selectedPage && !bgReady && (
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                          <div className="flex items-center gap-2 text-gray-500 text-xs">
+                            <span className="material-symbols-outlined text-[16px] animate-spin">autorenew</span>
+                            페이지 미리보기 로딩 중...
+                          </div>
+                        </div>
                       )}
                       {hasBackground && (
                         <div className="absolute inset-0" style={{ background: 'rgba(0,0,0,0.25)', pointerEvents: 'none' }} />
