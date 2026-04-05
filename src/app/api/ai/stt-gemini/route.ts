@@ -22,8 +22,8 @@ export async function POST(req: Request) {
         try {
             const session = await getServerSession(authOptions);
             email = session?.user?.email || null;
-        } catch {
-            // 인증 실패해도 STT는 계속 진행
+        } catch (authErr) {
+            console.warn('[STT-Gemini] 세션 확인 실패 (STT는 계속 진행):', authErr instanceof Error ? authErr.message : authErr);
         }
 
         let usage: Record<string, number> | null = null;

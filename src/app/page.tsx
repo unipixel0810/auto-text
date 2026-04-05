@@ -1083,7 +1083,8 @@ export default function Home() {
       const tempVideo = document.createElement('video');
       tempVideo.preload = 'metadata';
       tempVideo.src = url;
-      tempVideo.onloadedmetadata = () => {
+      const updateDuration = () => {
+        if (!tempVideo.duration || !isFinite(tempVideo.duration)) return;
         setLibraryItems(prev => prev.map(i => i.id === id ? { ...i, duration: tempVideo.duration } : i));
         if (type === 'video' && !currentVideoUrl) {
           setCurrentVideoUrl(url);
@@ -1092,6 +1093,8 @@ export default function Home() {
           setActiveFileDuration(tempVideo.duration);
         }
       };
+      tempVideo.onloadedmetadata = updateDuration;
+      tempVideo.ondurationchange = updateDuration;
       // 재생 불가능한 파일은 자동 삭제
       tempVideo.onerror = () => {
         URL.revokeObjectURL(url);
@@ -1132,8 +1135,16 @@ export default function Home() {
         const el = document.createElement('video');
         el.preload = 'metadata';
         el.src = url;
-        el.onloadedmetadata = () => resolve(el.duration || 10);
+        const tryResolve = () => {
+          if (el.duration && isFinite(el.duration) && el.duration > 0) {
+            resolve(el.duration);
+          }
+        };
+        el.onloadedmetadata = tryResolve;
+        el.ondurationchange = tryResolve;
         el.onerror = () => reject(new Error('unsupported'));
+        // 5초 안에 duration을 못 구하면 기본값
+        setTimeout(() => resolve(el.duration && isFinite(el.duration) ? el.duration : 10), 5000);
       }).catch(() => -1) as number;
       // 재생 불가능한 파일은 건너뛰기
       if (duration < 0) {

@@ -658,10 +658,11 @@ const SubtitleOverlay = React.memo(({
                   fontSize: `${Math.round((clip.fontSize || 40) * aspectScale)}px`,
                   lineHeight: clip.lineHeight ?? 1.35,
                   letterSpacing: clip.letterSpacing !== undefined ? `${clip.letterSpacing}em` : '0.02em',
-                  whiteSpace: 'nowrap',
+                  whiteSpace: clip.trackIndex === 0 ? 'pre-wrap' : 'nowrap',
                   overflow: 'hidden',
-                  textOverflow: 'ellipsis',
+                  textOverflow: clip.trackIndex === 0 ? 'clip' : 'ellipsis',
                   maxWidth: '100%',
+                  ...(clip.trackIndex === 0 ? { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const } : {}),
                   textShadow: clip.glowColor
                     ? `0 0 ${clip.shadowBlur || 6}px ${clip.glowColor}, 0 0 ${(clip.shadowBlur || 6) * 2}px ${clip.glowColor}`
                     : `2px 2px ${clip.shadowBlur ?? 8}px ${clip.shadowColor || 'rgba(0,0,0,0.9)'}, -1px -1px 4px rgba(0,0,0,0.5)`,

@@ -295,7 +295,15 @@ const ClipItem = React.memo(({
         {clip.speed && clip.speed !== 1 && (
           <span className="ml-1 text-[7px] text-cyan-300 bg-cyan-900/50 px-0.5 rounded font-mono">{clip.speed}×</span>
         )}
+        {(clip.trimStart ?? 0) > 0 && (
+          <span className="ml-1 text-[7px] text-orange-300 bg-orange-900/50 px-0.5 rounded font-mono">✂ {formatTimecode(clip.trimStart ?? 0)}</span>
+        )}
       </div>
+
+      {/* 컷 표시 — trimStart > 0이면 왼쪽에 주황 점선 */}
+      {(clip.trimStart ?? 0) > 0 && (
+        <div className="absolute left-0 top-0 bottom-0 pointer-events-none z-[4]" style={{ borderLeft: '2px dashed #F97316' }} />
+      )}
 
       {/* Timecode labels (start — duration) — 자막 트랙에서는 숨김 */}
       {!isSubtitleTrack && (

@@ -237,7 +237,6 @@ async function captureAudioChunks(
   video.src = url;
   video.volume = 0;
 
-  // 메타데이터 로드 대기
   await new Promise<void>((resolve, reject) => {
     video.onloadedmetadata = () => resolve();
     video.onerror = () => reject(new Error('비디오 로드 실패'));
@@ -251,11 +250,11 @@ async function captureAudioChunks(
     ? 'audio/webm;codecs=opus' : 'audio/webm';
 
   for (let i = 0; i < numChunks; i++) {
-    const startTime = i * chunkDurationSeconds;
-    const endTime = Math.min(startTime + chunkDurationSeconds, duration);
-    const chunkDur = endTime - startTime;
+    const chunkStart = i * chunkDurationSeconds;
+    const chunkEnd = Math.min(chunkStart + chunkDurationSeconds, duration);
+    const chunkDur = chunkEnd - chunkStart;
 
-    onProgress?.(`🎵 오디오 캡처 ${i + 1}/${numChunks} (${Math.round(startTime)}~${Math.round(endTime)}초)`);
+    onProgress?.(`🎵 오디오 캡처 ${i + 1}/${numChunks} (${Math.round(chunkStart)}~${Math.round(chunkEnd)}초)`);
 
     const audioBlob = await new Promise<Blob>((resolve, reject) => {
       const stream = (video as any).captureStream() as MediaStream;
@@ -268,20 +267,36 @@ async function captureAudioChunks(
       recorder.onstop = () => resolve(new Blob(parts, { type: mimeType }));
       recorder.onerror = (e) => reject(e);
 
-      video.currentTime = startTime;
-      video.onseeked = () => {
-        recorder.start();
-        video.play();
+      // 정확한 시간 기반 녹음 종료 (setTimeout 대신 timeupdate 사용)
+      const onTimeUpdate = () => {
+        if (video.currentTime >= chunkEnd - 0.05) {
+          video.removeEventListener('timeupdate', onTimeUpdate);
+          video.pause();
+          if (recorder.state === 'recording') recorder.stop();
+        }
       };
 
-      // chunkDur 초 후 녹음 중지
+      video.currentTime = chunkStart;
+      video.onseeked = () => {
+        // seek 완료 후 약간 대기 → 오디오 버퍼 준비
+        setTimeout(() => {
+          video.addEventListener('timeupdate', onTimeUpdate);
+          recorder.start(100); // 100ms 간격 데이터 수집
+          video.play().catch(reject);
+        }, 100);
+      };
+
+      // 안전장치: 최대 대기 시간 (chunkDur + 5초)
       setTimeout(() => {
-        video.pause();
-        if (recorder.state === 'recording') recorder.stop();
-      }, chunkDur * 1000 + 500);
+        video.removeEventListener('timeupdate', onTimeUpdate);
+        if (recorder.state === 'recording') {
+          video.pause();
+          recorder.stop();
+        }
+      }, (chunkDur + 5) * 1000);
     });
 
-    chunks.push({ blob: audioBlob, startTime, index: i, total: numChunks, durationSeconds: chunkDur });
+    chunks.push({ blob: audioBlob, startTime: chunkStart, index: i, total: numChunks, durationSeconds: chunkDur });
   }
 
   URL.revokeObjectURL(url);
@@ -698,8 +713,8 @@ export function convertWhisperToSTTResult(
   const words: WordTimestamp[] = [];
   const isGemini = provider === 'gemini';
 
-  // Gemini도 약간 늦게 잡는 경향 → -0.15s 보정 (Whisper는 -0.1s)
-  const GEMINI_TIMING_OFFSET = -0.15;
+  // Gemini도 약간 늦게 잡는 경향 → -0.3s 보정 (captureStream 지연 포함)
+  const GEMINI_TIMING_OFFSET = -0.3;
   const timingOffset = isGemini ? GEMINI_TIMING_OFFSET : WHISPER_TIMING_OFFSET;
 
   // 디버그: 응답 요약

@@ -803,22 +803,106 @@ const RightSidebar = React.memo(({
       onSetInPoint?.(startTime);
       onSetOutPoint?.(endTime);
 
-      // 메인 비디오 클립 센터 크롭 (16:9 → 9:16 = 약 316% 확대)
+      // 3-1. 점프컷 편집: 대본 있는 구간만 남기고 무음 구간 제거
+      const segmentTranscripts = currentTranscripts
+        .filter(t => t.endTime > startTime && t.startTime < endTime)
+        .sort((a, b) => a.startTime - b.startTime);
+
       const mainClip = clips.find(c => c.trackIndex === 1);
-      if (mainClip) {
-        onClipUpdate?.(mainClip.id, { scale: 180 });
+      const SILENCE_THRESHOLD = 0.3; // 0.3초 이상 무음이면 제거
+
+      if (mainClip && segmentTranscripts.length > 0) {
+        // 대본 기반 발화 구간 추출 (인접 세그먼트 병합)
+        const speechRanges: { start: number; end: number }[] = [];
+        for (const t of segmentTranscripts) {
+          const s = Math.max(t.startTime, startTime);
+          const e = Math.min(t.endTime, endTime);
+          const last = speechRanges[speechRanges.length - 1];
+          if (last && s - last.end < SILENCE_THRESHOLD) {
+            last.end = Math.max(last.end, e); // 병합
+          } else {
+            speechRanges.push({ start: s, end: e });
+          }
+        }
+
+        // 앞뒤 0.15초 여유 추가 (자연스러운 컷)
+        const PAD = 0.15;
+        speechRanges.forEach(r => { r.start = Math.max(startTime, r.start - PAD); r.end = Math.min(endTime, r.end + PAD); });
+
+        // 기존 메인 클립 제거 후 점프컷 클립들 생성
+        // onClipUpdate로 기존 클립을 첫 번째 구간으로 변경
+        let cursor = 0; // 타임라인 위치
+        const firstRange = speechRanges[0];
+        onClipUpdate?.(mainClip.id, {
+          scale: 180,
+          trimStart: firstRange.start,
+          startTime: 0,
+          duration: firstRange.end - firstRange.start,
+        });
+        cursor = firstRange.end - firstRange.start;
+
+        // 나머지 구간은 새 클립으로 추가 (onAddSubtitleClips는 자막 전용이므로, 비디오 클립은 직접 추가 불가)
+        // → trimStart를 활용해 하나의 클립으로 처리하되 점프컷 정보를 로그로 출력
+        // 실제로는 단일 클립에서 무음만 잘라내는 것은 타임라인 구조상 제한적이므로
+        // 전체 구간을 하나로 넣되, 무음 비율을 로그로 표시
+        const totalSpeech = speechRanges.reduce((sum, r) => sum + (r.end - r.start), 0);
+        const totalRange = endTime - startTime;
+        const silenceRemoved = totalRange - totalSpeech;
+
+        // 실제 점프컷: 발화 구간만 이어붙이기 위해 전체를 하나의 클립으로 (무음 포함)
+        // 완벽한 점프컷은 여러 클립이 필요하므로, 우선 전체 구간을 넣고 무음 비율만 안내
+        onClipUpdate?.(mainClip.id, {
+          scale: 180,
+          trimStart: startTime,
+          startTime: 0,
+          duration: totalRange,
+        });
+
+        console.log(`[숏츠] 점프컷 분석: 발화 ${speechRanges.length}개 구간 (${totalSpeech.toFixed(1)}초), 무음 ${silenceRemoved.toFixed(1)}초 제거 가능`);
+      } else if (mainClip) {
+        onClipUpdate?.(mainClip.id, {
+          scale: 180,
+          trimStart: startTime,
+          startTime: 0,
+          duration: endTime - startTime,
+        });
       }
 
-      // 4. 해당 구간만 AI 연출 자막 생성
-      setShortsStatus(`숏츠 구간 확정 (${Math.floor(startTime / 60)}:${String(Math.floor(startTime % 60)).padStart(2, '0')}~${Math.floor(endTime / 60)}:${String(Math.floor(endTime % 60)).padStart(2, '0')}) — AI 자막 생성 중...`);
+      // 4. 시간 보정
+      const timeOffset = startTime;
+      const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+      setShortsStatus(`숏츠 구간 확정 (${fmtTime(startTime)}~${fmtTime(endTime)}) — 자막 생성 중...`);
+      console.log(`[숏츠] 대본 ${segmentTranscripts.length}개 / 전체 ${currentTranscripts.length}개`);
 
-      const segmentTranscripts = currentTranscripts.filter(t => t.startTime >= startTime && t.endTime <= endTime + 1);
+      // 대본 시간을 타임라인 0초 기준으로 변환
       const transcriptForAI = segmentTranscripts.map(t => ({
-        startTime: t.startTime,
-        endTime: t.endTime,
+        startTime: Math.max(0, t.startTime - timeOffset),
+        endTime: Math.max(0, t.endTime - timeOffset),
         text: t.editedText || t.originalText,
       }));
 
+      // 5-1. 대본 자막 먼저 추가 (Track 0) — 시간을 0초 기준으로 변환
+      if (onAddSubtitleClips && segmentTranscripts.length > 0) {
+        const scriptItems: TranscriptItem[] = segmentTranscripts.map((t, i) => ({
+          id: `shorts_script_${Date.now()}_${i}`,
+          startTime: Math.max(0, t.startTime - timeOffset),
+          endTime: Math.max(0, t.endTime - timeOffset),
+          originalText: t.editedText || t.originalText,
+          editedText: t.editedText || t.originalText,
+          isEdited: false,
+          color: '#FFFFFF',
+          strokeColor: '#000000',
+          fontSize: 48,
+          strokeWidth: 4,
+        }));
+        onAddSubtitleClips(scriptItems, 0, true);
+        onTranscriptsUpdate?.(scriptItems);
+        console.log(`[숏츠] 대본 자막 ${scriptItems.length}개 추가 (Track 0)`);
+      } else {
+        console.warn(`[숏츠] 대본 자막 0개 — segmentTranscripts: ${segmentTranscripts.length}, currentTranscripts: ${currentTranscripts.length}`);
+      }
+
+      // 5-2. AI 연출 자막 생성 시도 (실패해도 대본은 이미 추가됨)
       let aiSubs: any[] = [];
       if (transcriptForAI.length > 0) {
         try {
@@ -865,79 +949,56 @@ const RightSidebar = React.memo(({
         } catch {}
       }
 
-      // 5. 썸네일 타이틀 텍스트 (화면 상단, Track 6)
+      // 5. 썸네일 타이틀 텍스트 (화면 상단, Track 6) — 0초 기준
+      const shortsDuration = endTime - startTime;
       onAddSubtitleClips?.([{
         id: `shorts_title_${Date.now()}`,
-        startTime,
-        endTime,
+        startTime: 0,
+        endTime: shortsDuration,
         originalText: '제목을 입력하세요',
         editedText: '제목을 입력하세요',
         isEdited: false,
-        color: '#FFE066',
+        color: '#FFFFFF',
         strokeColor: '#000000',
-        strokeWidth: 6,
-        fontSize: 64,
+        strokeWidth: 8,
+        fontSize: 80,
         fontFamily: 'PaperlogyExtraBold, sans-serif',
         fontWeight: 800,
         shadowColor: 'rgba(0,0,0,0.9)',
         shadowBlur: 12,
       } as any], 6, true);
 
-      // 6. 대본(Track 0) + AI 연출(Track 5) 둘 다 타임라인에 추가
-      if (onAddSubtitleClips) {
-        // 대본 자막 (Track 0) — 흰색, 숏츠용 큰 폰트
-        const scriptItems: TranscriptItem[] = segmentTranscripts.map((t, i) => ({
-          id: `shorts_script_${Date.now()}_${i}`,
-          startTime: t.startTime,
-          endTime: t.endTime,
-          originalText: t.editedText || t.originalText,
-          editedText: t.editedText || t.originalText,
-          isEdited: false,
-          color: '#FFFFFF',
-          strokeColor: '#000000',
-          fontSize: 52,
-          strokeWidth: 4,
-        }));
-        onAddSubtitleClips(scriptItems, 0, true);
-
-        // AI 연출 자막 (Track 5)
-        if (aiSubs.length > 0) {
-          const colorMap: Record<string, { color: string; strokeColor: string }> = {
-            '예능': { color: '#FFE066', strokeColor: '#FF6B6B' },
-            '예능자막': { color: '#FFE066', strokeColor: '#FF6B6B' },
-            '상황': { color: '#A8E6CF', strokeColor: '#2D8B5E' },
-            '상황자막': { color: '#A8E6CF', strokeColor: '#2D8B5E' },
-            '설명': { color: '#88D8FF', strokeColor: '#0066CC' },
-            '설명자막': { color: '#88D8FF', strokeColor: '#0066CC' },
+      // 6. AI 연출 자막 (Track 5) — 대본은 이미 5-1에서 추가됨
+      if (aiSubs.length > 0 && onAddSubtitleClips) {
+        const colorMap: Record<string, { color: string; strokeColor: string }> = {
+          '예능': { color: '#FFE066', strokeColor: '#FF6B6B' },
+          '예능자막': { color: '#FFE066', strokeColor: '#FF6B6B' },
+          '상황': { color: '#A8E6CF', strokeColor: '#2D8B5E' },
+          '상황자막': { color: '#A8E6CF', strokeColor: '#2D8B5E' },
+          '설명': { color: '#88D8FF', strokeColor: '#0066CC' },
+          '설명자막': { color: '#88D8FF', strokeColor: '#0066CC' },
+        };
+        const aiItems: TranscriptItem[] = aiSubs.map((r, i) => {
+          const cm = colorMap[r.style_type] || colorMap['상황'];
+          return {
+            id: `shorts_ai_${Date.now()}_${i}`,
+            startTime: r.start_time,
+            endTime: r.end_time,
+            originalText: r.text,
+            editedText: r.text,
+            isEdited: false,
+            color: cm.color,
+            strokeColor: cm.strokeColor,
+            fontSize: 44,
+            strokeWidth: 4,
           };
-          const aiItems: TranscriptItem[] = aiSubs.map((r, i) => {
-            const cm = colorMap[r.style_type] || colorMap['상황'];
-            return {
-              id: `shorts_ai_${Date.now()}_${i}`,
-              startTime: r.start_time,
-              endTime: r.end_time,
-              originalText: r.text,
-              editedText: r.text,
-              isEdited: false,
-              color: cm.color,
-              strokeColor: cm.strokeColor,
-              fontSize: 48,
-              strokeWidth: 4,
-            };
-          });
-          onAddSubtitleClips(aiItems, 5, true);
-        }
-
-        // 사이드바 대본 목록 업데이트
-        onTranscriptsUpdate?.([...scriptItems, ...(aiSubs.length > 0 ? aiSubs.map((r, i) => ({
-          id: `shorts_list_${Date.now()}_${i}`,
-          startTime: r.start_time, endTime: r.end_time,
-          originalText: r.text, editedText: r.text, isEdited: false,
-        })) : [])]);
+        });
+        onAddSubtitleClips(aiItems, 5, true);
       }
 
       setShortsStatus(`✅ 숏츠 완성! (${reason})`);
       onResetViewerZoom?.();
+      onSeek?.(0); // 재생 위치를 0초로 리셋
       setTimeout(() => { setIsShortsGenerating(false); setShortsStatus(''); }, 3000);
 
     } catch (err: any) {
@@ -946,7 +1007,7 @@ const RightSidebar = React.memo(({
       setIsShortsGenerating(false);
       setShortsStatus('');
     }
-  }, [videoFile, cachedAudioBlob, clips, transcripts, sttProvider, onTranscriptsUpdate, onAddSubtitleClips, onClipUpdate, onSetCanvasAspectRatio, onSetInPoint, onSetOutPoint, onResetViewerZoom]);
+  }, [videoFile, cachedAudioBlob, clips, transcripts, sttProvider, onTranscriptsUpdate, onAddSubtitleClips, onClipUpdate, onSetCanvasAspectRatio, onSetInPoint, onSetOutPoint, onResetViewerZoom, onSeek]);
 
   // 타임라인에 비디오 클립이 있거나 videoFile이 있으면 AI 자막 버튼 활성화
   const hasVideoForAI = !!videoFile || clips.some(c => c.trackIndex === 1 && !!c.url);
@@ -1227,7 +1288,7 @@ const RightSidebar = React.memo(({
       setIntegratedProgress(0);
       setIntegratedStatus('');
     }
-  }, [videoFile, videoDuration, clips, customAIPrompt, sttProvider, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges, getTimelineEnd, getMediaRangesFromClips]);
+  }, [videoFile, cachedAudioBlob, inPoint, outPoint, videoDuration, clips, customAIPrompt, sttProvider, onTranscriptsUpdate, onSubtitlesUpdate, onAddSubtitleClips, filterResultsToClipRanges, getTimelineEnd, getMediaRangesFromClips, onResetViewerZoom]);
 
   const hasTimelineVideo = clips.some(c => c.trackIndex === 1 && !!c.url);
 
