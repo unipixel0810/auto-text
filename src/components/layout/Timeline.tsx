@@ -45,6 +45,8 @@ interface TimelineProps {
   onPlayheadDragChange?: (isDragging: boolean) => void;
   trackHeightScale?: number;
   onTrackHeightScaleChange?: (scale: number) => void;
+  inPoint?: number | null;
+  outPoint?: number | null;
 }
 
 // 반응형: CSS 변수에서 실제 값 읽기 (SSR 안전)
@@ -454,6 +456,7 @@ const Timeline = React.memo(({
   onPlayheadChange, onHoverTimeChange, onClipAdd, onFilesAdd, onSubtitleAdd, onClipUpdate, onClipSelect, onClipDelete,
   onSplit, onAutoSplit, onSceneSplit, onAutoColorCorrection, onUndo, onRedo, onSpeedChange, onFitToScreen, onTrimLeft, onTrimRight, rippleMode, onRippleToggle, onResizeEnd, onInteractionStart, onInteractionEnd, isTimelineHovered, onHoverChange, onPlayheadDragChange,
   trackHeightScale: trackHeightScaleProp, onTrackHeightScaleChange,
+  inPoint, outPoint,
 }: TimelineProps) => {
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; clipIds: string[] } | null>(null);
@@ -1902,6 +1905,28 @@ const Timeline = React.memo(({
             >
               <div className="absolute top-0 bottom-0 left-0" style={{ width: '2px', backgroundColor: '#FFFFFF', boxShadow: '0 0 6px rgba(255,255,255,0.8)' }} />
             </div>
+          )}
+
+          {/* In/Out Point — 분석 구간 표시 */}
+          {inPoint != null && (
+            <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${TRACK_CONTROLS_WIDTH + inPoint * pixelsPerSecond}px`, zIndex: 44 }}>
+              <div className="absolute top-0 bottom-0" style={{ width: '2px', backgroundColor: '#22D3EE' }} />
+              <div className="absolute -top-0 -ml-2 px-1 rounded-b text-[8px] font-bold text-black bg-[#22D3EE]">I</div>
+            </div>
+          )}
+          {outPoint != null && (
+            <div className="absolute top-0 bottom-0 pointer-events-none" style={{ left: `${TRACK_CONTROLS_WIDTH + outPoint * pixelsPerSecond}px`, zIndex: 44 }}>
+              <div className="absolute top-0 bottom-0" style={{ width: '2px', backgroundColor: '#22D3EE' }} />
+              <div className="absolute -top-0 -ml-2 px-1 rounded-b text-[8px] font-bold text-black bg-[#22D3EE]">O</div>
+            </div>
+          )}
+          {inPoint != null && outPoint != null && outPoint > inPoint && (
+            <div className="absolute top-0 bottom-0 pointer-events-none" style={{
+              left: `${TRACK_CONTROLS_WIDTH + inPoint * pixelsPerSecond}px`,
+              width: `${(outPoint - inPoint) * pixelsPerSecond}px`,
+              backgroundColor: 'rgba(34, 211, 238, 0.08)',
+              zIndex: 5,
+            }} />
           )}
 
           {/* Snap Guide Line — 스냅 발동 시 노란 점선 표시 */}

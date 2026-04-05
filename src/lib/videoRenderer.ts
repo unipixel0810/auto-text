@@ -260,53 +260,24 @@ function drawSubtitleOnCanvas(
   ctx.textAlign = style.textAlign;
   ctx.textBaseline = 'middle';
 
-  // 최대 너비 (화면 너비의 80%)
-  const maxLineWidth = canvasWidth * 0.8;
+  // 최대 너비 (화면 너비의 92% — 여백 최소화하여 1줄 유지)
+  const maxLineWidth = canvasWidth * 0.92;
   
-  // 자동 줄바꿈 함수 (최대 3줄까지)
-  const wrapText = (text: string): string[] => {
-    const manualLines = text.split('\n');
-    const wrappedLines: string[] = [];
-    
-    for (const line of manualLines) {
-      const lineWidth = ctx.measureText(line).width;
-      
-      if (lineWidth > maxLineWidth) {
-        const charCount = line.length;
-        
-        // 3줄로 나눠야 할 정도로 긴 경우
-        if (lineWidth > maxLineWidth * 1.8) {
-          const part1End = Math.ceil(charCount / 3);
-          const part2End = Math.ceil((charCount * 2) / 3);
-          
-          wrappedLines.push(line.slice(0, part1End).trim());
-          wrappedLines.push(line.slice(part1End, part2End).trim());
-          wrappedLines.push(line.slice(part2End).trim());
-        } else {
-          // 2줄로 나누기
-          const midPoint = Math.ceil(charCount / 2);
-          let breakPoint = midPoint;
-          
-          for (let i = midPoint; i >= midPoint - 5 && i > 0; i--) {
-            if (line[i] === ' ' || line[i] === ',' || line[i] === '.' || line[i] === '!' || line[i] === '?') {
-              breakPoint = i + 1;
-              break;
-            }
-          }
-          
-          wrappedLines.push(line.slice(0, breakPoint).trim());
-          wrappedLines.push(line.slice(breakPoint).trim());
-        }
-      } else {
-        wrappedLines.push(line);
+  // 1줄 강제 (줄바꿈 제거, 넘치면 말줄임)
+  const singleLine = subtitle.text.replace(/\n/g, ' ').trim();
+  const lineWidth = ctx.measureText(singleLine).width;
+  let displayText = singleLine;
+  if (lineWidth > maxLineWidth) {
+    // 글자를 하나씩 줄여가며 맞추기
+    for (let i = singleLine.length - 1; i > 0; i--) {
+      const truncated = singleLine.slice(0, i) + '...';
+      if (ctx.measureText(truncated).width <= maxLineWidth) {
+        displayText = truncated;
+        break;
       }
     }
-    
-    return wrappedLines.filter(l => l.length > 0);
-  };
-
-  // 자동 줄바꿈 적용
-  const lines = wrapText(subtitle.text);
+  }
+  const lines = [displayText];
   const lineHeight = scaledFontSize * 1.3;
   
   // 가장 긴 줄의 너비 계산

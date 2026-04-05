@@ -23,18 +23,21 @@ function openDB(): Promise<IDBDatabase> {
 
 /** 미디어 Blob 저장 (key = projectId:clipUrl 등 고유 식별자) */
 export async function saveMediaBlob(key: string, blob: Blob, name: string, mimeType: string): Promise<void> {
+  // 500MB 초과 파일은 IndexedDB 저장 건너뜀 (저장 불가 + NotReadableError 방지)
+  if (blob.size > 500 * 1024 * 1024) return;
   try {
     const db = await openDB();
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);
-    store.put({ key, blob, name, mimeType, savedAt: Date.now() });
+    const req = store.put({ key, blob, name, mimeType, savedAt: Date.now() });
+    req.onerror = (e) => e.preventDefault();
     await new Promise<void>((resolve, reject) => {
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      tx.onerror = (e) => { e.preventDefault(); reject(tx.error); };
     });
     db.close();
-  } catch (e) {
-    console.warn('[MediaStorage] Failed to save blob:', e);
+  } catch {
+    // 저장 실패 무시
   }
 }
 

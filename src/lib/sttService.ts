@@ -155,16 +155,17 @@ const MAX_CONCURRENT = 3;
 
 /**
  * 비디오에서 오디오 추출
- * 아이폰 HEVC는 decodeAudioData 실패 → 원본 파일 직접 사용
+ * FFmpeg WASM으로 오디오 트랙만 추출 (대용량 영상 → 작은 오디오 파일로 변환)
+ * 실패 시 원본 파일 반환 (작은 파일은 WebAudio에서 처리 가능)
  */
 export async function extractAudioFromVideo(
   videoFile: File,
   onProgress?: (status: string) => void
 ): Promise<Blob> {
   const sizeMB = videoFile.size / 1024 / 1024;
-  onProgress?.(`파일 준비 완료 (${sizeMB.toFixed(1)}MB) — 청크 분할 방식으로 처리합니다`);
-  // 전체 파일을 메모리에 올리지 않고 원본을 그대로 반환
-  // 청크 분할은 splitAudioIntoChunks에서 처리
+
+  onProgress?.(`파일 준비 완료 (${sizeMB.toFixed(1)}MB)`);
+  // 원본 파일을 그대로 반환 (STT API가 청크 분할 + 오디오 추출 처리)
   return videoFile;
 }
 
@@ -222,6 +223,74 @@ function writeString(view: DataView, offset: number, string: string) {
 }
 
 // ============================================
+// 대용량 파일: video element + MediaRecorder로 유효한 오디오 청크 생성
+// ============================================
+
+async function captureAudioChunks(
+  videoBlob: Blob,
+  chunkDurationSeconds: number,
+  onProgress?: (status: string) => void,
+): Promise<{ blob: Blob; startTime: number; index: number; total: number; durationSeconds?: number }[]> {
+  const url = URL.createObjectURL(videoBlob);
+  const video = document.createElement('video');
+  video.preload = 'auto';
+  video.src = url;
+  video.volume = 0;
+
+  // 메타데이터 로드 대기
+  await new Promise<void>((resolve, reject) => {
+    video.onloadedmetadata = () => resolve();
+    video.onerror = () => reject(new Error('비디오 로드 실패'));
+  });
+
+  const duration = video.duration;
+  const numChunks = Math.ceil(duration / chunkDurationSeconds);
+  const chunks: { blob: Blob; startTime: number; index: number; total: number; durationSeconds: number }[] = [];
+
+  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus' : 'audio/webm';
+
+  for (let i = 0; i < numChunks; i++) {
+    const startTime = i * chunkDurationSeconds;
+    const endTime = Math.min(startTime + chunkDurationSeconds, duration);
+    const chunkDur = endTime - startTime;
+
+    onProgress?.(`🎵 오디오 캡처 ${i + 1}/${numChunks} (${Math.round(startTime)}~${Math.round(endTime)}초)`);
+
+    const audioBlob = await new Promise<Blob>((resolve, reject) => {
+      const stream = (video as any).captureStream() as MediaStream;
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) { reject(new Error('오디오 트랙 없음')); return; }
+
+      const recorder = new MediaRecorder(new MediaStream(audioTracks), { mimeType });
+      const parts: Blob[] = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) parts.push(e.data); };
+      recorder.onstop = () => resolve(new Blob(parts, { type: mimeType }));
+      recorder.onerror = (e) => reject(e);
+
+      video.currentTime = startTime;
+      video.onseeked = () => {
+        recorder.start();
+        video.play();
+      };
+
+      // chunkDur 초 후 녹음 중지
+      setTimeout(() => {
+        video.pause();
+        if (recorder.state === 'recording') recorder.stop();
+      }, chunkDur * 1000 + 500);
+    });
+
+    chunks.push({ blob: audioBlob, startTime, index: i, total: numChunks, durationSeconds: chunkDur });
+  }
+
+  URL.revokeObjectURL(url);
+  video.src = '';
+  console.log(`[captureAudioChunks] ${numChunks}개 청크 캡처 완료 (총 ${Math.round(duration)}초)`);
+  return chunks;
+}
+
+// ============================================
 // 오디오 청크 분할
 // ============================================
 
@@ -245,10 +314,19 @@ export async function splitAudioIntoChunks(
     return [{ blob: audioBlob, startTime: 0, index: 0, total: 1 }];
   }
 
-  onProgress?.('🎵 오디오 디코딩 중... (대용량 파일은 시간이 걸릴 수 있습니다)');
+  onProgress?.('🎵 오디오 디코딩 중...');
 
-  // WebAudio API로 전체 디코딩
-  const arrayBuffer = await audioBlob.arrayBuffer();
+  // 대용량 파일은 arrayBuffer() 실패 가능 → video element로 캡처 폴백
+  let arrayBuffer: ArrayBuffer;
+  try {
+    arrayBuffer = await audioBlob.arrayBuffer();
+  } catch {
+    // arrayBuffer 실패 → video element에서 오디오 캡처
+    onProgress?.('🎵 대용량 파일 — 비디오에서 오디오 캡처 중...');
+    console.log('[STT 청크] arrayBuffer 실패 → captureAudioChunks 사용');
+    const chunks = await captureAudioChunks(audioBlob, chunkDurationSeconds, onProgress);
+    return chunks;
+  }
   const audioCtx = new AudioContext();
   let audioBuffer: AudioBuffer;
   let decodeFailed = false;
@@ -848,12 +926,21 @@ export function mergeSTTResults(results: STTResult[]): STTResult {
 }
 
 // ============================================
-// 통합 함수 (대용량 지원)
+// STT 결과 캐시 (재시도 시 완료된 청크 건너뛰기)
+// ============================================
+const _sttChunkCache: Map<string, STTResult> = new Map();
+
+function getChunkCacheKey(chunkIndex: number, startTime: number): string {
+  return `chunk_${chunkIndex}_${startTime.toFixed(2)}`;
+}
+
+// ============================================
+// 통합 함수 (대용량 지원 + 이어서 분석)
 // ============================================
 
 /**
  * 비디오 파일에서 음성 인식 수행 (전체 파이프라인, 대용량 지원)
- * @param provider 'whisper' (OpenAI) 또는 'gemini' 선택 (기본: 'gemini')
+ * 이전에 성공한 청크는 캐시에서 재사용 — 에러 후 재시도 시 처음부터 다시 하지 않음
  */
 export async function transcribeVideo(
   videoFile: File,
@@ -882,47 +969,84 @@ export async function transcribeVideo(
     onProgress?.('📦 파일 처리 중...');
     const chunks = await splitAudioIntoChunks(audioBlob, CHUNK_DURATION_SECONDS, onProgress, mediaRanges);
 
-    // 4. 각 청크에 대해 STT API 호출 (병렬 처리, 최대 MAX_CONCURRENT 동시)
+    // 4. 각 청크에 대해 STT API 호출 (캐시된 결과 재사용)
     const providerLabel = provider === 'gemini' ? 'Gemini' : 'Whisper';
     console.log(`[STT] 엔진: ${providerLabel}`);
     const results: STTResult[] = new Array(chunks.length);
 
+    // 캐시에서 이미 완료된 청크 복원
+    let cachedCount = 0;
+    for (const chunk of chunks) {
+      const key = getChunkCacheKey(chunk.index, chunk.startTime);
+      const cached = _sttChunkCache.get(key);
+      if (cached) {
+        results[chunk.index] = cached;
+        cachedCount++;
+      }
+    }
+    if (cachedCount > 0) {
+      console.log(`[STT] 캐시에서 ${cachedCount}/${chunks.length}개 청크 복원 — 나머지만 분석`);
+      onProgress?.(`♻️ ${cachedCount}/${chunks.length}개 청크 캐시 복원 — 나머지 분석 중...`);
+    }
+
     // Gemini는 동시 요청 수를 줄임 (rate limit이 더 엄격)
     const concurrent = provider === 'gemini' ? Math.min(MAX_CONCURRENT, 2) : MAX_CONCURRENT;
 
-    // 전체 분석 대상 길이 (초) — 실제 청크 길이 합산
-    const totalAnalysisDuration = chunks.reduce((sum, c) => sum + (c.durationSeconds ?? CHUNK_DURATION_SECONDS), 0);
-    const totalSec = Math.round(totalAnalysisDuration);
+    // 미완료 청크만 필터
+    const pendingChunks = chunks.filter(c => results[c.index] == null);
+    const totalSec = Math.round(chunks.reduce((sum, c) => sum + (c.durationSeconds ?? CHUNK_DURATION_SECONDS), 0));
 
-    for (let batchStart = 0; batchStart < chunks.length; batchStart += concurrent) {
-      const batch = chunks.slice(batchStart, batchStart + concurrent);
-      const doneSoFar = batchStart;
+    for (let batchStart = 0; batchStart < pendingChunks.length; batchStart += concurrent) {
+      const batch = pendingChunks.slice(batchStart, batchStart + concurrent);
+      const doneSoFar = cachedCount + batchStart;
       const pct = Math.round((doneSoFar / chunks.length) * 100);
-      onProgress?.(`🎤 ${providerLabel} 음성 인식 중... ${pct}% (${doneSoFar}/${chunks.length}청크, 총 ${totalSec}초)`);
+      // 현재 분석 중인 시간 구간 표시
+      const currentChunk = batch[0];
+      const chunkStart = currentChunk?.startTime ?? 0;
+      const chunkEnd = chunkStart + (currentChunk?.durationSeconds ?? CHUNK_DURATION_SECONDS);
+      const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+      onProgress?.(`🎤 음성 인식 ${pct}% — ${fmtTime(chunkStart)}~${fmtTime(chunkEnd)} / 총 ${fmtTime(totalSec)}`);
 
       await Promise.all(
         batch.map(async (chunk) => {
-          const sttFn = provider === 'gemini' ? transcribeWithGemini : transcribeWithWhisper;
-          const whisperResponse = await sttFn(chunk.blob, {
-            apiKey,
-            language: 'ko',
-            responseFormat: 'verbose_json',
-            timestampGranularities: ['word', 'segment'],
-          }, chunk.durationSeconds);
-          results[chunk.index] = convertWhisperToSTTResult(whisperResponse, chunk.startTime, provider);
+          try {
+            const sttFn = provider === 'gemini' ? transcribeWithGemini : transcribeWithWhisper;
+            const whisperResponse = await sttFn(chunk.blob, {
+              apiKey,
+              language: 'ko',
+              responseFormat: 'verbose_json',
+              timestampGranularities: ['word', 'segment'],
+            }, chunk.durationSeconds);
+            const result = convertWhisperToSTTResult(whisperResponse, chunk.startTime, provider);
+            results[chunk.index] = result;
+            // 성공한 청크를 캐시에 저장
+            _sttChunkCache.set(getChunkCacheKey(chunk.index, chunk.startTime), result);
+          } catch (chunkErr: any) {
+            console.warn(`[STT] 청크 ${chunk.index + 1}/${chunks.length} 실패 (건너뜀):`, chunkErr.message);
+          }
         })
       );
 
       // API 레이트 리밋 방지 (배치 사이 딜레이 — Gemini는 더 길게)
-      if (batchStart + concurrent < chunks.length) {
+      if (batchStart + concurrent < pendingChunks.length) {
         const delay = provider === 'gemini' ? 1000 : 500;
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
 
-    // 5. 결과 병합
-    onProgress?.('🔗 결과 병합 중...');
-    const mergedResult = mergeSTTResults(results);
+    // 5. 결과 병합 (실패한 청크 제외)
+    const validResults = results.filter(r => r != null);
+    const failedCount = chunks.length - validResults.length;
+    if (failedCount > 0) {
+      console.warn(`[STT] ${failedCount}/${chunks.length}개 청크 실패 — 성공한 ${validResults.length}개로 진행`);
+      onProgress?.(`⚠️ ${failedCount}개 구간 실패, ${validResults.length}개 성공 — 병합 중...`);
+    } else {
+      onProgress?.('🔗 결과 병합 중...');
+    }
+    if (validResults.length === 0) {
+      throw new Error('모든 음성 인식 청크가 실패했습니다');
+    }
+    const mergedResult = mergeSTTResults(validResults);
 
     // ★ duration을 mediaRanges의 실제 끝까지 보정 (클립 end 지점까지 분석 보장)
     if (mediaRanges && mediaRanges.length > 0) {

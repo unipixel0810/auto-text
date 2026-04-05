@@ -532,7 +532,7 @@ const SubtitleOverlay = React.memo(({
 
         // 세로 영상 + safe zone 활성 시 safe zone 안에 자막 배치
         let bottomPos = isPortrait ? '18%' : '3%';
-        let safeMaxWidth = isPortrait ? '90%' : '80%';
+        let safeMaxWidth = isPortrait ? '92%' : '92%';
 
         if (isPortrait && activeSafeZones && activeSafeZones.size > 0) {
           let maxBottom = 0;
@@ -550,13 +550,16 @@ const SubtitleOverlay = React.memo(({
           safeMaxWidth = `${100 - maxLeft - maxRight - 2}%`;
         }
 
+        // Track 6 = 썸네일 타이틀 (화면 상단 배치)
+        const isTopTitle = clip.trackIndex === 6;
+
         return (
           <div
             key={clip.id}
             data-subtitle-box
             className={`absolute left-1/2 -translate-x-1/2 z-[110] text-center transition-none select-none overflow-hidden${animClass ? ` ${animClass}` : ''}`}
             style={{
-              bottom: bottomPos,
+              ...(isTopTitle ? { top: '8%' } : { bottom: bottomPos }),
               maxWidth: safeMaxWidth,
               transform: `translate(${clip.positionX ?? 0}px, ${clip.positionY ?? 0}px) translateX(-50%) rotate(${clip.rotation ?? 0}deg) scale(${(clip.scale ?? 100) / 100})`,
               left: '50%',
@@ -655,14 +658,10 @@ const SubtitleOverlay = React.memo(({
                   fontSize: `${Math.round((clip.fontSize || 40) * aspectScale)}px`,
                   lineHeight: clip.lineHeight ?? 1.35,
                   letterSpacing: clip.letterSpacing !== undefined ? `${clip.letterSpacing}em` : '0.02em',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-all',
-                  overflowWrap: 'break-word',
+                  whiteSpace: 'nowrap',
                   overflow: 'hidden',
+                  textOverflow: 'ellipsis',
                   maxWidth: '100%',
-                  display: '-webkit-box',
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: 'vertical' as const,
                   textShadow: clip.glowColor
                     ? `0 0 ${clip.shadowBlur || 6}px ${clip.glowColor}, 0 0 ${(clip.shadowBlur || 6) * 2}px ${clip.glowColor}`
                     : `2px 2px ${clip.shadowBlur ?? 8}px ${clip.shadowColor || 'rgba(0,0,0,0.9)'}, -1px -1px 4px rgba(0,0,0,0.5)`,
@@ -1883,30 +1882,6 @@ const Player = React.memo(({
 
       <div className="h-10 bg-editor-bg border-t border-border-color flex items-center justify-between px-4 shrink-0">
         <div className="flex items-center space-x-3 w-1/3">
-          <div className="relative">
-            <button
-              onClick={() => setShowAspectMenu(prev => !prev)}
-              className="flex items-center gap-1 text-gray-400 hover:text-white transition-all bg-gray-800/50 px-1.5 py-0.5 rounded border border-gray-700 hover:border-primary/50"
-              title="화면 비율"
-            >
-              <span className="material-icons text-sm text-primary">aspect_ratio</span>
-              <span className="text-[10px] font-bold font-mono">{canvasAspectRatio}</span>
-            </button>
-            {showAspectMenu && (
-              <div className="absolute bottom-full left-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 py-1 w-24">
-                {(['16:9', '9:16', '1:1', '3:4'] as const).map(ratio => (
-                  <button
-                    key={ratio}
-                    className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[#00D4D4]/10 flex items-center justify-between ${canvasAspectRatio === ratio ? 'text-[#00D4D4]' : 'text-white'}`}
-                    onClick={() => { onAspectRatioChange?.(ratio); setShowAspectMenu(false); }}
-                  >
-                    <span className="font-mono">{ratio}</span>
-                    {canvasAspectRatio === ratio && <span className="material-icons text-xs">check</span>}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
           <div className="flex items-center space-x-2">
             <span className={`text-xs font-mono font-semibold transition-colors duration-100 ${
               isDraggingPlayhead

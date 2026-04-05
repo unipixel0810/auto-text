@@ -52,6 +52,9 @@ export default function Home() {
   const [selectedClipIds, setSelectedClipIds] = useState<string[]>([]);
   const [currentVideoUrl, setCurrentVideoUrl] = useState<string | undefined>();
   const [currentVideoFile, setCurrentVideoFile] = useState<File | null>(null);
+  const [cachedAudioBlob, setCachedAudioBlob] = useState<Blob | null>(null);
+  const [inPoint, setInPoint] = useState<number | null>(null);
+  const [outPoint, setOutPoint] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [snapEnabled, setSnapEnabled] = useState(true);
@@ -61,6 +64,7 @@ export default function Home() {
   const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false);
   const [importToast, setImportToast] = useState<string | null>(null);
   const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
   const [currentTool, setCurrentTool] = useState<'selection' | 'blade'>('selection');
   // Resizable panels — percentage-based for true responsiveness
   const [leftPct, setLeftPct] = useState(18);   // % of window width
@@ -543,24 +547,46 @@ export default function Home() {
           }
         }
 
-        // 클립의 URL을 새 blob URL로 교체 (url 매핑 또는 clipId 매핑)
-        const fixedClips = restoredClips.map(c => {
-          const byUrl = c.url ? urlMap.get(c.url) : undefined;
-          const byId = clipIdToNewUrl.get(c.id);
-          const newUrl = byUrl || byId;
-          return newUrl ? { ...c, url: newUrl } : c;
-        });
-        setClips(fixedClips);
+        // 복원된 미디어가 있는지 확인
+        if (clipIdToNewUrl.size === 0) {
+          // 미디어 복원 실패 → 모든 클립 제거
+          setClips([]);
+          setTranscripts([]);
+          setSubtitles([]);
+          setCurrentVideoUrl(undefined);
+          setCurrentVideoFile(null);
+          setActiveFileName('');
+          setActiveFileDuration(0);
+        } else {
+          // 클립의 URL을 새 blob URL로 교체 — 복원 불가 미디어 클립 제거
+          const fixedClips = restoredClips
+            .map(c => {
+              const byUrl = c.url ? urlMap.get(c.url) : undefined;
+              const byId = clipIdToNewUrl.get(c.id);
+              const newUrl = byUrl || byId;
+              return newUrl ? { ...c, url: newUrl } : c;
+            })
+            .filter(c => {
+              if (c.trackIndex === 0 || (c.trackIndex >= 5 && c.trackIndex <= 8)) return true;
+              return !!c.url;
+            });
+          setClips(fixedClips);
 
-        // currentVideoFile 복원
-        const firstVideoClip = fixedClips.find(c => c.trackIndex === 1 && c.url);
-        if (firstVideoClip) {
-          const file = fileMap.get(firstVideoClip.id);
-          if (file) setCurrentVideoFile(file);
+          const firstVideoClip = fixedClips.find(c => c.trackIndex === 1 && c.url);
+          if (firstVideoClip) {
+            const file = fileMap.get(firstVideoClip.id);
+            if (file) setCurrentVideoFile(file);
+          }
         }
       } else {
-        // IndexedDB에도 없음 — 클립 구조만 복원 (URL은 무효)
-        setClips(restoredClips);
+        // IndexedDB에도 없음 — 미디어 복원 불가 → 모든 클립 제거 (깨끗한 상태)
+        setClips([]);
+        setTranscripts([]);
+        setSubtitles([]);
+        setCurrentVideoUrl(undefined);
+        setCurrentVideoFile(null);
+        setActiveFileName('');
+        setActiveFileDuration(0);
       }
 
       // clips state가 업데이트된 후 라이브러리 구성을 위해 약간 지연
@@ -633,8 +659,13 @@ export default function Home() {
   // Auto-save project every 3 seconds (debounced)
   useEffect(() => {
     if (!projectId) return;
+    setSaveStatus('unsaved');
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    autoSaveTimerRef.current = setTimeout(() => saveNowRef.current(), 3000);
+    autoSaveTimerRef.current = setTimeout(() => {
+      setSaveStatus('saving');
+      saveNowRef.current();
+      setSaveStatus('saved');
+    }, 3000);
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
   }, [projectId, activeFileName, activeFileDuration, transcripts, subtitles, clips,
       leftPct, rightPct, timelinePct, viewerZoom, timelineZoom,
@@ -768,7 +799,7 @@ export default function Home() {
       // 라이브러리 경유 클립도 IndexedDB에 clipId로 저장 (새로고침 복원용)
       if (item.file && item.file.size > 0) {
         const pid = projectIdRef.current || 'default';
-        saveMediaBlob(`${pid}:${clipId}`, item.file, name, item.file.type);
+        saveMediaBlob(`${pid}:${clipId}`, item.file, name, item.file.type).catch(() => {});
       }
     } else if (file) {
       url = URL.createObjectURL(file);
@@ -777,9 +808,9 @@ export default function Home() {
       const isAudio = (file.type.startsWith('audio/') || file.name.endsWith('.m4a') || file.name.endsWith('.aac') || file.name.endsWith('.wav'));
       const isImage = file.type.startsWith('image/');
       type = isImage ? 'image' : isAudio ? 'audio' : 'video';
-      // IndexedDB에 미디어 파일 저장 (페이지 이동 후 복원용)
+      // IndexedDB에 미디어 파일 저장 (외장하드 파일은 실패 가능)
       const pid = projectIdRef.current || 'default';
-      saveMediaBlob(`${pid}:${clipId}`, file, name, file.type);
+      saveMediaBlob(`${pid}:${clipId}`, file, name, file.type).catch(() => {});
     } else {
       return;
     }
@@ -1032,14 +1063,8 @@ export default function Home() {
   // Video add handler (now adds to Media Library)
   const handleVideoAdd = useCallback(async (file: File): Promise<string> => {
     const id = genId();
-    // 파일 데이터를 메모리에 실제 복사 (원본 File 참조 GC 시 blob URL 무효화 방지)
-    let memFile: File;
-    try {
-      const buf = await file.arrayBuffer();
-      memFile = new File([buf], file.name, { type: file.type || 'video/mp4', lastModified: file.lastModified });
-    } catch {
-      memFile = new File([file], file.name, { type: file.type || 'video/mp4', lastModified: file.lastModified });
-    }
+    // 파일 참조 유지 (대용량 파일은 메모리 복사 생략)
+    const memFile = file;
     const url = URL.createObjectURL(memFile);
     const isAudio = (memFile.type.startsWith('audio/') || memFile.name.endsWith('.m4a') || memFile.name.endsWith('.aac') || memFile.name.endsWith('.wav'));
     const isImage = memFile.type.startsWith('image/');
@@ -1078,9 +1103,9 @@ export default function Home() {
 
     setLibraryItems(prev => [...prev, item]);
 
-    // IndexedDB에 미디어 파일 저장 (페이지 이동 후 복원용)
+    // IndexedDB에 미디어 파일 저장 (페이지 이동 후 복원용, 외장하드 파일은 실패 가능)
     const pid = projectIdRef.current || 'default';
-    saveMediaBlob(`${pid}:${id}`, memFile, memFile.name, memFile.type);
+    saveMediaBlob(`${pid}:${id}`, memFile, memFile.name, memFile.type).catch(() => {});
 
     setImportToast(`${file.name} 라이브러리에 추가됨 — 타임라인에 드래그하여 배치하세요`);
     setTimeout(() => setImportToast(null), 3000);
@@ -1100,14 +1125,8 @@ export default function Home() {
       const isAudio = file.type.startsWith('audio/') || /\.(mp3|m4a|aac|wav|ogg|flac|wma)$/i.test(file.name);
       const isImage = file.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp|svg|heic)$/i.test(file.name);
       const type: 'video' | 'audio' | 'image' = isImage ? 'image' : isAudio ? 'audio' : 'video';
-      // 파일 데이터를 메모리에 실제 복사 (원본 참조 GC 방지)
-      let memFile: File;
-      try {
-        const buf = await file.arrayBuffer();
-        memFile = new File([buf], file.name, { type: file.type || 'video/mp4', lastModified: file.lastModified });
-      } catch {
-        memFile = file;
-      }
+      // 파일 참조 유지 (대용량 파일은 메모리 복사 생략 → 원본 참조 사용)
+      const memFile = file;
       const url = URL.createObjectURL(memFile);
       const duration = isImage ? 10 : await new Promise<number>((resolve, reject) => {
         const el = document.createElement('video');
@@ -1174,6 +1193,8 @@ export default function Home() {
 
     setImportToast(`${files.length}개 파일 타임라인에 추가됨`);
     setTimeout(() => setImportToast(null), 3000);
+
+    // 오디오 추출은 AI 자막 실행 시 처리 (드롭 시 파일 읽기 없음)
   }, [setClipsSynced]);
 
   const handleClipUpdate = useCallback((clipId: string, updates: Partial<VideoClip>) => {
@@ -1343,10 +1364,10 @@ export default function Home() {
   // Player/Timeline에서 재생/정지 전환 시
   const handlePlayingChange = useCallback((playing: boolean) => {
     if (playing && !isPlayingRef.current) {
-      // 재생 시작: blue line 우선, blue=0이고 hover가 있으면 hover 위치 사용
-      const startAt = (currentTimeRef.current > 0 || hoverTimeRef.current == null)
-        ? currentTimeRef.current
-        : hoverTimeRef.current;
+      // 재생 시작: 주황 라인(hover) 우선, 없으면 파란 라인(edit) 사용
+      const startAt = (hoverTimeRef.current != null)
+        ? hoverTimeRef.current
+        : currentTimeRef.current;
       setPlaybackTime(startAt);
       playbackTimeRef.current = startAt;
       setCurrentTime(startAt);
@@ -1591,10 +1612,18 @@ export default function Home() {
       startTime,
       duration,
       trackIndex,
-      scale: 100, positionX: 0, positionY: 0, rotation: 0, opacity: 100, blendMode: false, speed: 1,
+      scale: 100, positionX: (item as any).positionX ?? 0, positionY: (item as any).positionY ?? 0, rotation: 0, opacity: 100, blendMode: false, speed: 1,
       linked: true, linkGroupId: groupId,
-      fontFamily: 'PaperlogyExtraBold, sans-serif', fontSize: 40,
-      color: item.color || '#FFFFFF', strokeColor: item.strokeColor || '#000000', strokeWidth: 3, fontWeight: 800, shadowColor: 'rgba(0,0,0,0.9)', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2,
+      fontFamily: (item as any).fontFamily || 'PaperlogyExtraBold, sans-serif',
+      fontSize: (item as any).fontSize || 40,
+      color: item.color || '#FFFFFF',
+      strokeColor: item.strokeColor || '#000000',
+      strokeWidth: (item as any).strokeWidth ?? 3,
+      fontWeight: (item as any).fontWeight ?? 800,
+      shadowColor: (item as any).shadowColor || 'rgba(0,0,0,0.9)',
+      shadowBlur: (item as any).shadowBlur ?? 8,
+      shadowOffsetX: (item as any).shadowOffsetX ?? 2,
+      shadowOffsetY: (item as any).shadowOffsetY ?? 2,
     }));
 
     setClips(prev => {
@@ -1736,10 +1765,10 @@ export default function Home() {
         e.preventDefault();
         setIsPlaying(prev => {
           if (!prev) {
-            // Starting playback: blue line 우선, blue=0이고 hover가 있으면 hover 위치 사용
-            const startAt = (currentTimeRef.current > 0 || hoverTimeRef.current == null)
-              ? currentTimeRef.current
-              : hoverTimeRef.current;
+            // Starting playback: 주황 라인(hover) 우선, 없으면 파란 라인(edit) 사용
+            const startAt = (hoverTimeRef.current != null)
+              ? hoverTimeRef.current
+              : currentTimeRef.current;
             setPlaybackTime(startAt);
             playbackTimeRef.current = startAt;
             setCurrentTime(startAt);
@@ -1859,6 +1888,24 @@ export default function Home() {
       if (e.code === 'BracketRight') {
         e.preventDefault();
         setCurrentTimeSynced(prev => prev + FRAME_DURATION);
+        return;
+      }
+
+      // --- IN/OUT POINT (I/O) ---
+      if (e.code === 'KeyI') {
+        e.preventDefault();
+        const t = currentTimeRef.current;
+        setInPoint(t);
+        setImportToast(`시작점(I) 설정: ${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`);
+        setTimeout(() => setImportToast(null), 2000);
+        return;
+      }
+      if (e.code === 'KeyO') {
+        e.preventDefault();
+        const t = currentTimeRef.current;
+        setOutPoint(t);
+        setImportToast(`끝점(O) 설정: ${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`);
+        setTimeout(() => setImportToast(null), 2000);
         return;
       }
 
@@ -2509,14 +2556,15 @@ export default function Home() {
     if (fileName.endsWith('.srt') || fileName.endsWith('.ass') || fileName.endsWith('.ssa')) {
       handleSubtitleImport(file);
       setImportToast('자막 파일이 추가되었습니다 ✓');
+      setTimeout(() => setImportToast(null), 2500);
     } else if (file.type.startsWith('video/') || file.type.startsWith('audio/') || file.type.startsWith('image/')) {
-      await handleVideoAdd(file);
-      setImportToast('파일이 추가되었습니다 ✓');
+      // 라이브러리 + 타임라인에 동시 추가
+      await handlePlayerFileDrop([file]);
     } else {
       setImportToast('지원하지 않는 파일 형식입니다');
+      setTimeout(() => setImportToast(null), 2500);
     }
-    setTimeout(() => setImportToast(null), 2500);
-  }, [handleVideoAdd, handleSubtitleImport]);
+  }, [handlePlayerFileDrop, handleSubtitleImport]);
   importFileRef.current = importFile;
 
   const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2555,8 +2603,17 @@ export default function Home() {
     e.preventDefault();
     dragCounterRef.current = 0;
     setIsDraggingFile(false);
-    Array.from(e.dataTransfer.files).forEach(importFile);
-  }, [importFile]);
+    const files = Array.from(e.dataTransfer.files);
+    // 자막 파일과 미디어 파일 분리
+    const subtitleFiles = files.filter(f => /\.(srt|ass|ssa)$/i.test(f.name));
+    const mediaFiles = files.filter(f => !(/\.(srt|ass|ssa)$/i.test(f.name)));
+    subtitleFiles.forEach(f => {
+      handleSubtitleImport(f);
+      setImportToast('자막 파일이 추가되었습니다 ✓');
+      setTimeout(() => setImportToast(null), 2500);
+    });
+    if (mediaFiles.length > 0) handlePlayerFileDrop(mediaFiles);
+  }, [handlePlayerFileDrop, handleSubtitleImport]);
 
   // Callbacks for Timeline toolbar buttons (used for split/trim from toolbar)
   const handleSplit = useCallback(() => {
@@ -2828,6 +2885,9 @@ export default function Home() {
           videoDuration={activeFileDuration}
           clips={clips}
           transcripts={transcripts}
+          canvasAspectRatio={canvasAspectRatio}
+          onAspectRatioChange={setCanvasAspectRatio}
+          saveStatus={saveStatus}
         />
         {!isMobile && (
           <SecondaryToolbar
@@ -2973,6 +3033,9 @@ export default function Home() {
               selectedClip={selectedClipIds.length === 1 ? selectedClip : null}
               selectedClipIds={selectedClipIds}
               videoFile={currentVideoFile}
+              cachedAudioBlob={cachedAudioBlob}
+              inPoint={inPoint}
+              outPoint={outPoint}
               videoDuration={activeFileDuration}
               clips={clips}
               onTranscriptsUpdate={handleTranscriptsUpdate}
@@ -2984,6 +3047,10 @@ export default function Home() {
               onAddTextClip={handleAddTextClip}
               onExport={handleExportClick}
               onResetViewerZoom={() => setViewerZoom(100)}
+              onClipSelect={handleClipSelect}
+              onSetCanvasAspectRatio={setCanvasAspectRatio}
+              onSetInPoint={setInPoint}
+              onSetOutPoint={setOutPoint}
             />
           </div>
         </div>
@@ -3057,6 +3124,8 @@ export default function Home() {
             onHoverChange={setIsTimelineHovered}
             trackHeightScale={timelineHeightScale}
             onTrackHeightScaleChange={setTimelineHeightScale}
+            inPoint={inPoint}
+            outPoint={outPoint}
           />
         </div>
       </div>

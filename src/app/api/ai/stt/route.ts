@@ -17,8 +17,11 @@ export async function POST(req: Request) {
             : null;
 
         // 세션 없이도 사용 가능 (베타 오픈 정책)
-        const session = await getServerSession(authOptions);
-        const email = session?.user?.email || null;
+        let email: string | null = null;
+        try {
+            const session = await getServerSession(authOptions);
+            email = session?.user?.email || null;
+        } catch { /* 인증 실패해도 계속 진행 */ }
 
         // 로그인한 사용자만 usage 추적 (비로그인은 무제한 베타 허용)
         let usage: Record<string, number> | null = null;

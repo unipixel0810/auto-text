@@ -18,8 +18,13 @@ export async function POST(req: Request) {
             ? createClient(supabaseUrl, supabaseServiceKey)
             : null;
 
-        const session = await getServerSession(authOptions);
-        const email = session?.user?.email || null;
+        let email: string | null = null;
+        try {
+            const session = await getServerSession(authOptions);
+            email = session?.user?.email || null;
+        } catch {
+            // 인증 실패해도 STT는 계속 진행
+        }
 
         let usage: Record<string, number> | null = null;
         let skipUsageTracking = !email || !supabase;
@@ -83,7 +88,7 @@ export async function POST(req: Request) {
         const mimeType = file.type || 'audio/wav';
 
         const genAI = new GoogleGenerativeAI(geminiKey);
-        const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+        const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 
         const langLabel = language === 'ko' ? '한국어' : language === 'en' ? 'English' : language;
 
@@ -171,19 +176,36 @@ export async function POST(req: Request) {
             throw new Error('Gemini STT: 빈 응답');
         }
 
-        // JSON 추출
+        // JSON 추출 (여러 패턴 시도)
         let cleanedText = responseText
             .replace(/```json\n?/g, '').replace(/```\n?/g, '')
             .trim();
-        const jsonMatch = cleanedText.match(/\{[\s\S]*"segments"[\s\S]*\}/);
+        console.log('[Gemini STT] 응답 원문 (앞 500자):', cleanedText.slice(0, 500));
+
+        // 패턴 1: segments 포함 JSON
+        let jsonMatch = cleanedText.match(/\{[\s\S]*"segments"[\s\S]*\}/);
+        // 패턴 2: text 포함 JSON
+        if (!jsonMatch) jsonMatch = cleanedText.match(/\{[\s\S]*"text"[\s\S]*\}/);
+        // 패턴 3: words 포함 JSON
+        if (!jsonMatch) jsonMatch = cleanedText.match(/\{[\s\S]*"words"[\s\S]*\}/);
         if (jsonMatch) cleanedText = jsonMatch[0];
 
         let parsed: any;
         try {
             parsed = JSON.parse(cleanedText);
         } catch {
-            console.error('[Gemini STT] JSON 파싱 실패:', cleanedText.slice(0, 500));
-            throw new Error('Gemini STT 응답을 파싱할 수 없습니다');
+            // JSON 파싱 실패 → 텍스트 응답을 단일 세그먼트로 변환
+            console.warn('[Gemini STT] JSON 파싱 실패, 텍스트 응답으로 폴백:', cleanedText.slice(0, 200));
+            const plainText = cleanedText.replace(/[{}\[\]"]/g, '').trim();
+            if (plainText.length > 0) {
+                parsed = {
+                    text: plainText,
+                    segments: [{ start: 0, end: 10, text: plainText, no_speech_prob: 0 }],
+                    words: plainText.split(/\s+/).map((w: string, i: number) => ({ word: w, start: i * 0.5, end: (i + 1) * 0.5 })),
+                };
+            } else {
+                throw new Error('Gemini STT 응답이 비어있습니다');
+            }
         }
 
         // WhisperResponse 형식으로 변환
