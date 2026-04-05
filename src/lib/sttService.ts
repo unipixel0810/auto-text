@@ -331,10 +331,33 @@ export async function splitAudioIntoChunks(
 
   onProgress?.('🎵 오디오 디코딩 중...');
 
-  // 대용량 파일은 arrayBuffer() 실패 가능 → video element로 캡처 폴백
+  // 대용량 파일은 한번에 arrayBuffer() 실패 → 청크 단위로 읽기
   let arrayBuffer: ArrayBuffer;
   try {
-    arrayBuffer = await audioBlob.arrayBuffer();
+    if (totalSize > 200 * 1024 * 1024) {
+      // 200MB 초과: 100MB씩 분할 읽기 후 합치기
+      onProgress?.(`🎵 대용량 파일 읽는 중... (${Math.round(totalSize / 1024 / 1024)}MB)`);
+      const READ_CHUNK = 100 * 1024 * 1024;
+      const parts: ArrayBuffer[] = [];
+      for (let offset = 0; offset < totalSize; offset += READ_CHUNK) {
+        const slice = audioBlob.slice(offset, Math.min(offset + READ_CHUNK, totalSize));
+        parts.push(await slice.arrayBuffer());
+        const pct = Math.round(((offset + READ_CHUNK) / totalSize) * 100);
+        onProgress?.(`🎵 파일 읽는 중... ${Math.min(pct, 100)}%`);
+      }
+      // 합치기
+      const totalLen = parts.reduce((s, p) => s + p.byteLength, 0);
+      const merged = new Uint8Array(totalLen);
+      let pos = 0;
+      for (const part of parts) {
+        merged.set(new Uint8Array(part), pos);
+        pos += part.byteLength;
+      }
+      arrayBuffer = merged.buffer;
+      console.log(`[STT 청크] 분할 읽기 완료: ${parts.length}개 × 100MB → ${Math.round(totalLen / 1024 / 1024)}MB`);
+    } else {
+      arrayBuffer = await audioBlob.arrayBuffer();
+    }
   } catch {
     // arrayBuffer 실패 → video element에서 오디오 캡처
     onProgress?.('🎵 대용량 파일 — 비디오에서 오디오 캡처 중...');
@@ -355,26 +378,11 @@ export async function splitAudioIntoChunks(
   }
   audioCtx.close();
 
-  // 디코딩 실패 시 → 원본 파일을 바이트 단위로 분할하여 Whisper에 직접 전송
+  // 디코딩 실패 시 → captureAudioChunks로 폴백 (바이트 분할은 Gemini에서 에러)
   if (decodeFailed) {
-    onProgress?.('⚠️ 오디오 디코딩 실패 — 원본 파일을 분할하여 시도합니다');
-    // Vercel payload 한도(4MB) 이하로 바이트 분할
-    if (totalSize <= CHUNK_SIZE_BYTES) {
-      return [{ blob: audioBlob, startTime: 0, index: 0, total: 1 }];
-    }
-    // 바이트 단위 분할 (Whisper가 직접 처리하도록)
-    const byteChunks: { blob: Blob; startTime: number; index: number; total: number }[] = [];
-    const numChunks = Math.ceil(totalSize / CHUNK_SIZE_BYTES);
-    for (let i = 0; i < numChunks; i++) {
-      const start = i * CHUNK_SIZE_BYTES;
-      const end = Math.min(start + CHUNK_SIZE_BYTES, totalSize);
-      const slice = audioBlob.slice(start, end, audioBlob.type);
-      // 바이트 분할은 정확한 시간 계산 불가 → 대략적 추정
-      const estimatedStart = (start / totalSize) * (totalSize / 100000); // 매우 대략적
-      byteChunks.push({ blob: slice, startTime: 0, index: i, total: numChunks });
-    }
-    console.log(`[STT 청크] 바이트 분할: ${numChunks}개 청크`);
-    return byteChunks;
+    onProgress?.('⚠️ 오디오 디코딩 실패 — 비디오에서 직접 캡처합니다');
+    console.log('[STT 청크] 디코딩 실패 → captureAudioChunks 폴백');
+    return captureAudioChunks(audioBlob, chunkDurationSeconds, onProgress);
   }
 
   // ★ 디코딩된 오디오가 무음인지 확인 (첫 번째 채널의 진폭 체크)
@@ -387,26 +395,11 @@ export async function splitAudioIntoChunks(
   }
   console.log(`[STT 청크] 디코딩된 오디오 최대 진폭: ${maxAmplitude.toFixed(6)} (0=무음, 1=최대)`);
 
-  // 진폭이 극히 낮으면 (사실상 무음) → 디코딩이 잘못된 것이므로 원본 파일로 폴백
+  // 진폭이 극히 낮으면 (사실상 무음) → 디코딩이 잘못된 것이므로 captureAudioChunks 폴백
   if (maxAmplitude < 0.001) {
-    console.warn('[STT 청크] ⚠️ 디코딩 결과가 무음! 원본 파일로 폴백합니다');
-    onProgress?.('⚠️ 오디오 디코딩 결과가 무음 — 원본 파일로 시도합니다');
-    if (totalSize <= CHUNK_SIZE_BYTES) {
-      return [{ blob: audioBlob, startTime: 0, index: 0, total: 1 }];
-    }
-    // 대용량 원본 → Whisper 25MB 한도 내에서 전체 전송 시도
-    if (totalSize <= WHISPER_MAX_SIZE) {
-      return [{ blob: audioBlob, startTime: 0, index: 0, total: 1 }];
-    }
-    // 25MB 초과 시 바이트 분할
-    const byteChunks: { blob: Blob; startTime: number; index: number; total: number }[] = [];
-    const numChunks = Math.ceil(totalSize / WHISPER_MAX_SIZE);
-    for (let i = 0; i < numChunks; i++) {
-      const start = i * WHISPER_MAX_SIZE;
-      const end = Math.min(start + WHISPER_MAX_SIZE, totalSize);
-      byteChunks.push({ blob: audioBlob.slice(start, end, audioBlob.type), startTime: 0, index: i, total: numChunks });
-    }
-    return byteChunks;
+    console.warn('[STT 청크] ⚠️ 디코딩 결과가 무음! captureAudioChunks 폴백');
+    onProgress?.('⚠️ 오디오 디코딩 결과가 무음 — 비디오에서 직접 캡처합니다');
+    return captureAudioChunks(audioBlob, chunkDurationSeconds, onProgress);
   }
 
   const totalDuration = audioBuffer.duration;
