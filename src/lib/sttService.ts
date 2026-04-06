@@ -305,6 +305,97 @@ async function captureAudioChunks(
   return chunks;
 }
 
+/** 비디오 파일의 duration을 video element로 읽기 */
+async function getVideoDuration(file: Blob): Promise<number> {
+  const url = URL.createObjectURL(file);
+  try {
+    return await new Promise<number>((resolve) => {
+      const v = document.createElement('video');
+      v.preload = 'metadata';
+      v.src = url;
+      v.onloadedmetadata = () => resolve(v.duration || 300);
+      v.onerror = () => resolve(300);
+      setTimeout(() => resolve(300), 3000);
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * 지정된 시간 구간들만 video element에서 오디오 캡처
+ * 전체 파일을 메모리에 올리지 않고, 필요한 구간만 실시간 캡처
+ */
+async function captureAudioChunksForRanges(
+  videoFile: Blob,
+  rangeChunks: { startTime: number; index: number; total: number; durationSeconds?: number }[],
+  onProgress?: (status: string) => void,
+): Promise<{ blob: Blob; startTime: number; index: number; total: number; durationSeconds?: number }[]> {
+  const url = URL.createObjectURL(videoFile);
+  const video = document.createElement('video');
+  video.preload = 'auto';
+  video.src = url;
+  video.volume = 0;
+
+  await new Promise<void>((resolve, reject) => {
+    video.onloadedmetadata = () => resolve();
+    video.onerror = () => reject(new Error('비디오 로드 실패'));
+  });
+
+  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus' : 'audio/webm';
+
+  const results: { blob: Blob; startTime: number; index: number; total: number; durationSeconds?: number }[] = [];
+
+  for (let i = 0; i < rangeChunks.length; i++) {
+    const chunk = rangeChunks[i];
+    const chunkDur = chunk.durationSeconds ?? 120;
+    const chunkEnd = chunk.startTime + chunkDur;
+    const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+    onProgress?.(`🎵 구간 캡처 ${i + 1}/${rangeChunks.length} (${fmtTime(chunk.startTime)}~${fmtTime(chunkEnd)})`);
+
+    const audioBlob = await new Promise<Blob>((resolve, reject) => {
+      const stream = (video as any).captureStream() as MediaStream;
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) { reject(new Error('오디오 트랙 없음')); return; }
+
+      const recorder = new MediaRecorder(new MediaStream(audioTracks), { mimeType });
+      const parts: Blob[] = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) parts.push(e.data); };
+      recorder.onstop = () => resolve(new Blob(parts, { type: mimeType }));
+      recorder.onerror = (e) => reject(e);
+
+      const onTimeUpdate = () => {
+        if (video.currentTime >= chunkEnd - 0.05) {
+          video.removeEventListener('timeupdate', onTimeUpdate);
+          video.pause();
+          if (recorder.state === 'recording') recorder.stop();
+        }
+      };
+
+      video.currentTime = chunk.startTime;
+      video.onseeked = () => {
+        setTimeout(() => {
+          video.addEventListener('timeupdate', onTimeUpdate);
+          recorder.start(100);
+          video.play().catch(reject);
+        }, 100);
+      };
+
+      setTimeout(() => {
+        video.removeEventListener('timeupdate', onTimeUpdate);
+        if (recorder.state === 'recording') { video.pause(); recorder.stop(); }
+      }, (chunkDur + 5) * 1000);
+    });
+
+    results.push({ blob: audioBlob, startTime: chunk.startTime, index: i, total: rangeChunks.length, durationSeconds: chunkDur });
+  }
+
+  URL.revokeObjectURL(url);
+  video.src = '';
+  return results;
+}
+
 // ============================================
 // 오디오 청크 분할
 // ============================================
@@ -964,18 +1055,51 @@ export async function transcribeVideo(
       throw new Error(sizeCheck.message);
     }
 
-    // 2. 오디오 추출
-    onProgress?.('🎵 오디오 추출 중...');
-    let audioBlob: Blob;
-    try {
-      audioBlob = await extractAudioFromVideo(videoFile, onProgress);
-    } catch {
-      audioBlob = videoFile;
-    }
+    // 2. 분석 대상 구간 계산
+    const totalRangeSec = mediaRanges
+      ? mediaRanges.reduce((sum, r) => sum + (r.end - r.start), 0)
+      : 0;
 
-    // 3. 청크 분할 (mediaRanges가 있으면 해당 구간만 — 토큰 절약)
-    onProgress?.('📦 파일 처리 중...');
-    const chunks = await splitAudioIntoChunks(audioBlob, CHUNK_DURATION_SECONDS, onProgress, mediaRanges);
+    let chunks: { blob: Blob; startTime: number; index: number; total: number; durationSeconds?: number }[];
+
+    // 파일 읽기 가능 여부 테스트
+    let fileReadable = false;
+    try {
+      await videoFile.slice(0, 1024).arrayBuffer();
+      fileReadable = true;
+    } catch { /* 외장하드 등 읽기 불가 */ }
+
+    const fileSizeMB = videoFile.size / (1024 * 1024);
+
+    if (fileReadable && (!mediaRanges || fileSizeMB < 500)) {
+      // ★ 읽기 가능 + (전체 분석 또는 소형 파일): WebAudio 디코딩
+      onProgress?.('🎵 오디오 추출 중...');
+      let audioBlob: Blob;
+      try { audioBlob = await extractAudioFromVideo(videoFile, onProgress); } catch { audioBlob = videoFile; }
+      onProgress?.('📦 파일 처리 중...');
+      chunks = await splitAudioIntoChunks(audioBlob, CHUNK_DURATION_SECONDS, onProgress, mediaRanges);
+    } else if (mediaRanges && mediaRanges.length > 0 && totalRangeSec > 0) {
+      // ★ 대형 파일 + 구간 지정: 해당 구간만 captureStream
+      onProgress?.(`🎵 지정 구간 캡처 중... (${Math.round(totalRangeSec)}초)`);
+      const rangeRequests: { startTime: number; index: number; total: number; durationSeconds: number }[] = [];
+      let idx = 0;
+      for (const range of mediaRanges) {
+        const rangeDur = range.end - range.start;
+        const numRangeChunks = Math.ceil(rangeDur / CHUNK_DURATION_SECONDS);
+        for (let i = 0; i < numRangeChunks; i++) {
+          const chunkStart = range.start + i * CHUNK_DURATION_SECONDS;
+          const chunkEnd = Math.min(chunkStart + CHUNK_DURATION_SECONDS, range.end);
+          rangeRequests.push({ startTime: chunkStart, index: idx, total: 0, durationSeconds: chunkEnd - chunkStart });
+          idx++;
+        }
+      }
+      rangeRequests.forEach(r => r.total = rangeRequests.length);
+      chunks = await captureAudioChunksForRanges(videoFile, rangeRequests, onProgress);
+    } else {
+      // ★ 전체 분석
+      onProgress?.('🎵 전체 오디오 캡처 중...');
+      chunks = await captureAudioChunks(videoFile, CHUNK_DURATION_SECONDS, onProgress);
+    }
 
     // 4. 각 청크에 대해 STT API 호출 (캐시된 결과 재사용)
     const providerLabel = provider === 'gemini' ? 'Gemini' : 'Whisper';

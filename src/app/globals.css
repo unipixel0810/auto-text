@@ -476,3 +476,72 @@ button:hover:not(:disabled) {
 .subtitle-anim-typewriter {
   animation: subtitle-typewriter var(--anim-duration, 0.3s) steps(20, end) forwards;
 }
+
+/* ═══════════════════════════════════════════
+   왜곡 애니메이션 (캡컷 스타일)
+   ═══════════════════════════════════════════ */
+
+/* 글리치 — 화면 깨짐/번쩍임 */
+@keyframes subtitle-glitch {
+  0%   { transform: translate(0); filter: hue-rotate(0deg); opacity: 1; }
+  10%  { transform: translate(-3px, 2px) skewX(5deg); filter: hue-rotate(90deg); opacity: 0.8; }
+  20%  { transform: translate(3px, -1px) skewX(-3deg); filter: hue-rotate(180deg); opacity: 1; }
+  30%  { transform: translate(-2px, 0) skewX(2deg); filter: hue-rotate(270deg); opacity: 0.9; }
+  40%  { transform: translate(0); filter: hue-rotate(0deg); opacity: 1; }
+  100% { transform: translate(0); filter: hue-rotate(0deg); opacity: 1; }
+}
+.subtitle-anim-glitch {
+  animation: subtitle-glitch var(--anim-duration, 0.4s) ease-in-out forwards;
+}
+
+/* 웨이브 — 물결 흔들림 */
+@keyframes subtitle-wave {
+  0%   { transform: translateY(0) rotate(0deg); }
+  15%  { transform: translateY(-8px) rotate(-2deg); }
+  30%  { transform: translateY(5px) rotate(1.5deg); }
+  45%  { transform: translateY(-3px) rotate(-1deg); }
+  60%  { transform: translateY(2px) rotate(0.5deg); }
+  100% { transform: translateY(0) rotate(0deg); }
+}
+.subtitle-anim-wave {
+  animation: subtitle-wave var(--anim-duration, 0.5s) ease-in-out forwards;
+}
+
+/* 고무줄 — 늘어났다 줄어듦 */
+@keyframes subtitle-rubber {
+  0%   { transform: scale(1, 1); }
+  15%  { transform: scale(1.25, 0.75); }
+  30%  { transform: scale(0.85, 1.15); }
+  45%  { transform: scale(1.1, 0.9); }
+  60%  { transform: scale(0.95, 1.05); }
+  75%  { transform: scale(1.03, 0.97); }
+  100% { transform: scale(1, 1); }
+}
+.subtitle-anim-rubber {
+  animation: subtitle-rubber var(--anim-duration, 0.5s) ease-in-out forwards;
+}
+
+/* 젤리 — 말랑말랑 출렁임 */
+@keyframes subtitle-jelly {
+  0%   { transform: scale(0.3, 0.3); opacity: 0; }
+  20%  { transform: scale(1.15, 0.85); opacity: 1; }
+  40%  { transform: scale(0.9, 1.1); }
+  60%  { transform: scale(1.05, 0.95); }
+  80%  { transform: scale(0.98, 1.02); }
+  100% { transform: scale(1, 1); }
+}
+.subtitle-anim-jelly {
+  animation: subtitle-jelly var(--anim-duration, 0.5s) ease-out forwards;
+}
+
+/* 트위스트 — 회전하며 등장 */
+@keyframes subtitle-twist {
+  0%   { transform: rotate(-15deg) scale(0.5); opacity: 0; }
+  40%  { transform: rotate(5deg) scale(1.1); opacity: 1; }
+  60%  { transform: rotate(-2deg) scale(0.98); }
+  80%  { transform: rotate(1deg) scale(1.01); }
+  100% { transform: rotate(0deg) scale(1); }
+}
+.subtitle-anim-twist {
+  animation: subtitle-twist var(--anim-duration, 0.4s) ease-out forwards;
+}

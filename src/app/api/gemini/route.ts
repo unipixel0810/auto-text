@@ -28,6 +28,56 @@ function buildContentSummary(allTranscripts: any[]): string {
   return `${front} ... ${mid} ... ${back}`;
 }
 
+// ★ 대본 맥락 분석 (Gemini 1차 호출: 주제/분위기/핵심포인트 추출)
+async function analyzeTranscriptContext(
+  transcriptText: string,
+  geminiKey: string,
+): Promise<{ topic: string; mood: string; audience: string; keyPoints: string[]; speakerStyle: string } | null> {
+  const prompt = `아래 영상 대본을 분석하여 JSON으로만 응답하세요.
+
+대본:
+${transcriptText.slice(0, 3000)}
+
+분석 항목:
+1. topic: 이 영상의 핵심 주제 (한 줄)
+2. mood: 전체 분위기 (예: 유쾌한, 진지한, 감동적, 긴장감 있는, 교육적)
+3. audience: 타겟 시청자 (예: 20대 남성, 직장인, 학생, 게이머)
+4. keyPoints: 시청자가 반응할 핵심 순간 3~5개 (배열, 각 한 줄)
+5. speakerStyle: 화자의 말투 특징 (예: 친근한 반말, 전문가 톤, 유머러스한)
+
+JSON만 출력:
+{"topic":"...","mood":"...","audience":"...","keyPoints":["...","..."],"speakerStyle":"..."}`;
+
+  for (const model of GEMINI_MODELS) {
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${model}:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.3, maxOutputTokens: 1024 },
+          }),
+        }
+      );
+      if (!response.ok) continue;
+      const result = await response.json();
+      const rawText = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const cleaned = rawText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      const jsonMatch = cleaned.match(/\{[\s\S]*"topic"[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        console.log(`[맥락 분석] 성공:`, parsed);
+        return parsed;
+      }
+    } catch (e: any) {
+      console.warn(`[맥락 분석] ${model} 실패:`, e.message);
+    }
+  }
+  return null;
+}
+
 // ★ 예능 PD 모드: 침묵 구간 감지 (1.5초 이상 gap → 상황자막 힌트)
 function detectSilentGaps(transcripts: any[]): { start: number; end: number; duration: number }[] {
   const sorted = [...transcripts].sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0));
@@ -101,6 +151,7 @@ function buildPrompt(
   contentSummary?: string,
   silentGaps?: { start: number; end: number; duration: number }[],
   impactZones?: { start: number; end: number; type: string }[],
+  contextAnalysis?: { topic: string; mood: string; audience: string; keyPoints: string[]; speakerStyle: string } | null,
 ): string {
   const segmentCount = transcriptText.split('\n').filter(l => l.trim()).length;
   // ★ AI 연출 자막 풍부하게: 대본 세그먼트의 5배, 최소 30개
@@ -133,9 +184,26 @@ ${gapLines}\n`;
 ${zoneLines}\n`;
   }
 
+  // 맥락 분석 결과가 있으면 프롬프트에 포함
+  let contextSection = '';
+  if (contextAnalysis) {
+    const keyPts = contextAnalysis.keyPoints?.map((p, i) => `  ${i + 1}. ${p}`).join('\n') || '';
+    contextSection = `
+## 🎯 영상 맥락 (AI 분석 결과 — 반드시 반영!)
+- **주제**: ${contextAnalysis.topic}
+- **분위기**: ${contextAnalysis.mood}
+- **타겟 시청자**: ${contextAnalysis.audience}
+- **화자 말투**: ${contextAnalysis.speakerStyle}
+- **핵심 포인트** (여기에 자막을 집중 배치!):
+${keyPts}
+
+★ 위 맥락에 100% 맞는 자막만 생성하세요! 맥락과 무관한 자막 = 실격! ★
+`;
+  }
+
   return `당신은 MBC/tvN 간판 예능 PD 출신 유튜브 자막 연출 디렉터입니다.
 ★ 당신의 자막 하나가 영상의 조회수를 10배 올립니다. ★
-
+${contextSection}
 ## STEP 1: 대본 완전 분석
 대본을 처음부터 끝까지 읽고 아래를 파악하세요:
 1) 이 영상의 핵심 주제는?
@@ -251,6 +319,7 @@ async function processChunk(
   transcripts: any[],
   geminiKey: string,
   contentSummary?: string,
+  contextAnalysis?: { topic: string; mood: string; audience: string; keyPoints: string[]; speakerStyle: string } | null,
 ): Promise<any[]> {
   const transcriptText = transcripts
     .map((t: any) => `[${(t.startTime ?? 0).toFixed(1)}s - ${(t.endTime ?? 0).toFixed(1)}s] ${t.editedText || t.originalText || t.text || ''}`)
@@ -260,7 +329,7 @@ async function processChunk(
   const silentGaps = detectSilentGaps(transcripts);
   const impactZones = detectImpactZones(transcripts);
 
-  const prompt = buildPrompt(transcriptText, contentSummary, silentGaps, impactZones);
+  const prompt = buildPrompt(transcriptText, contentSummary, silentGaps, impactZones, contextAnalysis);
   console.log(`[processChunk] Gemini, textLen=${transcriptText.length}`);
 
   for (const model of GEMINI_MODELS) {
@@ -386,20 +455,23 @@ export async function POST(request: NextRequest) {
 
     console.log(`[AI 자막] ${chunks.length}개 청크로 분할 처리`);
 
-    // 전체 맥락 생성 (항상 — 단일 청크도 전체 맥락 파악 필요)
+    // 전체 맥락 생성
     const contentSummary = buildContentSummary(transcripts);
-    if (contentSummary) {
-      console.log(`[AI 자막] 전체 맥락 요약 생성: ${contentSummary.length}자`);
+
+    // ★ 1차: 대본 맥락 분석 (주제/분위기/핵심포인트 추출)
+    const contextAnalysis = await analyzeTranscriptContext(contentSummary, geminiKey);
+    if (contextAnalysis) {
+      console.log(`[AI 자막] 맥락 분석 완료 — 주제: ${contextAnalysis.topic}, 분위기: ${contextAnalysis.mood}, 타겟: ${contextAnalysis.audience}`);
     }
 
-    // 청크 순차 처리 (rate limit 방지 + 실패 시 재시도)
+    // 2차: 청크 순차 처리 (맥락 분석 결과 포함)
     const allSubtitles: any[] = [];
 
     for (let i = 0; i < chunks.length; i++) {
       let subs: any[] = [];
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          subs = await processChunk(chunks[i], geminiKey, contentSummary);
+          subs = await processChunk(chunks[i], geminiKey, contentSummary, contextAnalysis);
           break;
         } catch (e: any) {
           console.warn(`[AI 자막] 청크 ${i + 1}/${chunks.length} 시도 ${attempt + 1}/3 실패:`, e.message);

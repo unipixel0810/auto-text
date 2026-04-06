@@ -142,7 +142,8 @@ export type AnimationPreset =
   | 'fade-in' | 'fade-out'
   | 'slide-up' | 'slide-down'
   | 'pop' | 'typewriter'
-  | 'bounce' | 'shake';
+  | 'bounce' | 'shake'
+  | 'glitch' | 'wave' | 'rubber' | 'jelly' | 'twist';
 
 export interface SubtitleAnimation {
   /** 등장 애니메이션 */
@@ -173,6 +174,11 @@ export const ANIMATION_PRESET_META: Record<AnimationPreset, { label: string; ico
   'typewriter': { label: '타이핑',     icon: '⌨️', isPro: true },
   'bounce':     { label: '바운스',     icon: '🏀', isPro: true },
   'shake':      { label: '쉐이크',     icon: '〰️', isPro: true },
+  'glitch':     { label: '글리치',     icon: '⚡', isPro: false },
+  'wave':       { label: '웨이브',     icon: '🌊', isPro: false },
+  'rubber':     { label: '고무줄',     icon: '🔄', isPro: false },
+  'jelly':      { label: '젤리',       icon: '🍮', isPro: false },
+  'twist':      { label: '트위스트',   icon: '🌀', isPro: false },
 };
 
 export interface SubtitleItem {

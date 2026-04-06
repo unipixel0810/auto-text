@@ -344,25 +344,28 @@ const RightSidebar = React.memo(({
     const mainClips = (clips || []).filter(c => c.trackIndex === 1);
     if (mainClips.length === 0) return undefined;
 
-    // 단일 클립이고 트림이 없으면 전체 영상을 분석하도록 undefined 반환
-    if (mainClips.length === 1) {
-      const c = mainClips[0];
-      const trimStart = c.trimStart ?? 0;
-      if (trimStart < 0.1 && c.startTime < 0.1 && c.trimEnd == null) {
-        console.log('[mediaRanges] 단일 클립, 트림 없음 → 전체 영상 분석');
-        return undefined;
-      }
-    }
-
-    return mainClips.map(c => {
+    // 클립들의 실제 미디어 범위 계산
+    const ranges = mainClips.map(c => {
       const speed = c.speed || 1;
       const mediaStart = c.trimStart ?? 0;
-      // trimEnd가 있으면 사용, 없으면 duration*speed로 계산
       const mediaEnd = c.trimEnd != null
         ? c.trimEnd
         : mediaStart + c.duration * speed;
       return { start: mediaStart, end: mediaEnd };
     });
+
+    // 단일 클립이고 원본 전체를 사용하는 경우만 undefined (전체 분석)
+    if (ranges.length === 1) {
+      const r = ranges[0];
+      const originalDuration = mainClips[0].originalDuration ?? 0;
+      if (r.start < 0.1 && originalDuration > 0 && Math.abs(r.end - r.start - originalDuration) < 1) {
+        console.log('[mediaRanges] 단일 클립, 원본 전체 → 전체 영상 분석');
+        return undefined;
+      }
+    }
+
+    console.log(`[mediaRanges] ${ranges.length}개 클립 → 구간:`, ranges.map(r => `${r.start.toFixed(1)}~${r.end.toFixed(1)}s`).join(', '));
+    return ranges;
   }, [clips]);
 
   // 타임라인의 실제 끝 시간 (클립 기준) — videoDuration(원본 파일 길이)이 아닌 타임라인 길이
@@ -777,38 +780,57 @@ const RightSidebar = React.memo(({
         onTranscriptsUpdate?.(currentTranscripts);
       }
 
-      // 2. Gemini에게 하이라이트 구간 추천 요청
-      setShortsStatus('AI가 최적 숏츠 구간 분석 중...');
-      const shortsRes = await fetch('/api/gemini-shorts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transcripts: currentTranscripts.map(t => ({
-            startTime: t.startTime,
-            endTime: t.endTime,
-            text: t.editedText || t.originalText,
-          })),
-        }),
-      });
+      // 2. 클립이 이미 잘려있으면(60초 이하) AI 추천 건너뛰고 바로 사용
+      const mainClip = clips.find(c => c.trackIndex === 1);
+      const clipDuration = mainClip?.duration ?? 0;
+      const clipTrimStart = mainClip?.trimStart ?? 0;
 
-      if (!shortsRes.ok) {
-        const err = await shortsRes.json().catch(() => ({}));
-        throw new Error(err?.error || '숏츠 구간 추천 실패');
+      let startTime: number;
+      let endTime: number;
+      let reason: string;
+
+      if (clipDuration <= 65 && clipDuration > 0) {
+        // 이미 60초 이하로 잘려있음 → 그대로 숏츠로 사용
+        startTime = clipTrimStart;
+        endTime = clipTrimStart + clipDuration;
+        reason = `이미 ${Math.round(clipDuration)}초로 편집된 구간 사용`;
+        setShortsStatus(`잘린 영상 (${Math.round(clipDuration)}초) → 숏츠로 변환 중...`);
+        console.log(`[숏츠] 이미 잘린 클립: ${startTime.toFixed(1)}~${endTime.toFixed(1)}초 (${clipDuration.toFixed(1)}초)`);
+      } else {
+        // 60초 초과 → Gemini에게 하이라이트 구간 추천 요청
+        setShortsStatus('AI가 최적 숏츠 구간 분석 중...');
+        const shortsRes = await fetch('/api/gemini-shorts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transcripts: currentTranscripts.map(t => ({
+              startTime: t.startTime,
+              endTime: t.endTime,
+              text: t.editedText || t.originalText,
+            })),
+          }),
+        });
+
+        if (!shortsRes.ok) {
+          const err = await shortsRes.json().catch(() => ({}));
+          throw new Error(err?.error || '숏츠 구간 추천 실패');
+        }
+
+        const shortsData = await shortsRes.json();
+        startTime = shortsData.startTime;
+        endTime = shortsData.endTime;
+        reason = shortsData.reason;
       }
-
-      const { startTime, endTime, reason } = await shortsRes.json();
 
       // 3. 에디터 상태 변경: 9:16 + I/O 구간 + 영상 센터 크롭
       onSetCanvasAspectRatio?.('9:16');
       onSetInPoint?.(startTime);
       onSetOutPoint?.(endTime);
 
-      // 3-1. 점프컷 편집: 대본 있는 구간만 남기고 무음 구간 제거
+      // 3-1. 영상 클립 설정
       const segmentTranscripts = currentTranscripts
         .filter(t => t.endTime > startTime && t.startTime < endTime)
         .sort((a, b) => a.startTime - b.startTime);
-
-      const mainClip = clips.find(c => c.trackIndex === 1);
       const SILENCE_THRESHOLD = 0.3; // 0.3초 이상 무음이면 제거
 
       if (mainClip && segmentTranscripts.length > 0) {
@@ -1097,7 +1119,13 @@ const RightSidebar = React.memo(({
         console.log(`[통합 생성] I/O 구간 지정: ${inPoint.toFixed(1)}s ~ ${outPoint.toFixed(1)}s`);
       }
       console.log(`[통합 생성] STT mediaRanges:`, sttMediaRanges);
-      setIntegratedStatus(inPoint != null && outPoint != null ? `음성 분석 중... (${Math.round(inPoint)}s~${Math.round(outPoint)}s 구간)` : '음성 분석 중...');
+      const fmtSec = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+      if (sttMediaRanges) {
+        const rangeStr = sttMediaRanges.map(r => `${fmtSec(r.start)}~${fmtSec(r.end)}`).join(', ');
+        setIntegratedStatus(`음성 분석 중... (${rangeStr} 구간만 분석)`);
+      } else {
+        setIntegratedStatus('음성 분석 중... (전체 영상)');
+      }
       const sttResult = await transcribeVideo(safeFile, 'backend-proxy', (status) => {
         setIntegratedStatus(`대본 생성 중: ${status}`);
         if (status.includes('음성 인식')) {
@@ -1212,7 +1240,19 @@ const RightSidebar = React.memo(({
       const situationItems: TranscriptItem[] = [];
       const explanationItems: TranscriptItem[] = [];
 
+      // ★ 유형별 스타일 차별화 (색상 + 크기 + 애니메이션)
+      const styleMap: Record<string, { color: string; strokeColor: string; fontSize: number; animation: string }> = {
+        '예능': { color: '#FFE066', strokeColor: '#FF6B6B', fontSize: 46, animation: 'pop' },
+        '예능자막': { color: '#FFE066', strokeColor: '#FF6B6B', fontSize: 46, animation: 'pop' },
+        '상황': { color: '#A8E6CF', strokeColor: '#2D8B5E', fontSize: 40, animation: 'fade-in' },
+        '상황자막': { color: '#A8E6CF', strokeColor: '#2D8B5E', fontSize: 40, animation: 'fade-in' },
+        '설명': { color: '#88D8FF', strokeColor: '#0066CC', fontSize: 38, animation: 'slide-up' },
+        '설명자막': { color: '#88D8FF', strokeColor: '#0066CC', fontSize: 38, animation: 'slide-up' },
+        '맥락': { color: '#C4B5FD', strokeColor: '#7C3AED', fontSize: 36, animation: 'fade-in' },
+      };
+
       geminiResults.forEach((r, i) => {
+        const style = styleMap[r.style_type] || styleMap['상황'];
         const base: TranscriptItem = {
           id: `intgem_${Date.now()}_${i}`,
           startTime: r.start_time,
@@ -1220,18 +1260,21 @@ const RightSidebar = React.memo(({
           originalText: r.text,
           editedText: r.text,
           isEdited: false,
-          color: '#FFFFFF',
-          strokeColor: '#000000',
-        };
+          color: style.color,
+          strokeColor: style.strokeColor,
+          fontSize: style.fontSize,
+          subtitleAnimationDuration: 0.3,
+        } as any;
+
         const st = r.style_type;
         if (st === '예능자막' || st === '예능') {
-          entertainmentItems.push({ ...base, color: '#FFE066', strokeColor: '#FF6B6B' });
+          entertainmentItems.push(base);
         } else if (st === '상황자막' || st === '상황') {
-          situationItems.push({ ...base, color: '#A8E6CF', strokeColor: '#2D8B5E' });
+          situationItems.push(base);
         } else if (st === '설명자막' || st === '설명') {
-          explanationItems.push({ ...base, color: '#88D8FF', strokeColor: '#0066CC' });
+          explanationItems.push(base);
         } else {
-          situationItems.push({ ...base, color: '#A8E6CF', strokeColor: '#2D8B5E' });
+          situationItems.push(base);
         }
       });
 
